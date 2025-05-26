@@ -8,6 +8,7 @@ namespace SightsAndSounds.Shared.Models
 {
     public class Song
     {
+        public Guid Id { get; set; }
         public string Name { get; set; } = string.Empty;
         public List<string> AlternateNames { get; set; } = new List<string>();
         public string Album { get; set; } = string.Empty;
