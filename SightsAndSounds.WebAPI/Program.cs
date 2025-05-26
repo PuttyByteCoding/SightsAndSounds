@@ -1,8 +1,16 @@
+using Microsoft.EntityFrameworkCore;
+using SightsAndSounds.Shared.Models;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
+
+// Register my SQL Database Context with DI so that it is accessible in the controllers
+builder
+    .Services.AddDbContext<SightsAndSoundsDbContext>(options =>
+        options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 var app = builder.Build();
 
