@@ -14,7 +14,7 @@ builder.Services.AddSwaggerGen(c =>
 // Register my SQL Database Context with DI so that it is accessible in the controllers
 builder
     .Services.AddDbContext<SightsAndSoundsDbContext>(options =>
-        options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+        options.UseSqlite(builder.Configuration.GetConnectionString("SQLiteDbConn")));
 
 var app = builder.Build();
 
@@ -28,6 +28,13 @@ app.MapGet("/", context =>
     context.Response.Redirect("/swagger");
     return Task.CompletedTask;
 });
+
+// Seed the database with sample data
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<SightsAndSoundsDbContext>();
+    SampleDataSeeder.Seed(db);
+}
 
 // Register the endpoints for the API
 app.MapSongEndpoints();
