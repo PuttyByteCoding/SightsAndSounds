@@ -1,5 +1,8 @@
-﻿namespace SightsAndSounds.Shared.Models
+﻿using System.ComponentModel.DataAnnotations.Schema;
+
+namespace SightsAndSounds.Shared.Models
 {
+    [Table("Tracks")]
     public class Track
     {
         public Guid Id { get; set; }

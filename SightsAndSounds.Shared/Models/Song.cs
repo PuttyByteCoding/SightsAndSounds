@@ -1,11 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
 namespace SightsAndSounds.Shared.Models
 {
+    [Table("Songs")]
     public class Song
     {
         public Guid Id { get; set; }
