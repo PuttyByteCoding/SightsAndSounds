@@ -10,7 +10,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace SightsAndSounds.WebAPI.Migrations
 {
     [DbContext(typeof(SightsAndSoundsDbContext))]
-    [Migration("20250526164216_InitialCreate")]
+    [Migration("20250526201435_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -135,6 +135,10 @@ namespace SightsAndSounds.WebAPI.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Country")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
