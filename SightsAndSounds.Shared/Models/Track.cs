@@ -6,7 +6,7 @@ namespace SightsAndSounds.Shared.Models
     public class Track
     {
         public Guid Id { get; set; }
-        public required Song Song { get; set; }
+        public Song? Song { get; set; }
         public List<string> Guests { get; set; } = new List<string>();
         public int Position { get; set; } = 0;
         public TimeSpan Length { get; set; }
@@ -15,5 +15,6 @@ namespace SightsAndSounds.Shared.Models
         bool IsCover { get; set; }
         public bool IsMissing { get; set; }
         public string Notes { get; set; } = string.Empty;
+        public string TrackFileLocation { get; set; } = string.Empty;
     }
 }

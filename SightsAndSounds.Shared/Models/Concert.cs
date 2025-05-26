@@ -18,6 +18,7 @@ namespace SightsAndSounds.Shared.Models
         public List<Track> Setlist { get; set; } = new List<Track>();
         public string Description { get; set; } = string.Empty;
         public string Notes { get; set; } = string.Empty;
+        public string ConcertDirPath { get; set; } = string.Empty;
     }
 
 
