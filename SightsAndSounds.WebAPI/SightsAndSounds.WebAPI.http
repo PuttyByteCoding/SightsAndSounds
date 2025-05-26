@@ -1,0 +1,6 @@
+@SightsAndSounds.WebAPI_HostAddress = http://localhost:5192
+
+GET {{SightsAndSounds.WebAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
