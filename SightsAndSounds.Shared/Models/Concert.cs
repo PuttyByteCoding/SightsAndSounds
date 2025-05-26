@@ -7,13 +7,14 @@ using System.Threading.Tasks;
 
 namespace SightsAndSounds.Shared.Models
 {
-    class Concert
+    public class Concert
     {
         public DateTime Date { get; set; }
         public Venue Venue { get; set; }
         public RecordingType RecordingType { get; set; }
         public List<Track> Setlist { get; set; } = new List<Track>();
-        public string Description { get; set; }
+        public string Description { get; set; } = string.Empty;
+        public string Notes { get; set; }
     }
 
 

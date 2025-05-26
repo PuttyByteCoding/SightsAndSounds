@@ -1,6 +1,6 @@
 ﻿namespace SightsAndSounds.Shared.Models
 {
-    class Venue
+    public class Venue
     {
         public Guid Id { get; set; }
         public string City { get; set; } = string.Empty;
@@ -8,6 +8,7 @@
         public string Country { get; set; } = string.Empty;
         public VenueType Type { get; set; }
         public List<string> AlternateNames { get; set; } = new List<string>();
+        public string Notes { get; set; } = string.Empty;
     }
 
     public enum VenueType
