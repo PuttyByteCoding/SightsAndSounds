@@ -1,0 +1,45 @@
+@page "/concert/{ConcertId:guid}"
+
+@using SightsAndSounds.Shared.Models
+@inject HttpClient Http
+
+@code {
+    [Parameter]
+    public Guid ConcertId { get; set; }
+
+    private Concert? concert;
+    private string? videoUrl;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Fetch concert details from your API
+        concert = await Http.GetFromJsonAsync<Concert>($"api/concerts/{ConcertId}");
+
+        // Example: Assume the first track is a video, and you have an endpoint to serve it
+        if (concert?.Setlist?.Count > 0)
+        {
+            var firstTrack = concert.Setlist[0];
+            videoUrl = $"https://yourapi/api/media/concert/{concert.Id}/track/{firstTrack.Id}";
+        }
+    }
+}
+
+@if (concert == null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <h1>@concert.Date.ToString("MMMM dd, yyyy")</h1>
+    @if (!string.IsNullOrEmpty(videoUrl))
+    {
+        <video width="640" controls>
+            <source src="@videoUrl" type="video/mp4" />
+            Your browser does not support the video tag.
+        </video>
+    }
+    else
+    {
+        <p>No video available for this concert.</p>
+    }
+}
