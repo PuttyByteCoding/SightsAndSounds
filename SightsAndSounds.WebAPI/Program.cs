@@ -15,10 +15,21 @@ builder.Services.AddSwaggerGen(c =>
 builder
     .Services.AddDbContext<SightsAndSoundsDbContext>(options =>
         options.UseSqlite(builder.Configuration.GetConnectionString("SQLiteDbConn")));
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAllOrigins", builder =>
+    {
+        builder.AllowAnyOrigin()
+               .AllowAnyMethod()
+               .AllowAnyHeader();
+    });
+}); // Add CORS support
 
 var app = builder.Build();
 
 app.UseHttpsRedirection();
+
+app.UseCors("AllowAllOrigins");
 
 // Configure Swagger and set it to the defaul page.
 app.UseSwagger();
@@ -37,9 +48,10 @@ using (var scope = app.Services.CreateScope())
 }
 
 // Register the endpoints for the API
-app.MapSongEndpoints();
-app.MapConcertEndpoints();
-app.MapVenueEndpoints();
+var api = app.MapGroup("/api");
+api.MapSongEndpoints();
+api.MapConcertEndpoints();
+api.MapVenueEndpoints();
 
 app.Run();
 
