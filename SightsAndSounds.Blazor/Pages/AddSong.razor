@@ -1,0 +1,79 @@
+﻿@using SightsAndSounds.Shared.Models;
+@using SightsAndSounds.Blazor.Services;
+@inject ISongService SongService;
+
+<h2>AddSong</h2>
+
+@if (allSongs is null)
+{
+    <p>Loading…</p>
+}
+else
+{
+
+    <EditForm Model="@song" OnValidSubmit="@HandleValidSubmit">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+    
+    
+         <!-- Name -->
+        <div class="form-group">
+            <label for="Name">Song Name</label>
+            <InputText id="Name" class="form-control" @bind-Value="song.Name" />
+            <ValidationMessage For="@(() => song.Name)" />
+        </div>
+
+
+        @* <!-- Alternate Names -->
+        <div class="form-group">
+            <label for="NewAltName">Alternate Names</label>
+            <InputText id="NewAltName" class="form-control" />
+            @foreach (var name in song.AlternateNames)
+            {
+                <ul>@name</ul>
+            }
+        </div> *@
+
+
+        <!-- Album -->
+        <div class="form-group">
+            <label for="Album">Album</label>
+            <InputText id="Album" class="form-control" @bind-Value="song.Album" />
+            <ValidationMessage For="@(() => song.Album)" />
+        </div>
+
+        <!-- Live Debut -->
+        <div class="form-group">
+            <label for="LiveDebut">Live Debut</label>
+            <InputDate id="LiveDebut" class="form-control" @bind-Value="song.LiveDebut" />
+            <ValidationMessage For="@(() => song.LiveDebut)" />
+        </div>
+
+
+        <!-- Notes -->
+        <div class="form-group">
+            <label for="Notes">Notes</label>
+            <InputText id="Notes" class="form-control" @bind-Value="song.Notes" />
+        </div>
+
+        <!-- Submit Button -->
+        <button type="submit" class="btn btn-primary">Add Song</button>
+
+
+    </EditForm>
+}
+
+@code {
+    private Song song = new Song();
+    private List<Song>? allSongs = new List<Song>();
+    protected override async Task OnInitializedAsync()
+    {
+        //allSongs = await SongService.GetSongsAsync();
+    }
+    private async Task HandleValidSubmit()
+    {
+        await SongService.CreateSongAsync(song);
+        song = new Song(); // Reset the form
+        allSongs = await SongService.GetSongsAsync(); // Refresh the list
+    }
+}

@@ -1,0 +1,110 @@
+﻿@using SightsAndSounds.Shared.Models;
+@using SightsAndSounds.Blazor.Services;
+@inject IConcertService ConcertService;
+@inject IVenueService VenueService;
+@inject ISongService SongService;
+
+<h3>AddConcert</h3>
+
+@if (allVenues is null || allSongs is null)
+{
+    <p>Loading…</p>
+}
+else
+{
+
+    <EditForm Model="@concert" OnValidSubmit="@HandleValidSubmit">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+    
+        @* Date *@
+        <div class="form-group">
+            <label for="Date">Concert Date</label>
+            <InputDate id="Date" class="form-control" @bind-Value="concert.Date" />
+            <ValidationMessage For="@(() => concert.Date)" />
+        </div>
+
+        @* Venue *@
+        <div class="form-group">
+            <label for="VenueName">Venue</label>
+            <InputSelect id="VenueName" class="form-control" @bind-Value="allVenues">
+                <option value="">Select a venue</option>
+                @foreach (var venue in allVenues)
+                {
+                    <option value="@venue.Id">@venue.Name</option>
+                }
+            </InputSelect>
+            <ValidationMessage For="@(() => concert.VenueId)" />
+        </div>
+
+        @* Recording Type *@
+        <div class="form-group">
+            <label for="RecordingType">Recording Type</label>
+            <InputSelect id="RecordingType" class="form-control" @bind-Value="concert.RecordingType">
+                <option value="">Select a recording type</option>
+                @foreach (var rt in Enum.GetValues<RecordingType>())
+                {
+                    <option value="@rt">@rt</option>
+                }
+            </InputSelect>
+            <ValidationMessage For="@(() => concert.RecordingType)" />
+        </div>
+
+        @* SetList *@
+        @* <div class="form-group">
+            <label for="SetList">Setlist</label>
+            <InputTextArea>TODO: Display setlist here</InputTextArea>
+        </div> *@
+
+        @* Description *@
+        <div class="form-group">
+            <label for="Description">Description</label>
+            <InputTextArea id="Description" class="form-control" @bind-Value="concert.Description" />
+        </div>
+
+        @* Notes *@
+        <div class="form-group">
+            <label for="Notes">Notes</label>
+            <InputTextArea id="Notes" class="form-control" @bind-Value="concert.Notes" />
+        </div>
+    
+        @* Concert Dir Path *@
+        <div class="form-group">
+            <label for="ConcertDirPath">Local Directory Path</label>
+            <InputTextArea id="ConcertDirPath" class="form-control" @bind-Value="concert.ConcertDirPath" />
+        </div>
+
+    
+        <button type="submit" class="btn btn-primary">Create new Track</button>
+        <button type="submit" class="btn btn-primary">Create New Venue</button>
+        <button type="submit" class="btn btn-primary">Add Concert</button>
+
+
+    </EditForm>
+}
+
+@code {
+    private Concert concert = new Concert { };
+    private List<Track>? setlist = new List<Track>();
+    private List<Venue>? allVenues = new List<Venue>();
+    private List<Song>? allSongs = new List<Song>();
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        allVenues = await VenueService.GetVenuesAsync();
+        allSongs = await SongService.GetSongsAsync();
+    }
+
+
+    private async Task HandleValidSubmit()
+    {
+        concert.Id = Guid.NewGuid(); // Generate a new ID for the concert
+        await ConcertService.CreateConcertAsync(concert);
+        concert = new Concert(); // Reset form after submission
+    }
+
+}
+
+
+
