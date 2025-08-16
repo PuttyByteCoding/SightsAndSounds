@@ -1,24 +1,34 @@
 using Microsoft.EntityFrameworkCore;
 using SightsAndSounds.Shared.Models;
+using System.Text.Json.Serialization;
 
 public static class VenueEndpoints
 {
     public static IEndpointRouteBuilder MapVenueEndpoints(this IEndpointRouteBuilder routes)
     {
         routes.MapGet("/venues", async (SightsAndSoundsDbContext db) =>
-            await db.Venues.ToListAsync())
+        {
+            var results = await db.Venues.ToListAsync();
+            return results;
+        })
             .WithName("GetAllVenues")
             .WithTags("Venues")
             .WithSummary("Get all venues")
             .WithDescription("Retrieves a list of all venues in the database.");
 
+       
         routes.MapGet("/venues/{id}", async (int id, SightsAndSoundsDbContext db) =>
-            await db.Venues.FindAsync(id) is Venue venue ? Results.Ok(venue) : Results.NotFound())
+        {
+            var results = await db.Venues.FindAsync(id) is Venue venue ? Results.Ok(venue) : Results.NotFound();
+            return results;
+        }
+            )
             .WithName("GetVenueById")
             .WithTags("Venues")
             .WithSummary("Get a venue by ID")
             .WithDescription("Retrieves a single venue by its unique identifier.");
 
+        
         routes.MapPost("/venues", async (Venue venue, SightsAndSoundsDbContext db) =>
         {
             db.Venues.Add(venue);
@@ -29,6 +39,7 @@ public static class VenueEndpoints
             .WithTags("Venues")
             .WithSummary("Create a new venue")
             .WithDescription("Adds a new venue to the database.");
+
 
         routes.MapPut("/venues/{id}", async (int id, Venue input, SightsAndSoundsDbContext db) =>
         {
@@ -42,6 +53,7 @@ public static class VenueEndpoints
             .WithTags("Venues")
             .WithSummary("Update a venue");
 
+
         routes.MapDelete("/venues/{id}", async (int id, SightsAndSoundsDbContext db) =>
         {
             var venue = await db.Venues.FindAsync(id);
@@ -54,6 +66,7 @@ public static class VenueEndpoints
             .WithTags("Venues")
             .WithSummary("Delete a venue")
             .WithDescription("Removes a venue from the database by ID.");
+
 
         return routes;
     }

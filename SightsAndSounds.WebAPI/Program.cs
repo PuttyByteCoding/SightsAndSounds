@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SightsAndSounds.Shared.Models;
+using System.Text.Json.Serialization;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -24,6 +25,11 @@ builder.Services.AddCors(options =>
                .AllowAnyHeader();
     });
 }); // Add CORS support
+
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 
 var app = builder.Build();
 
