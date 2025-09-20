@@ -16,10 +16,10 @@ namespace GrabInfoFromDMBAlmanac
             var handler = new HttpClientHandler();
             handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
 
-            _httpClient = new HttpClient(handler)
-            {
-                BaseAddress = new Uri(baseUrl)
-            };
+            // _httpClient = new HttpClient(handler)
+            // {
+            //     BaseAddress = new Uri(baseUrl)
+            // };
 
             _jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
             {
@@ -28,7 +28,6 @@ namespace GrabInfoFromDMBAlmanac
                     new JsonStringEnumConverter()
                 },
             };
-
 
         }
 

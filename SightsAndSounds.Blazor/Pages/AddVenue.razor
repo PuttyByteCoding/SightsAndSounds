@@ -49,7 +49,6 @@ else
         <div class="form-group">
             <label for="VenueType">Venue Type</label>
             <InputSelect id="VenueType" class="form-control" @bind-Value="venue.Type">
-                <option value="">Select a venue type</option>
                 @foreach (var vt in Enum.GetValues<VenueType>())
                 {
                     <option value="@vt">@vt</option>
@@ -58,11 +57,39 @@ else
             <ValidationMessage For="@(() => venue.Type)" />
         </div>
 
-        @* Alternate Names *@
+        @* Alternate Names - tag pills *@
         <div class="form-group">
-            <label for="AlternateNames">Alternate Names</label>
-            @* <InputText id="AlternateNames" class="form-control" @bind-Value="venue.AlternateNames" />
-            <ValidationMessage For="@(() => venue.AlternateNames)" /> *@
+            <label>Alternate Names</label>
+            <div class="form-control p-2" style="min-height: 3rem;">
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                    @if (venue.AlternateNames is { Count: > 0 })
+                    {
+                        @foreach (var name in venue.AlternateNames)
+                        {
+                            <span class="badge text-bg-secondary">
+                                @name
+                                <button type="button"
+                                        class="btn btn-sm btn-close btn-close-white ms-1"
+                                        aria-label="Remove"
+                                        title="Remove"
+                                        @onclick="() => RemoveAltName(name)">
+                                </button>
+                            </span>
+                        }
+                    }
+                    else
+                    {
+                        <span class="text-muted">No alternate names</span>
+                    }
+
+                    <input class="border-0 flex-grow-1"
+                           style="min-width: 10ch; outline: none;"
+                           placeholder="Type name, press Ctrl+Enter to add"
+                           value="@newAltName"
+                           @oninput="e => newAltName = e.Value?.ToString() ?? string.Empty"
+                           @onkeydown="OnAltNameKeyDown" />
+                </div>
+            </div>
         </div>
 
 
@@ -74,7 +101,11 @@ else
         </div>
 
 
-        <button type="submit" class="btn btn-primary">Add Venue</button>
+        <button type="submit" class="btn btn-primary"
+                @onclick:preventDefault="true"
+                @onkeydown="OnSubmitKeyDown">
+            Add Venue
+        </button>
 
     </EditForm>
 }
@@ -82,16 +113,82 @@ else
 @code {
 
     private Venue venue = new Venue();
-    private List<Venue>? venues = new List<Venue>();
+    private List<Venue> venues = new List<Venue>();
+    private string newAltName = String.Empty;
+    
     protected override async Task OnInitializedAsync()
     {
         venues = await VenueService.GetVenuesAsync();
-        venue.Type = VenueType.Unknown;
     }
+    
+    private void OnAltNameKeyDown(KeyboardEventArgs e)
+    {
+        // Block plain Enter from submitting: convert it to a no-op by handling it here
+        if (!e.CtrlKey && e.Key == "Enter")
+        {
+            return;
+        }
+        
+        if (e.CtrlKey && e.Key == "Enter")
+        {
+            AddAltName();
+        }
+    }
+
+    private void AddAltName()
+    {
+        var value = newAltName?.Trim();
+        if (string.IsNullOrEmpty(value))
+            return;
+
+        venue.AlternateNames ??= new();
+        if (!venue.AlternateNames.Contains(value, StringComparer.OrdinalIgnoreCase))
+        {
+            venue.AlternateNames.Add(value);
+        }
+        newAltName = string.Empty;
+    }
+
+    private void RemoveAltName(string name)
+    {
+        if (venue.AlternateNames is null) return;
+        var index = venue.AlternateNames.FindIndex(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0)
+        {
+            venue.AlternateNames.RemoveAt(index);
+        }
+    }
+
+
+    // Submit only when the submit button has focus and Space is pressed.
+    // Enter does nothing. Ctrl+Enter adds an alternate name instead of submitting.
+    private async Task OnSubmitKeyDown(KeyboardEventArgs e)
+    {
+        if (e.CtrlKey && e.Key == "Enter")
+        {
+            AddAltName();
+            return;
+        }
+
+        if (!e.CtrlKey && e.Key == " " )
+        {
+            await HandleValidSubmit();
+            return;
+        }
+
+        // Ignore Enter
+        if (!e.CtrlKey && e.Key == "Enter")
+        {
+            return;
+        }
+    }
+    
+    
     private async Task HandleValidSubmit()
     {
         await VenueService.CreateVenueAsync(venue);
         venue = new Venue(); // Reset the form
+        newAltName = String.Empty;
         venues = await VenueService.GetVenuesAsync(); // Refresh the list
     }
 

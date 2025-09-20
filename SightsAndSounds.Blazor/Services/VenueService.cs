@@ -1,38 +1,49 @@
 ﻿using SightsAndSounds.Shared.Models;
 using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SightsAndSounds.Blazor.Services
 {
     public class VenueService : IVenueService
     {
         private readonly HttpClient _httpClient;
+
+        private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+        {
+            PropertyNameCaseInsensitive = true
+        };
+
+        static VenueService()
+        {
+            JsonOptions.Converters.Add(new JsonStringEnumConverter());
+        }
         public VenueService(HttpClient httpClient)
         {
             _httpClient = httpClient;
-            _httpClient.BaseAddress = new Uri("http://localhost:5192/");
+            // Do not set BaseAddress here; it is configured in Program.cs
+            // _httpClient.BaseAddress = new Uri("http://localhost:5192/");
         }
         public async Task<List<Venue>> GetVenuesAsync()
         {
-            var resp = await _httpClient.GetFromJsonAsync<List<Venue>>("api/venues");
+            var resp = await _httpClient.GetFromJsonAsync<List<Venue>>("api/venues", JsonOptions);
             return resp ?? new List<Venue>();
         }
         public async Task<Venue> GetVenueByIdAsync(Guid id)
         {
-            return await _httpClient.GetFromJsonAsync<Venue>($"api/venues/{id}");
+            return await _httpClient.GetFromJsonAsync<Venue>($"api/venues/{id}", JsonOptions);
         }
         public async Task CreateVenueAsync(Venue venue)
         {
             try
             {
-                var response = await _httpClient.PostAsJsonAsync("api/venues", venue);
+                var response = await _httpClient.PostAsJsonAsync("api/venues", venue, JsonOptions);
                 response.EnsureSuccessStatusCode();
             }
             catch (HttpRequestException ex)
             {
-                // Handle exception (e.g., log it, rethrow, etc.)
                 throw new Exception("Error creating venue", ex);
             }
-            
         }
         public async Task UpdateVenueAsync(Venue venue)
         {
