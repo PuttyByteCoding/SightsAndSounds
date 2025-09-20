@@ -7,7 +7,9 @@ var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
 
-builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });
+// Configuring HttpClient BassAddress for all services (VenueService, ConcertService, TrackService, SongService)
+builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri("http://localhost:5192/") });
+
 builder.Services.AddScoped<IConcertService, ConcertService>();
 builder.Services.AddScoped<IVenueService, VenueService>();
 builder.Services.AddScoped<ITrackService, TrackService>();
