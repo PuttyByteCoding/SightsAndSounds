@@ -21,8 +21,6 @@ namespace SightsAndSounds.Blazor.Services
         public VenueService(HttpClient httpClient)
         {
             _httpClient = httpClient;
-            // Do not set BaseAddress here; it is configured in Program.cs
-            // _httpClient.BaseAddress = new Uri("http://localhost:5192/");
         }
         public async Task<List<Venue>> GetVenuesAsync()
         {

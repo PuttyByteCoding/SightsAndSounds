@@ -9,7 +9,6 @@ namespace SightsAndSounds.Blazor.Services
         public TrackService(HttpClient httpClient)
         {
             _httpClient = httpClient;
-            _httpClient.BaseAddress = new Uri("http://localhost:5192/");
         }
 
         public async Task<List<Track>> GetTracksAsync()

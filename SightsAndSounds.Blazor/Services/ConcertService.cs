@@ -10,7 +10,6 @@ namespace SightsAndSounds.Blazor.Services
         public ConcertService(HttpClient httpClient)
         {
             _httpClient = httpClient;
-            _httpClient.BaseAddress = new Uri("http://localhost:5192/");
         }
         
         public async Task<List<Concert>> GetConcertsAsync()
