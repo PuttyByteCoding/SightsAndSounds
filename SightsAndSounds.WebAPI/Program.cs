@@ -33,11 +33,10 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
+app.UseCors("AllowAllOrigins");
 app.UseHttpsRedirection();
 
-app.UseCors("AllowAllOrigins");
-
-// Configure Swagger and set it to the defaul page.
+// Configure Swagger and set it to the default page.
 app.UseSwagger();
 app.UseSwaggerUI();
 app.MapGet("/", context =>
