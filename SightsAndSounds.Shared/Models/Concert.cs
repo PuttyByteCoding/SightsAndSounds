@@ -12,7 +12,7 @@ namespace SightsAndSounds.Shared.Models
     public class Concert
     {
         public Guid Id { get; set; }
-        public DateTime Date { get; set; }
+        public DateTime? Date { get; set; }
         public Guid VenueId { get; set; }
         public RecordingType RecordingType { get; set; }
         public List<Track> Setlist { get; set; } = new List<Track>();
