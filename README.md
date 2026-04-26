@@ -14,11 +14,18 @@ cp .env.example .env       # then edit .env (set POSTGRES_PASSWORD at minimum)
 ./start.sh                 # postgres + API + UI
 ```
 
+On Windows, equivalent PowerShell scripts ship alongside the bash ones:
+
+```powershell
+Copy-Item .env.example .env   # then edit .env (set POSTGRES_PASSWORD at minimum)
+.\start.ps1                   # postgres + API + UI
+```
+
 UI:        <http://localhost:5173>
 API:       <http://localhost:5098>
 Swagger:   <http://localhost:5098/swagger>
 
-Stop everything with `./stop.sh`.
+Stop everything with `./stop.sh` (or `.\stop.ps1` on Windows).
 
 ---
 
@@ -68,7 +75,7 @@ To re-apply the seed, wipe the database with `./start-fresh.sh` — EF Core re-c
 
 ## Startup scripts
 
-Three bash scripts at the repo root, plus a shared library. They work in Git Bash on Windows and on macOS/Linux. State (PIDs + logs) lives in `.run/` (gitignored).
+Three bash scripts at the repo root, plus a shared library. They work in Git Bash on Windows and on macOS/Linux. PowerShell equivalents (`start.ps1`, `start-fresh.ps1`, `stop.ps1`, `_lib.ps1`) sit next to them and behave the same way for native Windows shells. State (PIDs + logs) lives in `.run/` (gitignored).
 
 ### `start.sh`
 Standard "everything up, keep my data":
