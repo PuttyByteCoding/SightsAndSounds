@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7" />
+      <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.7" />
+      <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.7">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1" />
+
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <PackageReference Include="Xabe.FFmpeg" Version="6.0.2" />
+    <PackageReference Include="Xabe.FFmpeg.Downloader" Version="6.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\VideoOrganizer.Shared\VideoOrganizer.Shared.csproj" />
+    <ProjectReference Include="..\VideoOrganizer.Import\VideoOrganizer.Import.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Update="config\tags.seed.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <SvelteUIDir>$(MSBuildThisFileDirectory)..\VideoOrganizer.SvelteUI</SvelteUIDir>
+    <SvelteUIBuildDir>$(SvelteUIDir)\build</SvelteUIBuildDir>
+  </PropertyGroup>
+
+  <!--
+    Build the SvelteKit frontend and copy its output into the published wwwroot.
+    Runs on Publish only (not every Build) to keep the inner dev loop fast.
+    ResolvedFileToPublish bypasses the Static Web Assets compression pipeline,
+    which otherwise crashes because SvelteKit's output is generated too late for
+    SWA's early file enumeration to see it.
+  -->
+  <Target Name="BuildSvelteUI" BeforeTargets="ComputeFilesToPublish">
+    <Message Text="Building SvelteKit frontend in $(SvelteUIDir)" Importance="high" />
+    <Exec Command="npm ci" WorkingDirectory="$(SvelteUIDir)" />
+    <Exec Command="npm run build" WorkingDirectory="$(SvelteUIDir)" />
+
+    <ItemGroup>
+      <SvelteUIBuiltFiles Include="$(SvelteUIBuildDir)\**\*" />
+      <ResolvedFileToPublish
+        Include="@(SvelteUIBuiltFiles->'%(FullPath)')"
+        Exclude="@(ResolvedFileToPublish)">
+        <RelativePath>wwwroot\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
+</Project>

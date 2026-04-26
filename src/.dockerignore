@@ -1,0 +1,57 @@
+# Build outputs
+**/bin/
+**/obj/
+**/out/
+**/publish/
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed in container)
+*.md
+!README.md
+
+# Docker
+**/.dockerignore
+**/Dockerfile
+**/Dockerfile.*
+docker-compose*.yml
+docker-compose*.yaml
+
+# Environment files
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# Test results
+TestResults/
+*.trx
+
+# Generated thumbnails and caches
+thumbnails/
+**/ffmpeg
+**/ffprobe
+.cache/
+
+# OS files
+Thumbs.db
+.DS_Store
+*.swp
+*.bak

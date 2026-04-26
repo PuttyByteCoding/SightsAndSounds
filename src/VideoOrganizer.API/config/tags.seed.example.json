@@ -1,0 +1,58 @@
+{
+  "_comment": "Copy this file to tags.seed.json (gitignored) and customize. The TagSeedService loads tags.seed.json on first startup ONLY when the tag_groups table is empty — once you've created/edited tag groups via the UI, this file is ignored. Run start-fresh.sh to wipe the DB and re-seed.",
+
+  "tagGroups": [
+    {
+      "name": "Band",
+      "allowMultiple": true,
+      "sortOrder": 10,
+      "notes": "Bands and solo artists performing in the recording.",
+      "tags": []
+    },
+    {
+      "name": "Band Configuration",
+      "allowMultiple": true,
+      "sortOrder": 20,
+      "notes": "Lineup variant or era — e.g. 'Acoustic Trio', 'Original Lineup'.",
+      "tags": []
+    },
+    {
+      "name": "Recording Type",
+      "allowMultiple": false,
+      "sortOrder": 30,
+      "notes": "Source quality. One per recording.",
+      "tags": [
+        { "name": "Soundboard",   "aliases": ["SBD"],     "isFavorite": true, "sortOrder": 10 },
+        { "name": "Audience",     "aliases": ["AUD"],                          "sortOrder": 20 },
+        { "name": "FM Broadcast", "aliases": ["FM", "Radio Broadcast"],        "sortOrder": 30 },
+        { "name": "Pro-shot",     "aliases": ["Professional", "Multi-cam"],    "sortOrder": 40 },
+        { "name": "Matrix",       "aliases": [],                               "sortOrder": 50, "notes": "Mix of soundboard + audience sources." }
+      ]
+    },
+    { "name": "Year",  "allowMultiple": false, "sortOrder": 35, "tags": [] },
+    { "name": "Taper", "allowMultiple": true,  "sortOrder": 40, "notes": "Person who recorded the show.", "tags": [] },
+    {
+      "name": "Flags",
+      "allowMultiple": true,
+      "displayAsCheckboxes": true,
+      "sortOrder": 99,
+      "notes": "Bool checkboxes shown above the tag picker. Alt+1..9 toggles them.",
+      "tags": [
+        { "name": "Full Concert",     "aliases": [],          "sortOrder": 10 },
+        { "name": "Setlist Verified", "aliases": ["Setlist"], "sortOrder": 20 },
+        { "name": "Incomplete",       "aliases": ["Partial"], "sortOrder": 30 }
+      ]
+    }
+  ],
+
+  "properties": [
+    { "name": "Venue",          "scope": "Video", "dataType": "text",     "sortOrder": 10 },
+    { "name": "City",           "scope": "Video", "dataType": "text",     "sortOrder": 20 },
+    { "name": "Show Date",      "scope": "Video", "dataType": "date",     "sortOrder": 30 },
+    { "name": "Source URL",     "scope": "Video", "dataType": "url",      "sortOrder": 40, "notes": "Original source on archive.org / etree / etc." },
+    { "name": "Setlist Notes",  "scope": "Video", "dataType": "longText", "sortOrder": 50 },
+
+    { "name": "Origin Country", "scope": "Tag", "tagGroup": "Band",  "dataType": "text",   "sortOrder": 10 },
+    { "name": "Equipment",      "scope": "Tag", "tagGroup": "Taper", "dataType": "text",   "sortOrder": 10, "notes": "Mics, deck, etc." }
+  ]
+}

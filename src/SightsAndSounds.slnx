@@ -1,0 +1,14 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="VideoOrganizer.API/VideoOrganizer.API.csproj" />
+    <Project Path="VideoOrganizer.Domain/VideoOrganizer.Domain.csproj" />
+    <Project Path="VideoOrganizer.Import/VideoOrganizer.Import.csproj" />
+    <Project Path="VideoOrganizer.Infrastructure/VideoOrganizer.Infrastructure.csproj" />
+    <Project Path="VideoOrganizer.Shared/VideoOrganizer.Shared.csproj" />
+  </Folder>
+</Solution>

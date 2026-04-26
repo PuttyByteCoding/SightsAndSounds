@@ -1,0 +1,1 @@
+Static files are generated at publish time by the SvelteKit build (see BuildSvelteUI target in VideoOrganizer.API.csproj). This directory exists so ASP.NET's static-web-assets loader doesn't error in dev.

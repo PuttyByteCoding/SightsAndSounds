@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\VideoOrganizer.Domain\VideoOrganizer.Domain.csproj" />
+    <ProjectReference Include="..\VideoOrganizer.Infrastructure\VideoOrganizer.Infrastructure.csproj" />
+    <ProjectReference Include="..\VideoOrganizer.Shared\VideoOrganizer.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
+    <PackageReference Include="Xabe.FFmpeg" Version="6.0.2" />
+    <PackageReference Include="Xabe.FFmpeg.Downloader" Version="6.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="DTOs\**\*.cs" />
+    <Compile Remove="TagLists\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\VideoOrganizer.ImportTool\DTOs\*.cs" Link="ImportToolDTOs\%(Filename)%(Extension)" />
+    <Compile Include="..\VideoOrganizer.ImportTool\TagLists\*.cs" Link="ImportToolTagLists\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

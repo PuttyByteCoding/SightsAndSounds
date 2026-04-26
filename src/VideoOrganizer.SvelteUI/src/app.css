@@ -1,0 +1,62 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: dark --default, light;
+}
+
+/*
+ * Tag badge color scheme — tinted-chip palette shared by every place that
+ * renders tag pills (video player, video card, filter pickers, edit tags
+ * panel). Apply as `badge badge-tag-<category>`.
+ *
+ * Each category gets two tones of the same hue: a low-opacity tint for the
+ * background and the brighter full-saturation color for the text. On a dark
+ * surface this reads as a muted chip; on a light surface the tint becomes
+ * a subtle pastel fill.
+ *
+ *   performer      Slate Blue    #6B7FD7
+ *   content-creator Dusty Teal   #4A9E8E   (also: series, subscription service)
+ *   composition    Muted Mauve   #9B7BB8   (performer composition)
+ *   other          Warm Sage     #7A9E7E   (also: year)
+ *   flag           Dusty Rose    #C47A8A   (non-favorite flags)
+ *   favorite       Steel Amber   #B8956A   (Favorite flag + performer ★)
+ */
+.badge-tag-performer   { background-color: rgb(107 127 215 / 0.22); color: #AAB9F2; border-color: transparent; }
+.badge-tag-content-creator { background-color: rgb(74 158 142 / 0.22);  color: #8EC8BB; border-color: transparent; }
+.badge-tag-composition { background-color: rgb(155 123 184 / 0.22); color: #BCA3D1; border-color: transparent; }
+.badge-tag-other       { background-color: rgb(122 158 126 / 0.22); color: #A6C2A8; border-color: transparent; }
+.badge-tag-flag        { background-color: rgb(196 122 138 / 0.22); color: #D9A3AF; border-color: transparent; }
+.badge-tag-favorite    { background-color: rgb(184 149 106 / 0.22); color: #CFB48D; border-color: transparent; }
+.text-tag-favorite     { color: #CFB48D; }
+
+/* "Missing X" filter pseudo-tag — meta concept, so neutral slate rather than
+ * reusing a category hue. Italic nudges users that this is a filter operator,
+ * not a real tag attached to any video. */
+.badge-tag-missing     { background-color: rgb(150 150 165 / 0.18); color: #B8BCC9; border-color: transparent; font-style: italic; }
+
+/* All daisyUI buttons get bold text. daisyUI's default is semibold-ish;
+ * lifting to 700 makes button labels read as actions, not body text. */
+.btn {
+  font-weight: 700;
+}
+
+/* CTA / Confirm button. Pairs with `btn btn-soft btn-primary` — gives a
+ * full-opacity primary border and lifts the text a notch above the
+ * default soft-on-soft contrast that the dark daisyUI theme produces. */
+.btn-cta {
+  color: rgb(221 214 254);
+  border: 1px solid var(--color-primary);
+}
+
+/* Cancel button. Self-contained — apply alongside `btn` (no need for the
+ * daisyUI color modifiers). Matches the slate-tinted pill used elsewhere
+ * for the "Needs Review"-style neutral status: dim slate fill, slate
+ * border one step brighter, slate text. */
+.btn-cancel {
+  background-color: rgb(148 163 184 / 0.20);
+  border: 1px solid rgb(148 163 184 / 0.45);
+  color: rgb(203 213 225);
+}
+.btn-cancel:hover {
+  background-color: rgb(148 163 184 / 0.30);
+  border-color: rgb(148 163 184 / 0.60);
+}

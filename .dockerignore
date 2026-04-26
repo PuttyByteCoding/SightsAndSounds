@@ -1,0 +1,10 @@
+# File: `.dockerignore` (place at repo root)
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/node_modules/
+.git/
+.gitignore
+Dockerfile
+docker-compose.yml
