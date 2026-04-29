@@ -7,13 +7,13 @@ namespace VideoOrganizer.API.Services;
 // import requests. Each POST to /api/import/directory enqueues a job here
 // and returns immediately; this service pulls one job at a time, runs the
 // inner DirectoryImportService, marks the tracker complete, and signals
-// the thumbnail / MD5 workers.
+// the thumbnail / Md5 workers.
 //
 // Why serialize the import phase: the user wants strict FIFO so Import1
 // finishes saving its Videos before Import2 starts. Combined with the
 // downstream workers ordering by IngestDate, that gives the global order
-// the user expects (Import1 thumbs → Import2 thumbs, Import1 MD5 →
-// Import2 MD5).
+// the user expects (Import1 thumbs → Import2 thumbs, Import1 Md5 →
+// Import2 Md5).
 public sealed record QueuedImport(Guid JobId, DirectoryImportRequest Request);
 
 public sealed class ImportQueueService : BackgroundService
@@ -120,7 +120,7 @@ public sealed class ImportQueueService : BackgroundService
 
             _progressTracker.MarkCompleted(item.JobId);
             // Wake the downstream workers so the new Videos start getting
-            // thumbnails + MD5 right away. They serialize among themselves
+            // thumbnails + Md5 right away. They serialize among themselves
             // (single worker each) and order by IngestDate, so Import1's
             // videos drain before Import2's.
             _thumbSignal.Signal();

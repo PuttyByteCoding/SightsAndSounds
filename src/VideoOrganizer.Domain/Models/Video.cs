@@ -9,7 +9,7 @@ public class Video
     public string FilePath { get; set; } = string.Empty; // Absolute path the API reads from (always a child of some VideoSet.Path)
     // Null while the background Md5BackfillService hasn't computed it yet.
     // Postgres treats multiple NULLs as distinct in a unique index, so the
-    // uniqueness constraint still catches real-MD5 duplicates once filled in.
+    // uniqueness constraint still catches real-Md5 duplicates once filled in.
     public string? Md5 { get; set; }
     // Set by Md5BackfillService when hashing fails or the user manually skips.
     // Stops the worker from re-trying the same broken file every scan.
@@ -31,7 +31,7 @@ public class Video
     // truth for the worker's IsAlreadyWarmed check.
     public bool ThumbnailsGenerated { get; set; }
     // Stamped by DirectoryImportService on every Video it creates so the
-    // Background Tasks page can group thumbnail/MD5 progress by import
+    // Background Tasks page can group thumbnail/Md5 progress by import
     // (each import panel queries Videos with this JobId). Null on rows
     // imported before this column existed or via other means.
     public Guid? ImportJobId { get; set; }
@@ -61,7 +61,7 @@ public class Video
     // managed:
     //   NeedsReview        — auto-set true on import; cleared by the user
     //                        once they've reviewed. Re-set by Md5BackfillService
-    //                        when an MD5 duplicate is detected.
+    //                        when an Md5 duplicate is detected.
     //   WontPlay           — set when the user marks a file unplayable.
     //                        Triggers a move into `<set>/_WontPlay/...`.
     //   MarkedForDeletion  — set when the user marks for deletion. Triggers

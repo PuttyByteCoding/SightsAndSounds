@@ -535,7 +535,7 @@ public static class ApiEndpoints
             return Results.Ok(rows);
         }).WithName("GetThumbnailQueue");
 
-        // === MD5 worker =====================================================
+        // === Md5 worker =====================================================
 
         api.MapGet("/md5-backfill/status", async (
             VideoOrganizerDbContext db,
@@ -604,7 +604,7 @@ public static class ApiEndpoints
             if (cleared > 0)
             {
                 logger.LogInformation(
-                    "Cleared MD5-failed flag on {Count} videos and re-signalled the worker. Affected: {VideoIds}",
+                    "Cleared Md5-failed flag on {Count} videos and re-signalled the worker. Affected: {VideoIds}",
                     cleared, clearedIds);
                 signal.Signal();
             }

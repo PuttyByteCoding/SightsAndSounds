@@ -222,7 +222,7 @@ public sealed class ImportProgressTracker
     }
 
     // Read-only snapshot of in-memory state for one job. The endpoint
-    // augments this with DB-backed per-job thumbnail/MD5 counts before
+    // augments this with DB-backed per-job thumbnail/Md5 counts before
     // returning to the client (the tracker is intentionally pure
     // in-memory; querying Videos belongs in the endpoint).
     public sealed record JobSnapshot(

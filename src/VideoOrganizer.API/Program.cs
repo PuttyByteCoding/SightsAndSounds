@@ -135,7 +135,7 @@ builder.Services.Configure<VideoStorageOptions>(
 builder.Services.AddSingleton<VideoStorageOptions>(sp =>
     sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<VideoStorageOptions>>().Value);
 
-// Tunables for the Thumbnail + MD5 background workers. Bound from the
+// Tunables for the Thumbnail + Md5 background workers. Bound from the
 // "BackgroundWorkers" section; defaults match the original constants when
 // the section is absent.
 builder.Services.Configure<BackgroundWorkerOptions>(
@@ -157,7 +157,7 @@ builder.Services.AddSingleton<ThumbnailWarmingSignal>();
 builder.Services.AddSingleton<ThumbnailWarmingProgressTracker>();
 builder.Services.AddHostedService<ThumbnailWarmingService>();
 
-// Background worker that computes MD5 hashes for videos imported without one,
+// Background worker that computes Md5 hashes for videos imported without one,
 // and flags cross-video duplicates for user review. Signal wakes the worker
 // from its idle sleep when an import finishes; progress tracker exposes the
 // currently-hashing file to the UI.

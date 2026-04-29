@@ -8,7 +8,7 @@ using VideoOrganizer.Shared.Dto;
 namespace VideoOrganizer.Import.Services;
 
 // Reads a directory, extracts ffprobe metadata for every new video file, and
-// inserts a Video row for each. MD5 is intentionally deferred to the
+// inserts a Video row for each. Md5 is intentionally deferred to the
 // background Md5BackfillService.
 //
 // Tags applied at import time come from the caller as `initialTagIds`. The

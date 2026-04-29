@@ -5,13 +5,13 @@ using VideoOrganizer.Shared.Configuration;
 
 namespace VideoOrganizer.API.Services;
 
-// Background worker that computes MD5 hashes for videos that were imported
-// without one. Directory import deliberately skips MD5 so it stays fast on
+// Background worker that computes Md5 hashes for videos that were imported
+// without one. Directory import deliberately skips Md5 so it stays fast on
 // large files; this service does the heavy lifting afterwards and also runs
 // the cross-video dedup check once the hash exists.
 //
 // Duplicate handling: when the computed hash matches an *already-hashed*
-// video, we re-set NeedsReview = true and append a "[MD5 duplicate of ...]"
+// video, we re-set NeedsReview = true and append a "[Md5 duplicate of ...]"
 // line to Video.Notes so the user can investigate on the Player page
 // instead of having the backfill silently delete or merge.
 public sealed class Md5BackfillService : BackgroundService
@@ -122,7 +122,7 @@ public sealed class Md5BackfillService : BackgroundService
         }
 
         if (pending.Count == 0) return 0;
-        _logger.LogInformation("Md5BackfillService: {Count} videos pending MD5.", pending.Count);
+        _logger.LogInformation("Md5BackfillService: {Count} videos pending Md5.", pending.Count);
 
         // Publish the batch so the Background Tasks page can surface what's
         // coming up next. Paths drop off as each file is consumed.
@@ -140,7 +140,7 @@ public sealed class Md5BackfillService : BackgroundService
 
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             {
-                _logger.LogDebug("Skipping MD5 for {VideoId}: file missing ({Path})", id, path);
+                _logger.LogDebug("Skipping Md5 for {VideoId}: file missing ({Path})", id, path);
                 _progress.Dequeue(path);
                 continue;
             }
@@ -165,20 +165,20 @@ public sealed class Md5BackfillService : BackgroundService
                 {
                     failedReason = "skipped manually via Skip button";
                     _logger.LogWarning(
-                        "MD5 compute skipped manually via Skip button for {VideoId} at {Path}",
+                        "Md5 compute skipped manually via Skip button for {VideoId} at {Path}",
                         id, path);
                 }
                 else
                 {
                     failedReason = $"timed out after {_perFileTimeout.TotalSeconds:0}s";
-                    _logger.LogError("MD5 compute timed out (>{Timeout}) for {VideoId} at {Path}",
+                    _logger.LogError("Md5 compute timed out (>{Timeout}) for {VideoId} at {Path}",
                         _perFileTimeout, id, path);
                 }
                 md5 = string.Empty; // not used; Md5Failed flag is what matters
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "MD5 compute failed for {VideoId} at {Path}", id, path);
+                _logger.LogWarning(ex, "Md5 compute failed for {VideoId} at {Path}", id, path);
                 await MarkMd5FailedAsync(id, TruncateError(ex.Message), ct);
                 _progress.Clear();
                 _progress.Dequeue(path);
@@ -202,11 +202,11 @@ public sealed class Md5BackfillService : BackgroundService
                 if (video == null)
                 {
                     // Video was deleted between the queue load and the hash
-                    // compute. The MD5 we just calculated is dropped on the
+                    // compute. The Md5 we just calculated is dropped on the
                     // floor — log so the queue's "processed" counter doesn't
                     // look mysteriously inflated against the DB.
                     _logger.LogDebug(
-                        "MD5 backfill skipped {VideoId} ({Path}) — row was deleted mid-flight, hash discarded",
+                        "Md5 backfill skipped {VideoId} ({Path}) — row was deleted mid-flight, hash discarded",
                         id, path);
                     continue;
                 }
@@ -218,12 +218,12 @@ public sealed class Md5BackfillService : BackgroundService
                 if (existingDuplicate != null)
                 {
                     _logger.LogWarning(
-                        "MD5 duplicate: {NewId} ({NewPath}) matches {ExistingId} ({ExistingPath})",
+                        "Md5 duplicate: {NewId} ({NewPath}) matches {ExistingId} ({ExistingPath})",
                         id, path, existingDuplicate.Id, existingDuplicate.FilePath);
                     video.NeedsReview = true;
-                    var note = $"[MD5 duplicate of {existingDuplicate.FilePath}]";
+                    var note = $"[Md5 duplicate of {existingDuplicate.FilePath}]";
                     if (!video.Notes.Contains(note)) video.Notes = string.IsNullOrWhiteSpace(video.Notes) ? note : $"{video.Notes}\n{note}";
-                    // Still set the MD5 so a later run doesn't re-pick this row.
+                    // Still set the Md5 so a later run doesn't re-pick this row.
                 }
 
                 video.Md5 = md5;
@@ -233,7 +233,7 @@ public sealed class Md5BackfillService : BackgroundService
             catch (TaskCanceledException) { break; }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Saving MD5 failed for {VideoId}", id);
+                _logger.LogWarning(ex, "Saving Md5 failed for {VideoId}", id);
             }
             finally
             {
@@ -253,7 +253,7 @@ public sealed class Md5BackfillService : BackgroundService
     }
 
     // Persist Md5Failed=true (plus a captured error reason) so the worker
-    // stops re-trying this row each scan and the UI can render a "MD5
+    // stops re-trying this row each scan and the UI can render a "Md5
     // failed" badge with a real "why" in the Show Failed table.
     private async Task MarkMd5FailedAsync(Guid id, string? error, CancellationToken ct)
     {
