@@ -1,10 +1,18 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using VideoOrganizer.Shared.Dto;
 
 namespace VideoOrganizer.API.Services;
 
 public sealed class ImportProgressTracker
 {
+    private readonly ILogger<ImportProgressTracker> _logger;
+
+    public ImportProgressTracker(ILogger<ImportProgressTracker> logger)
+    {
+        _logger = logger;
+    }
+
     private sealed record ImportFileProgressEntry(
         long FileSizeBytes,
         ImportFileStatus Status,
@@ -46,6 +54,9 @@ public sealed class ImportProgressTracker
             EnqueuedAt = DateTime.UtcNow,
             StartedAt = null,
         };
+        _logger.LogInformation(
+            "Import job {JobId} enqueued ({Name}) for {DirectoryPath}",
+            jobId, displayName, directoryPath);
         return jobId;
     }
 
@@ -57,6 +68,10 @@ public sealed class ImportProgressTracker
         if (_jobs.TryGetValue(jobId, out var state))
         {
             state.StartedAt = DateTime.UtcNow;
+            var queuedMs = (state.StartedAt!.Value - state.EnqueuedAt).TotalMilliseconds;
+            _logger.LogInformation(
+                "Import job {JobId} started ({Name}) — queued for {QueuedMs}ms",
+                jobId, state.Name, (long)queuedMs);
         }
     }
 
@@ -94,6 +109,14 @@ public sealed class ImportProgressTracker
         {
             state.IsCompleted = true;
             state.CompletedAt = DateTime.UtcNow;
+            var counts = CountByStatus(state.FileStatuses);
+            var elapsedMs = state.StartedAt is { } started
+                ? (long)(state.CompletedAt!.Value - started).TotalMilliseconds
+                : 0L;
+            _logger.LogInformation(
+                "Import job {JobId} completed ({Name}) — {Completed} ok, {Failed} failed, {Skipped} skipped of {Total} files in {ElapsedMs}ms",
+                jobId, state.Name, counts.Completed, counts.Failed, counts.Skipped,
+                state.FileStatuses.Count, elapsedMs);
         }
     }
 
@@ -104,6 +127,9 @@ public sealed class ImportProgressTracker
             state.IsCompleted = true;
             state.CompletedAt = DateTime.UtcNow;
             state.Error = error;
+            _logger.LogWarning(
+                "Import job {JobId} failed ({Name}): {Error}",
+                jobId, state.Name, error);
         }
     }
 
@@ -259,6 +285,10 @@ public sealed class ImportProgressTracker
         {
             if (kvp.Value.IsCompleted && _jobs.TryRemove(kvp.Key, out _))
                 removed++;
+        }
+        if (removed > 0)
+        {
+            _logger.LogInformation("Cleared {Count} completed import jobs from history", removed);
         }
         return removed;
     }

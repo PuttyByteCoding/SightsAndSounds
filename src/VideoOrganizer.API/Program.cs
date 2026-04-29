@@ -18,6 +18,33 @@ var logBuffer = new VideoOrganizer.API.Services.LogBuffer { Retention = TimeSpan
 builder.Services.AddSingleton(logBuffer);
 builder.Logging.AddProvider(new VideoOrganizer.API.Services.BufferedLoggerProvider(logBuffer));
 
+// Forward structured logs to Seq in Development when Logging:Seq:ServerUrl is
+// configured. The URL lives in `appsettings.Development.json` (gitignored —
+// see `appsettings.Development.example.json` for the template). Hard-gated on
+// IsDevelopment() so a stray ServerUrl in production config can never ship
+// logs off-host. We capture the decision into a local so the actual sink
+// status gets logged once the logger pipeline is built (see migration scope
+// below) — without that, an operator with a misconfigured URL has no signal
+// that logs aren't reaching Seq.
+string? seqSinkUrl = null;
+string? seqSinkSkipReason = null;
+if (builder.Environment.IsDevelopment())
+{
+    seqSinkUrl = builder.Configuration["Logging:Seq:ServerUrl"];
+    if (!string.IsNullOrWhiteSpace(seqSinkUrl))
+    {
+        builder.Logging.AddSeq(builder.Configuration.GetSection("Logging:Seq"));
+    }
+    else
+    {
+        seqSinkSkipReason = "Logging:Seq:ServerUrl not configured in appsettings.Development.json";
+    }
+}
+else
+{
+    seqSinkSkipReason = $"environment is {builder.Environment.EnvironmentName} (Seq is dev-only)";
+}
+
 // Add services to the container.
 
 // Configure JSON options for minimal APIs
@@ -197,6 +224,15 @@ using (var scope = app.Services.CreateScope())
     // the __EFMigrationsHistory table isn't created yet (always the case on a
     // fresh DB). We can't suppress it outright without losing real SQL-error
     // visibility, so we just describe it.
+    if (!string.IsNullOrWhiteSpace(seqSinkUrl))
+    {
+        startupLog.LogInformation("Seq log sink wired to {SeqUrl}", seqSinkUrl);
+    }
+    else
+    {
+        startupLog.LogInformation("Seq log sink disabled — {Reason}", seqSinkSkipReason);
+    }
+
     startupLog.LogInformation(
         "Applying EF migrations. On a fresh database you'll see a one-time warning about " +
         "__EFMigrationsHistory not existing — that's expected and self-heals.");
@@ -322,6 +358,42 @@ app.UseCors("AllowUI");
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
+// Structured per-request log for /api/* — gives every endpoint entry/exit
+// visibility (method, path, query, status, elapsed) without touching the 70+
+// handlers in ApiEndpoints.cs. Scoped to /api so static files and Swagger
+// don't drown the log feed. 4xx logs at Information, 5xx at Warning so the
+// signal is easy to filter on in Seq.
+{
+    var requestLog = app.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("VideoOrganizer.Api.Request");
+    app.Use(async (ctx, next) =>
+    {
+        if (!ctx.Request.Path.StartsWithSegments("/api"))
+        {
+            await next();
+            return;
+        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            await next();
+        }
+        finally
+        {
+            sw.Stop();
+            var status = ctx.Response.StatusCode;
+            var level = status >= 500 ? LogLevel.Warning : LogLevel.Information;
+            requestLog.Log(level,
+                "HTTP {Method} {Path}{Query} -> {StatusCode} in {ElapsedMs}ms",
+                ctx.Request.Method,
+                ctx.Request.Path.Value,
+                ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value : string.Empty,
+                status,
+                sw.ElapsedMilliseconds);
+        }
+    });
+}
 
 app.MapApiEndpoints();
 

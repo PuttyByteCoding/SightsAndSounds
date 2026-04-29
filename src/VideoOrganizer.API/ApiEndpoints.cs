@@ -283,10 +283,21 @@ public static class ApiEndpoints
         return Results.Ok(video);
     }
 
-    private static bool TryDirectoryExists(string path)
+    private static bool TryDirectoryExists(string path, ILogger? logger = null)
     {
         try { return !string.IsNullOrWhiteSpace(path) && Directory.Exists(path); }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            // Permission denial, broken symlink, network mount offline — all
+            // surface as a silent `false` here, which downstream becomes
+            // "PathExists = false" in the UI with no diagnostic. Log so the
+            // operator at least has a breadcrumb when a supposedly-valid
+            // root suddenly stops listing.
+            logger?.LogWarning(ex,
+                "Directory.Exists check failed for {Path} — treating as missing. Likely permission, broken symlink, or unreachable mount.",
+                path);
+            return false;
+        }
     }
 
     private static string? DescribeDirectoryIssue(string path)
@@ -463,14 +474,27 @@ public static class ApiEndpoints
         api.MapPost("/thumbnails/clear-failed", async (
             VideoOrganizerDbContext db,
             ThumbnailWarmingSignal signal,
+            ILogger<Program> logger,
             CancellationToken ct) =>
         {
+            // Snapshot the affected ids before clearing so retries that fail
+            // again are correlatable to this batch.
+            var clearedIds = await db.Videos
+                .Where(v => v.ThumbnailsFailed)
+                .Select(v => v.Id)
+                .ToArrayAsync(ct);
             var cleared = await db.Videos
                 .Where(v => v.ThumbnailsFailed)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(v => v.ThumbnailsFailed, false)
                     .SetProperty(v => v.ThumbnailsFailedError, (string?)null), ct);
-            if (cleared > 0) signal.Signal();
+            if (cleared > 0)
+            {
+                logger.LogInformation(
+                    "Cleared thumbnail-failed flag on {Count} videos and re-signalled the worker. Affected: {VideoIds}",
+                    cleared, clearedIds);
+                signal.Signal();
+            }
             return Results.Ok(new { cleared });
         }).WithName("ClearFailedThumbnails");
 
@@ -565,14 +589,25 @@ public static class ApiEndpoints
         api.MapPost("/md5-backfill/clear-failed", async (
             VideoOrganizerDbContext db,
             Md5BackfillSignal signal,
+            ILogger<Program> logger,
             CancellationToken ct) =>
         {
+            var clearedIds = await db.Videos
+                .Where(v => v.Md5Failed)
+                .Select(v => v.Id)
+                .ToArrayAsync(ct);
             var cleared = await db.Videos
                 .Where(v => v.Md5Failed)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(v => v.Md5Failed, false)
                     .SetProperty(v => v.Md5FailedError, (string?)null), ct);
-            if (cleared > 0) signal.Signal();
+            if (cleared > 0)
+            {
+                logger.LogInformation(
+                    "Cleared MD5-failed flag on {Count} videos and re-signalled the worker. Affected: {VideoIds}",
+                    cleared, clearedIds);
+                signal.Signal();
+            }
             return Results.Ok(new { cleared });
         }).WithName("ClearFailedMd5");
 
@@ -648,7 +683,9 @@ public static class ApiEndpoints
             return Results.Ok(result);
         }).WithName("ListVideoSets");
 
-        videoSets.MapPost("/", async (VideoSet input, VideoOrganizerDbContext db, CancellationToken ct) =>
+        videoSets.MapPost("/", async (
+            VideoSet input, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             input.Path = PathNormalizer.Normalize(input.Path ?? string.Empty);
             var error = ValidateVideoSet(input, db, currentId: null);
@@ -657,10 +694,15 @@ public static class ApiEndpoints
             input.Id = input.Id == Guid.Empty ? Guid.NewGuid() : input.Id;
             db.VideoSets.Add(input);
             await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Created VideoSet {VideoSetId} '{Name}' at {Path} (enabled={Enabled})",
+                input.Id, input.Name, input.Path, input.Enabled);
             return Results.Created($"/api/video-sets/{input.Id}", input);
         }).WithName("CreateVideoSet");
 
-        videoSets.MapPut("/{id:guid}", async (Guid id, VideoSet input, VideoOrganizerDbContext db, CancellationToken ct) =>
+        videoSets.MapPut("/{id:guid}", async (
+            Guid id, VideoSet input, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var existing = await db.VideoSets.FirstOrDefaultAsync(s => s.Id == id, ct);
             if (existing is null) return Results.NotFound();
@@ -668,11 +710,31 @@ public static class ApiEndpoints
             var error = ValidateVideoSet(input, db, currentId: id);
             if (error is not null) return Results.BadRequest(new { error });
 
+            // Capture before-state. Path changes are especially worth flagging
+            // because every Video below the old path becomes an orphan; the
+            // app uses Path as a prefix lookup, not an FK.
+            var oldPath = existing.Path;
+            var oldEnabled = existing.Enabled;
+
             existing.Name = input.Name;
             existing.Path = PathNormalizer.Normalize(input.Path ?? string.Empty);
             existing.Enabled = input.Enabled;
             existing.SortOrder = input.SortOrder;
             await db.SaveChangesAsync(ct);
+
+            if (!string.Equals(oldPath, existing.Path, StringComparison.OrdinalIgnoreCase))
+            {
+                var orphans = await db.Videos.CountAsync(v => v.FilePath.StartsWith(oldPath), ct);
+                logger.LogWarning(
+                    "VideoSet {VideoSetId} '{Name}' Path changed {OldPath}→{NewPath} — {OrphanCount} videos still point at the old prefix and won't be browsable until they're moved or re-rooted",
+                    existing.Id, existing.Name, oldPath, existing.Path, orphans);
+            }
+            else if (oldEnabled != existing.Enabled)
+            {
+                logger.LogInformation(
+                    "VideoSet {VideoSetId} '{Name}' enabled={Enabled} (was {OldEnabled})",
+                    existing.Id, existing.Name, existing.Enabled, oldEnabled);
+            }
             return Results.Ok(existing);
         }).WithName("UpdateVideoSet");
 
@@ -685,7 +747,9 @@ public static class ApiEndpoints
             return Results.Ok(new { count });
         }).WithName("GetVideoSetOrphanCount");
 
-        videoSets.MapDelete("/{id:guid}", async (Guid id, bool? force, VideoOrganizerDbContext db, CancellationToken ct) =>
+        videoSets.MapDelete("/{id:guid}", async (
+            Guid id, bool? force, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var set = await db.VideoSets.FirstOrDefaultAsync(s => s.Id == id, ct);
             if (set is null) return Results.NotFound();
@@ -693,9 +757,17 @@ public static class ApiEndpoints
             var orphanCount = await db.Videos.CountAsync(v => v.FilePath.StartsWith(set.Path), ct);
             if (orphanCount > 0 && force != true)
             {
+                logger.LogWarning(
+                    "VideoSet {VideoSetId} ({Name}, {Path}) delete blocked — would orphan {OrphanCount} videos. Caller must retry with ?force=true to override.",
+                    set.Id, set.Name, set.Path, orphanCount);
                 return Results.Conflict(new { orphanCount, error = "Deleting this set would orphan videos. Pass ?force=true to proceed." });
             }
 
+            logger.LogInformation(
+                "VideoSet {VideoSetId} ({Name}, {Path}) deleted{ForcedSuffix} — {OrphanCount} videos now point at a missing root",
+                set.Id, set.Name, set.Path,
+                orphanCount > 0 ? " (forced)" : string.Empty,
+                orphanCount);
             db.VideoSets.Remove(set);
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
@@ -838,7 +910,8 @@ public static class ApiEndpoints
         // PUT /api/videos/{id} — full editable-field update. Tags managed via
         // /videos/{id}/tags, properties via /videos/{id}/properties.
         api.MapPut("/videos/{id:guid}", async (
-            Guid id, UpdateVideoRequest input, VideoOrganizerDbContext db, CancellationToken ct) =>
+            Guid id, UpdateVideoRequest input, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var video = await IncludeForVideoDto(db.Videos)
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
@@ -874,13 +947,13 @@ public static class ApiEndpoints
 
             if (input.TagIds is not null)
             {
-                var err = await ReplaceVideoTagsAsync(db, video, input.TagIds, ct);
+                var err = await ReplaceVideoTagsAsync(db, video, input.TagIds, logger, ct);
                 if (err is not null) return Results.BadRequest(new { error = err });
             }
 
             if (input.Properties is not null)
             {
-                await ReplaceVideoPropertiesAsync(db, video, input.Properties, ct);
+                await ReplaceVideoPropertiesAsync(db, video, input.Properties, logger, ct);
             }
 
             await db.SaveChangesAsync(ct);
@@ -899,25 +972,27 @@ public static class ApiEndpoints
         // PUT /api/videos/{id}/tags — replace the tag set for a video.
         // Enforces TagGroup.AllowMultiple = false for single-value groups.
         api.MapPut("/videos/{id:guid}/tags", async (
-            Guid id, SetVideoTagsRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+            Guid id, SetVideoTagsRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var video = await db.Videos.Include(v => v.VideoTags)
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
 
-            var err = await ReplaceVideoTagsAsync(db, video, req.TagIds, ct);
+            var err = await ReplaceVideoTagsAsync(db, video, req.TagIds, logger, ct);
             if (err is not null) return Results.BadRequest(new { error = err });
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("SetVideoTags");
 
         api.MapPut("/videos/{id:guid}/properties", async (
-            Guid id, SetPropertyValuesRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+            Guid id, SetPropertyValuesRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var video = await db.Videos.Include(v => v.PropertyValues)
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
-            await ReplaceVideoPropertiesAsync(db, video, req.Values, ct);
+            await ReplaceVideoPropertiesAsync(db, video, req.Values, logger, ct);
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("SetVideoProperties");
@@ -1098,7 +1173,12 @@ public static class ApiEndpoints
             var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
             if (!video.MarkedForDeletion)
+            {
+                logger.LogWarning(
+                    "Purge rejected for video {VideoId} ({FileName}) — video is not marked for deletion (state: deleted={IsDeleted}, wontPlay={WontPlay})",
+                    video.Id, video.FileName, video.MarkedForDeletion, video.WontPlay);
                 return Results.BadRequest(new { error = "Video is not marked for deletion." });
+            }
 
             // Clip rows share the file with the parent — drop the row only.
             if (!video.ParentVideoId.HasValue)
@@ -1118,6 +1198,9 @@ public static class ApiEndpoints
                 }
             }
 
+            logger.LogInformation(
+                "Purged video {VideoId} ({FileName}) — clip={IsClip}",
+                video.Id, video.FileName, video.ParentVideoId.HasValue);
             db.Videos.Remove(video);
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
@@ -1127,6 +1210,9 @@ public static class ApiEndpoints
             VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
             var videos = await db.Videos.Where(v => v.MarkedForDeletion).ToListAsync(ct);
+            logger.LogInformation(
+                "Purge-all starting — {TotalCandidates} videos marked for deletion",
+                videos.Count);
 
             var purged = 0;
             var failed = new List<object>();
@@ -1147,11 +1233,19 @@ public static class ApiEndpoints
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Purge-all: failed on {Path}", video.FilePath);
+                    // Per-failure error log gives an actionable identifier
+                    // (id + filename + path) — the aggregated counts at the
+                    // end aren't enough to retry individually.
+                    logger.LogError(ex,
+                        "Purge-all: failed on {VideoId} ({FileName}) at {Path}",
+                        video.Id, video.FileName, video.FilePath);
                     failed.Add(new { id = video.Id, fileName = video.FileName, error = ex.Message });
                 }
             }
             await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Purge-all complete — {Purged} purged, {Failed} failed of {Total} candidates",
+                purged, failed.Count, videos.Count);
             return Results.Ok(new { purged, failed });
         }).WithName("PurgeAllMarkedForDeletion");
 
@@ -1329,7 +1423,9 @@ public static class ApiEndpoints
             return Results.Ok(new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, count));
         }).WithName("GetTagGroup");
 
-        tagGroups.MapPost("/", async (CreateTagGroupRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+        tagGroups.MapPost("/", async (
+            CreateTagGroupRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
             if (await db.TagGroups.AnyAsync(g => g.Name == req.Name, ct))
@@ -1345,33 +1441,75 @@ public static class ApiEndpoints
             };
             db.TagGroups.Add(g);
             await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Created TagGroup {TagGroupId} '{Name}' (allowMultiple={AllowMultiple}, checkboxes={Checkboxes})",
+                g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes);
             return Results.Created($"/api/tag-groups/{g.Id}",
                 new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, 0));
         }).WithName("CreateTagGroup");
 
         tagGroups.MapPut("/{id:guid}", async (
-            Guid id, UpdateTagGroupRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+            Guid id, UpdateTagGroupRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var g = await db.TagGroups.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (g is null) return Results.NotFound();
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
             if (await db.TagGroups.AnyAsync(x => x.Name == req.Name && x.Id != id, ct))
                 return Results.Conflict(new { error = "A tag group with that name already exists." });
+
+            // Capture meaningful before-state so we can flag policy changes —
+            // particularly AllowMultiple flipping true→false, which can leave
+            // existing videos with multi-tag assignments that violate the new
+            // rule. The DB doesn't repair those automatically.
+            var oldName = g.Name;
+            var oldAllowMultiple = g.AllowMultiple;
+
             g.Name = req.Name;
             g.AllowMultiple = req.AllowMultiple;
             g.DisplayAsCheckboxes = req.DisplayAsCheckboxes;
             g.SortOrder = req.SortOrder;
             g.Notes = req.Notes;
             await db.SaveChangesAsync(ct);
+
+            if (oldAllowMultiple && !req.AllowMultiple)
+            {
+                // Count videos currently violating the new policy so the
+                // operator can decide whether to clean them up.
+                var orphans = await db.VideoTags
+                    .Where(vt => vt.Tag!.TagGroupId == id)
+                    .GroupBy(vt => vt.VideoId)
+                    .Where(grp => grp.Count() > 1)
+                    .CountAsync(ct);
+                logger.LogWarning(
+                    "TagGroup {TagGroupId} '{Name}' AllowMultiple flipped true→false — {ViolatingVideos} videos now have multi-tag assignments that violate the new single-value rule (existing rows are NOT cleaned up automatically)",
+                    g.Id, g.Name, orphans);
+            }
+
+            logger.LogInformation(
+                "Updated TagGroup {TagGroupId}: '{OldName}'→'{NewName}', allowMultiple={AllowMultiple}, checkboxes={Checkboxes}",
+                g.Id, oldName, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes);
             return Results.NoContent();
         }).WithName("UpdateTagGroup");
 
-        tagGroups.MapDelete("/{id:guid}", async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        tagGroups.MapDelete("/{id:guid}", async (
+            Guid id, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var g = await db.TagGroups.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (g is null) return Results.NotFound();
+
+            // Count what's about to cascade away so the audit log answers
+            // "I deleted a TagGroup — what data went with it?".
+            var tagCount = await db.Tags.CountAsync(t => t.TagGroupId == id, ct);
+            var videoTagCount = await db.VideoTags.CountAsync(vt => vt.Tag!.TagGroupId == id, ct);
+            var propDefCount = await db.PropertyDefinitions.CountAsync(p => p.TagGroupId == id, ct);
+
             db.TagGroups.Remove(g);  // cascades to tags + property defs
             await db.SaveChangesAsync(ct);
+            logger.LogWarning(
+                "Deleted TagGroup {TagGroupId} '{Name}' — cascaded {TagCount} tags ({VideoTagCount} VideoTag rows) and {PropertyDefinitionCount} property definitions",
+                g.Id, g.Name, tagCount, videoTagCount, propDefCount);
             return Results.NoContent();
         }).WithName("DeleteTagGroup");
 
@@ -1430,7 +1568,9 @@ public static class ApiEndpoints
                 t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, count));
         }).WithName("GetTag");
 
-        tagsGroup.MapPost("/", async (CreateTagRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+        tagsGroup.MapPost("/", async (
+            CreateTagRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
             if (!await db.TagGroups.AnyAsync(g => g.Id == req.TagGroupId, ct))
@@ -1452,45 +1592,93 @@ public static class ApiEndpoints
             await db.SaveChangesAsync(ct);
 
             var grp = await db.TagGroups.AsNoTracking().FirstAsync(g => g.Id == t.TagGroupId, ct);
+            logger.LogInformation(
+                "Created Tag {TagId} '{Name}' in TagGroup {TagGroupId} '{GroupName}' ({AliasCount} aliases)",
+                t.Id, t.Name, t.TagGroupId, grp.Name, t.Aliases.Count);
             return Results.Created($"/api/tags/{t.Id}",
                 new TagDto(t.Id, t.TagGroupId, grp.Name, t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, 0));
         }).WithName("CreateTag");
 
         tagsGroup.MapPut("/{id:guid}", async (
-            Guid id, UpdateTagRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+            Guid id, UpdateTagRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var t = await db.Tags.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (t is null) return Results.NotFound();
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
             if (await db.Tags.AnyAsync(x => x.TagGroupId == t.TagGroupId && x.Name == req.Name && x.Id != id, ct))
                 return Results.Conflict(new { error = "A tag with that name already exists in this group." });
+
+            // Capture before-state so the log can show what actually changed —
+            // a tag rename + alias edit affects search/typeahead behavior, so
+            // it's worth being able to grep for "when did this tag get
+            // renamed".
+            var oldName = t.Name;
+            var oldAliasCount = t.Aliases.Count;
+
             t.Name = req.Name;
             t.Aliases = req.Aliases.ToList();
             t.IsFavorite = req.IsFavorite;
             t.SortOrder = req.SortOrder;
             t.Notes = req.Notes;
             await db.SaveChangesAsync(ct);
+
+            if (!string.Equals(oldName, t.Name, StringComparison.Ordinal))
+            {
+                logger.LogInformation(
+                    "Renamed Tag {TagId} '{OldName}'→'{NewName}' (aliases {OldAliasCount}→{NewAliasCount})",
+                    t.Id, oldName, t.Name, oldAliasCount, t.Aliases.Count);
+            }
+            else if (oldAliasCount != t.Aliases.Count)
+            {
+                logger.LogInformation(
+                    "Updated Tag {TagId} '{Name}' aliases ({OldAliasCount}→{NewAliasCount})",
+                    t.Id, t.Name, oldAliasCount, t.Aliases.Count);
+            }
             return Results.NoContent();
         }).WithName("UpdateTag");
 
-        tagsGroup.MapDelete("/{id:guid}", async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        tagsGroup.MapDelete("/{id:guid}", async (
+            Guid id, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var t = await db.Tags.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (t is null) return Results.NotFound();
+
+            // Pre-count cascaded rows so the audit log includes the blast
+            // radius, not just an opaque "deleted".
+            var videoTagCount = await db.VideoTags.CountAsync(vt => vt.TagId == id, ct);
+            var propValueCount = await db.TagPropertyValues.CountAsync(pv => pv.TagId == id, ct);
+
             db.Tags.Remove(t);  // cascades VideoTag + TagPropertyValue
             await db.SaveChangesAsync(ct);
+            logger.LogWarning(
+                "Deleted Tag {TagId} '{Name}' (group {TagGroupId}) — cascaded {VideoTagCount} VideoTag rows and {PropertyValueCount} TagPropertyValue rows",
+                t.Id, t.Name, t.TagGroupId, videoTagCount, propValueCount);
             return Results.NoContent();
         }).WithName("DeleteTag");
 
-        tagsGroup.MapPost("/merge", async (MergeTagsRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+        tagsGroup.MapPost("/merge", async (
+            MergeTagsRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             if (req.SourceIds.Contains(req.TargetId))
+            {
+                logger.LogWarning(
+                    "Tag merge rejected — target {TargetId} is also listed as a source",
+                    req.TargetId);
                 return Results.BadRequest(new { error = "Target must not be in sources." });
+            }
             var target = await db.Tags.FirstOrDefaultAsync(t => t.Id == req.TargetId, ct);
             if (target is null) return Results.NotFound(new { error = "Target tag not found." });
             var sources = await db.Tags.Where(t => req.SourceIds.Contains(t.Id)).ToListAsync(ct);
             if (sources.Any(s => s.TagGroupId != target.TagGroupId))
+            {
+                logger.LogWarning(
+                    "Tag merge rejected — sources {SourceIds} span TagGroups, but target {TargetId} is in TagGroup {TargetGroupId}",
+                    sources.Select(s => s.Id).ToArray(), target.Id, target.TagGroupId);
                 return Results.BadRequest(new { error = "All merged tags must belong to the same group." });
+            }
 
             // Re-point video_tags from sources to target. VideoTag's PK is
             // (VideoId, TagId), so EF Core won't let us mutate TagId in place
@@ -1540,6 +1728,11 @@ public static class ApiEndpoints
 
             db.Tags.RemoveRange(sources);
             await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Merged tags {SourceIds} into {TargetId} ('{TargetName}', group {TargetGroupId}) — re-pointed {RepointedRows} VideoTag rows ({NewlyAttached} new attachments, {SkippedDuplicates} skipped because target was already attached), folded source names/aliases into target",
+                sources.Select(s => s.Id).ToArray(),
+                target.Id, target.Name, target.TagGroupId,
+                affected.Count, newlyAttached.Count, affected.Count - newlyAttached.Count);
             return Results.Ok(new { mergedVideos = affected.Count, removedSources = sources.Count });
         }).WithName("MergeTags");
 
@@ -1586,12 +1779,13 @@ public static class ApiEndpoints
 
         // Replace property values on a tag.
         tagsGroup.MapPut("/{id:guid}/properties", async (
-            Guid id, SetPropertyValuesRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+            Guid id, SetPropertyValuesRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var tag = await db.Tags.Include(t => t.PropertyValues)
                 .FirstOrDefaultAsync(t => t.Id == id, ct);
             if (tag is null) return Results.NotFound();
-            await ReplaceTagPropertiesAsync(db, tag, req.Values, ct);
+            await ReplaceTagPropertiesAsync(db, tag, req.Values, logger, ct);
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("SetTagProperties");
@@ -1614,7 +1808,8 @@ public static class ApiEndpoints
         }).WithName("ListProperties");
 
         props.MapPost("/", async (
-            CreatePropertyDefinitionRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+            CreatePropertyDefinitionRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
             if (req.Scope == PropertyScopeDto.Tag && !req.TagGroupId.HasValue)
@@ -1637,6 +1832,9 @@ public static class ApiEndpoints
             };
             db.PropertyDefinitions.Add(def);
             await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Created PropertyDefinition {PropertyId} '{Name}' (scope={Scope}, dataType={DataType}, tagGroup={TagGroupId}, required={Required})",
+                def.Id, def.Name, def.Scope, def.DataType, def.TagGroupId, def.Required);
             return Results.Created($"/api/properties/{def.Id}",
                 new PropertyDefinitionDto(def.Id, def.Name,
                     (PropertyDataTypeDto)def.DataType, (PropertyScopeDto)def.Scope,
@@ -1644,25 +1842,54 @@ public static class ApiEndpoints
         }).WithName("CreateProperty");
 
         props.MapPut("/{id:guid}", async (
-            Guid id, UpdatePropertyDefinitionRequest req, VideoOrganizerDbContext db, CancellationToken ct) =>
+            Guid id, UpdatePropertyDefinitionRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var def = await db.PropertyDefinitions.FirstOrDefaultAsync(p => p.Id == id, ct);
             if (def is null) return Results.NotFound();
+            var oldName = def.Name;
+            var oldDataType = def.DataType;
             def.Name = req.Name;
             def.DataType = (PropertyDataType)req.DataType;
             def.Required = req.Required;
             def.SortOrder = req.SortOrder;
             def.Notes = req.Notes;
             await db.SaveChangesAsync(ct);
+
+            // DataType changes are especially worth flagging — existing
+            // string values stay in the DB and may no longer parse under
+            // the new type. Operator should know.
+            if (oldDataType != def.DataType)
+            {
+                logger.LogWarning(
+                    "PropertyDefinition {PropertyId} '{Name}' DataType changed {OldDataType}→{NewDataType} — existing values are NOT re-validated",
+                    def.Id, def.Name, oldDataType, def.DataType);
+            }
+            else if (!string.Equals(oldName, def.Name, StringComparison.Ordinal))
+            {
+                logger.LogInformation(
+                    "Renamed PropertyDefinition {PropertyId} '{OldName}'→'{NewName}'",
+                    def.Id, oldName, def.Name);
+            }
             return Results.NoContent();
         }).WithName("UpdateProperty");
 
-        props.MapDelete("/{id:guid}", async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        props.MapDelete("/{id:guid}", async (
+            Guid id, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             var def = await db.PropertyDefinitions.FirstOrDefaultAsync(p => p.Id == id, ct);
             if (def is null) return Results.NotFound();
+
+            // Count cascaded value rows before removing.
+            var videoValueCount = await db.VideoPropertyValues.CountAsync(v => v.PropertyDefinitionId == id, ct);
+            var tagValueCount = await db.TagPropertyValues.CountAsync(t => t.PropertyDefinitionId == id, ct);
+
             db.PropertyDefinitions.Remove(def);  // cascades to value rows
             await db.SaveChangesAsync(ct);
+            logger.LogWarning(
+                "Deleted PropertyDefinition {PropertyId} '{Name}' (scope={Scope}) — cascaded {VideoValueCount} VideoPropertyValue rows and {TagValueCount} TagPropertyValue rows",
+                def.Id, def.Name, def.Scope, videoValueCount, tagValueCount);
             return Results.NoContent();
         }).WithName("DeleteProperty");
 
@@ -2090,7 +2317,8 @@ public static class ApiEndpoints
     // --- Tag-set / property-set replace helpers -----------------------------
 
     private static async Task<string?> ReplaceVideoTagsAsync(
-        VideoOrganizerDbContext db, Video video, IReadOnlyList<Guid> tagIds, CancellationToken ct)
+        VideoOrganizerDbContext db, Video video, IReadOnlyList<Guid> tagIds,
+        ILogger logger, CancellationToken ct)
     {
         var distinctIds = tagIds.Distinct().ToList();
         if (distinctIds.Count == 0)
@@ -2104,7 +2332,16 @@ public static class ApiEndpoints
             .Select(t => new { t.Id, t.TagGroupId })
             .ToListAsync(ct);
         if (tags.Count != distinctIds.Count)
+        {
+            // Log the specific missing IDs so a 400 to the client has a paper
+            // trail. Helps distinguish "client sent wrong ID" from "tag was
+            // deleted between the page load and this request".
+            var missing = distinctIds.Except(tags.Select(t => t.Id)).ToArray();
+            logger.LogWarning(
+                "Video {VideoId} tag-set update rejected — tag IDs not found: {MissingTagIds}",
+                video.Id, missing);
             return "One or more tag IDs not found.";
+        }
 
         // Enforce AllowMultiple = false where applicable.
         var groupsTouched = tags.Select(t => t.TagGroupId).Distinct().ToList();
@@ -2115,7 +2352,12 @@ public static class ApiEndpoints
         foreach (var grp in perGroup)
         {
             if (singleValueGroups.Contains(grp.Key) && grp.Count() > 1)
+            {
+                logger.LogWarning(
+                    "Video {VideoId} tag-set update rejected — TagGroup {TagGroupId} is single-value but request supplied {TagCount} tags",
+                    video.Id, grp.Key, grp.Count());
                 return $"TagGroup {grp.Key} does not allow multiple tags per video.";
+            }
         }
 
         video.VideoTags.Clear();
@@ -2126,7 +2368,7 @@ public static class ApiEndpoints
 
     private static async Task ReplaceVideoPropertiesAsync(
         VideoOrganizerDbContext db, Video video,
-        IReadOnlyList<PropertyValueWrite> values, CancellationToken ct)
+        IReadOnlyList<PropertyValueWrite> values, ILogger logger, CancellationToken ct)
     {
         var ids = values.Select(v => v.PropertyDefinitionId).Distinct().ToList();
         var defs = await db.PropertyDefinitions
@@ -2134,6 +2376,16 @@ public static class ApiEndpoints
             .Select(p => p.Id)
             .ToListAsync(ct);
         var validIds = new HashSet<Guid>(defs);
+
+        // Identify dropped IDs once — values may contain duplicates that we
+        // don't want to log multiple times.
+        var droppedIds = ids.Where(id => !validIds.Contains(id)).ToArray();
+        if (droppedIds.Length > 0)
+        {
+            logger.LogWarning(
+                "Video {VideoId} property update silently dropped {DroppedCount} unknown/non-Video-scoped PropertyDefinitionIds: {DroppedIds}",
+                video.Id, droppedIds.Length, droppedIds);
+        }
 
         video.PropertyValues.Clear();
         foreach (var w in values)
@@ -2149,7 +2401,7 @@ public static class ApiEndpoints
 
     private static async Task ReplaceTagPropertiesAsync(
         VideoOrganizerDbContext db, Tag tag,
-        IReadOnlyList<PropertyValueWrite> values, CancellationToken ct)
+        IReadOnlyList<PropertyValueWrite> values, ILogger logger, CancellationToken ct)
     {
         var ids = values.Select(v => v.PropertyDefinitionId).Distinct().ToList();
         var defs = await db.PropertyDefinitions
@@ -2159,6 +2411,14 @@ public static class ApiEndpoints
             .Select(p => p.Id)
             .ToListAsync(ct);
         var validIds = new HashSet<Guid>(defs);
+
+        var droppedIds = ids.Where(id => !validIds.Contains(id)).ToArray();
+        if (droppedIds.Length > 0)
+        {
+            logger.LogWarning(
+                "Tag {TagId} property update silently dropped {DroppedCount} unknown/wrong-scope/wrong-group PropertyDefinitionIds: {DroppedIds}",
+                tag.Id, droppedIds.Length, droppedIds);
+        }
 
         tag.PropertyValues.Clear();
         foreach (var w in values)

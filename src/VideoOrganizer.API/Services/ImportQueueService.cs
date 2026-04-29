@@ -54,7 +54,20 @@ public sealed class ImportQueueService : BackgroundService
     // success the job will be picked up in FIFO order. The caller should
     // already have created the job in the tracker via StartJob() so the
     // job is visible to /api/import/jobs as "queued" until we pull it.
-    public bool Enqueue(QueuedImport item) => _channel.Writer.TryWrite(item);
+    public bool Enqueue(QueuedImport item)
+    {
+        var ok = _channel.Writer.TryWrite(item);
+        if (!ok)
+        {
+            // The only way TryWrite fails on an unbounded channel is if the
+            // writer has been completed — i.e. the host is shutting down.
+            // Surface it so the orphaned job in the tracker has a paper trail.
+            _logger.LogWarning(
+                "Enqueue refused for import job {JobId} — queue is closed (shutdown in progress?)",
+                item.JobId);
+        }
+        return ok;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

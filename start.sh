@@ -17,8 +17,8 @@ else
   exit 1
 fi
 
-log compose "starting postgres"
-docker compose up -d postgres
+log compose "starting postgres + seq"
+docker compose up -d postgres seq
 wait_postgres
 
 start_bg api dotnet run --project src/VideoOrganizer.API
@@ -26,5 +26,6 @@ start_bg ui  bash -c 'cd src/VideoOrganizer.SvelteUI && npm run dev'
 
 log done "API:  http://localhost:5098  (Swagger at /swagger)"
 log done "UI:   http://localhost:5173  (Vite proxies /api to :5098)"
+log done "Seq:  http://localhost:5341  (structured logs)"
 log done "Logs: tail -f $RUN_DIR/api.log  |  tail -f $RUN_DIR/ui.log"
 log done "Stop: ./stop.sh"

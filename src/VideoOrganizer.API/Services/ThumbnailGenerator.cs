@@ -90,6 +90,14 @@ public class ThumbnailGenerator : IThumbnailGenerator
         vttBuilder.AppendLine("WEBVTT");
         vttBuilder.AppendLine();
 
+        // Track partial-success scenarios so the completion log can flag
+        // a sprite that was generated with gaps. Without these counters
+        // a video with half its frames missing looks identical to a
+        // clean run in Seq.
+        var extractionFailures = 0;
+        var assemblyFailures = 0;
+        var assemblyMissingFiles = 0;
+
         // Extract thumbnails
         for (int i = 0; i < thumbnailCount; i++)
         {
@@ -121,7 +129,9 @@ public class ThumbnailGenerator : IThumbnailGenerator
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to generate thumbnail at {Timestamp}", timestamp);
+                _logger.LogError(ex, "Failed to generate thumbnail {Index}/{Total} at {Timestamp} for video {VideoId}",
+                    i + 1, thumbnailCount, timestamp, videoId);
+                extractionFailures++;
             }
         }
 
@@ -137,7 +147,13 @@ public class ThumbnailGenerator : IThumbnailGenerator
             for (int i = 0; i < thumbnailPaths.Count; i++)
             {
                 if (!File.Exists(thumbnailPaths[i]))
+                {
+                    // ffmpeg said success but the output isn't on disk —
+                    // rare but worth knowing about because the sprite will
+                    // have a black tile here.
+                    assemblyMissingFiles++;
                     continue;
+                }
 
                 try
                 {
@@ -159,12 +175,25 @@ public class ThumbnailGenerator : IThumbnailGenerator
                         vttBuilder.AppendLine();
                     }
 
-                    // Clean up individual thumbnail
-                    File.Delete(thumbnailPaths[i]);
+                    // Clean up individual thumbnail. A delete failure here
+                    // (file in use, AV scan, etc.) doesn't break the sprite,
+                    // but it leaks a temp file — log so disk-bloat is debuggable.
+                    try
+                    {
+                        File.Delete(thumbnailPaths[i]);
+                    }
+                    catch (Exception delEx)
+                    {
+                        _logger.LogWarning(delEx,
+                            "Failed to delete temp thumbnail {Path} for video {VideoId} (sprite still generated correctly)",
+                            thumbnailPaths[i], videoId);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to process thumbnail {Index}", i);
+                    _logger.LogError(ex, "Failed to process thumbnail {Index} ({Path}) for video {VideoId}",
+                        i, thumbnailPaths[i], videoId);
+                    assemblyFailures++;
                 }
             }
 
@@ -174,7 +203,24 @@ public class ThumbnailGenerator : IThumbnailGenerator
             var vttContent = vttBuilder.ToString();
             await File.WriteAllTextAsync(vttFilePath, vttContent, ct);
 
-            _logger.LogInformation("Successfully generated sprite image and VTT file for video {VideoId}", videoId);
+            // Promote the completion log to Warning when any frame went
+            // missing — the sprite is still usable but visually patchy, and
+            // a regression that takes the failure rate from 0 to N% needs
+            // to be greppable.
+            var totalFailed = extractionFailures + assemblyFailures + assemblyMissingFiles;
+            if (totalFailed > 0)
+            {
+                _logger.LogWarning(
+                    "Generated sprite + VTT for video {VideoId} with gaps — {Generated}/{Total} frames usable ({ExtractionFailures} ffmpeg failures, {AssemblyFailures} assembly failures, {MissingFiles} missing files). Sprite will have black tiles.",
+                    videoId, thumbnailCount - totalFailed, thumbnailCount,
+                    extractionFailures, assemblyFailures, assemblyMissingFiles);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Generated sprite + VTT for video {VideoId} ({FrameCount} frames at {IntervalSeconds}s spacing)",
+                    videoId, thumbnailCount, intervalSeconds);
+            }
 
             return (spriteImagePath, vttContent);
         }

@@ -24,6 +24,7 @@ Copy-Item .env.example .env   # then edit .env (set POSTGRES_PASSWORD at minimum
 UI:        <http://localhost:5173>
 API:       <http://localhost:5098>
 Swagger:   <http://localhost:5098/swagger>
+Seq:       <http://localhost:5341>  (structured log viewer — dev only)
 
 Stop everything with `./stop.sh` (or `.\stop.ps1` on Windows).
 
@@ -106,6 +107,17 @@ Sourced by the three scripts. Holds shared helpers: `is_windows`, `kill_tree`, `
 tail -f .run/api.log     # API output
 tail -f .run/ui.log      # SvelteKit dev server output
 ```
+
+For structured browsing — filter by level, source context, or any logged property — point a browser at <http://localhost:5341>. The API ships logs to the dockerized Seq container whenever `Logging:Seq:ServerUrl` is set AND the host is running in the Development environment; both gates fire in `Program.cs`, so production builds never ship logs off-host. The in-memory `/logs` page (48-hour retention) keeps working in both environments.
+
+The Seq config lives in `appsettings.Development.json` (gitignored — same per-developer convention as the log levels). On a fresh checkout, copy `appsettings.Development.example.json` next to it:
+
+```bash
+cp src/VideoOrganizer.API/appsettings.Development.example.json \
+   src/VideoOrganizer.API/appsettings.Development.json
+```
+
+To turn Seq off without ripping it out, blank `Logging:Seq:ServerUrl` in your `appsettings.Development.json` and the API stops shipping logs on next restart. The container can keep running or be removed from `docker-compose.yml`.
 
 ---
 

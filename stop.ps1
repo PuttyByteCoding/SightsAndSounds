@@ -7,7 +7,7 @@ Set-Location $RepoRoot
 Stop-Pidfile -Name ui
 Stop-Pidfile -Name api
 
-Log compose "stopping postgres container"
-& docker compose stop postgres
+Log compose "stopping postgres + seq containers"
+& docker compose stop postgres seq
 
 Log done "all stopped"

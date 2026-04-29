@@ -25,8 +25,8 @@ log reset "stopping any existing services"
 log reset "tearing down postgres + volume"
 docker compose down -v
 
-log compose "starting fresh postgres"
-docker compose up -d postgres
+log compose "starting fresh postgres + seq"
+docker compose up -d postgres seq
 wait_postgres
 
 start_bg api dotnet run --project src/VideoOrganizer.API

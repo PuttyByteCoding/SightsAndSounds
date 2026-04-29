@@ -199,7 +199,17 @@ public sealed class Md5BackfillService : BackgroundService
                 var db = scope.ServiceProvider.GetRequiredService<VideoOrganizerDbContext>();
 
                 var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == id, ct);
-                if (video == null) continue; // user deleted it mid-flight
+                if (video == null)
+                {
+                    // Video was deleted between the queue load and the hash
+                    // compute. The MD5 we just calculated is dropped on the
+                    // floor — log so the queue's "processed" counter doesn't
+                    // look mysteriously inflated against the DB.
+                    _logger.LogDebug(
+                        "MD5 backfill skipped {VideoId} ({Path}) — row was deleted mid-flight, hash discarded",
+                        id, path);
+                    continue;
+                }
 
                 var existingDuplicate = await db.Videos
                     .AsNoTracking()

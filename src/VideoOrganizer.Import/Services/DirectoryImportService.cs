@@ -80,6 +80,10 @@ public class DirectoryImportService
 
         const int batchSize = 50;
         var added = 0;
+        // Roll-up counters for the end-of-import log so operators don't have
+        // to grep per-file Debug entries to answer "how many were duplicates?"
+        var skippedAsDuplicate = 0;
+        var failed = 0;
 
         for (var i = 0; i < files.Count; i += batchSize)
         {
@@ -115,6 +119,7 @@ public class DirectoryImportService
                         {
                             _logger.LogDebug("Skipping existing file {File}", file);
                             fileStatusReporter?.Invoke(file, fileSize, ImportFileStatus.Skipped, fileSize, fileSize, "already imported");
+                            skippedAsDuplicate++;
                             continue;
                         }
                     }
@@ -122,6 +127,7 @@ public class DirectoryImportService
                     {
                         _logger.LogWarning("Timed out checking existing file {File}", file);
                         fileStatusReporter?.Invoke(file, fileSize, ImportFileStatus.Failed, fileSize, fileSize, "timed out checking for existing row");
+                        failed++;
                         continue;
                     }
 
@@ -169,8 +175,10 @@ public class DirectoryImportService
                     if (video.Duration <= TimeSpan.Zero)
                     {
                         _logger.LogWarning(
-                            "Skipping import of {File}: duration is 0 or unknown.", file);
+                            "Skipping import of {File} (size {FileSize} bytes): duration is 0 or unknown — file is probably corrupt or truncated, or ffprobe couldn't read it.",
+                            file, fileSize);
                         fileStatusReporter?.Invoke(file, fileSize, ImportFileStatus.Failed, fileSize, fileSize, "duration is 0 (probably corrupt or truncated)");
+                        failed++;
                         continue;
                     }
 
@@ -192,6 +200,7 @@ public class DirectoryImportService
                 {
                     _logger.LogError(ex, "Failed to import file {File}", file);
                     fileStatusReporter?.Invoke(file, fileSize, ImportFileStatus.Failed, fileSize, fileSize, ex.Message);
+                    failed++;
                 }
             }
 
@@ -207,15 +216,19 @@ public class DirectoryImportService
                 _logger.LogWarning("Timed out saving batch starting at index {Index}", i);
                 foreach (var entry in batchAdds)
                     fileStatusReporter?.Invoke(entry.FilePath, entry.FileSize, ImportFileStatus.Failed, entry.FileSize, entry.FileSize, "timed out saving batch to database");
+                failed += batchAdds.Count;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to save batch starting at index {Index}", i);
                 foreach (var entry in batchAdds)
                     fileStatusReporter?.Invoke(entry.FilePath, entry.FileSize, ImportFileStatus.Failed, entry.FileSize, entry.FileSize, ex.Message);
+                failed += batchAdds.Count;
             }
         }
 
-        _logger.LogInformation("Directory import complete. Total added: {Added}", added);
+        _logger.LogInformation(
+            "Directory import complete for {Path}: {Added} added, {SkippedAsDuplicate} skipped as duplicates, {Failed} failed of {Total} discovered files.",
+            directoryPath, added, skippedAsDuplicate, failed, files.Count);
     }
 }
