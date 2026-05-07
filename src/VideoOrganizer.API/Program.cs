@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
+using Scalar.AspNetCore;
 using VideoOrganizer.Infrastructure.Data;
 using Npgsql.EntityFrameworkCore.PostgreSQL;
 using VideoOrganizer.API;
@@ -193,15 +194,32 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Swagger/OpenAPI UI
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
+// OpenAPI document generation (first-party, replaces Swashbuckle).
+// Scalar wraps it for the interactive UI (mapped below at /swagger).
+builder.Services.AddOpenApi(options =>
 {
-    // Domain.Models and Shared.Dto each define same-named enums (CameraTypes,
-    // VideoQuality, VideoBlockTypes). Default schemaId uses just the bare type
-    // name, so the two collide and break /swagger/v1/swagger.json. Use full
-    // names so each enum lives under its own schemaId.
-    c.CustomSchemaIds(t => t.FullName);
+    // Domain.Models and Shared.Dto each define same-named enums
+    // (CameraTypes, VideoQuality, VideoCodec, VideoDimensionFormat).
+    // The default schema-id strategy uses Type.Name, so the two
+    // collide and produce a broken document with $refs pointing at
+    // the wrong schema. Disambiguate on FullName instead — '.' isn't
+    // a legal char inside a $ref path so we replace it with '_'.
+    options.CreateSchemaReferenceId = jsonTypeInfo =>
+        jsonTypeInfo.Type.FullName?.Replace('.', '_') ?? jsonTypeInfo.Type.Name;
+
+    // The default Info.Title is the assembly name, which renders as the
+    // unhelpful bare "API" header in Scalar. Set something meaningful so
+    // the UI and any spec consumer (codegen, Postman import, etc.) get a
+    // sensible identifier.
+    options.AddDocumentTransformer((document, _, _) =>
+    {
+        document.Info.Title = "VideoOrganizer API";
+        document.Info.Version = "v1";
+        document.Info.Description =
+            "Self-hosted media library manager — videos, tags, custom properties, " +
+            "background workers (thumbnail sprites + Md5 dedup), and bulk import.";
+        return Task.CompletedTask;
+    });
 });
 
 var app = builder.Build();
@@ -264,89 +282,29 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-app.UseSwagger();
-app.UseSwaggerUI(c =>
+// Serve the OpenAPI document at /openapi/v1.json (default) and the
+// Scalar interactive UI at /swagger so the SvelteKit /api-docs iframe
+// and the Vite /swagger proxy keep working without changes.
+app.MapOpenApi();
+app.MapScalarApiReference("/swagger", options =>
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "VideoOrganizer API v1");
-    c.RoutePrefix = "swagger";
-    // Dark theme to match the Svelte app the iframe sits in. Overrides
-    // Swagger UI's default light palette via a <style> block injected into
-    // the head; keeping it inline avoids shipping a second static file.
-    c.HeadContent = """
-        <style>
-        :root { color-scheme: dark; }
-        body, .swagger-ui { background: #1f2937; color: #e5e7eb; }
-        .swagger-ui, .swagger-ui .info, .swagger-ui .info .title, .swagger-ui .info p,
-        .swagger-ui .opblock-tag, .swagger-ui .opblock-tag small,
-        .swagger-ui .opblock .opblock-summary-path, .swagger-ui .opblock .opblock-summary-description,
-        .swagger-ui .opblock-description-wrapper p, .swagger-ui .opblock-external-docs-wrapper p,
-        .swagger-ui .opblock-title_normal p, .swagger-ui .responses-inner h4, .swagger-ui .responses-inner h5,
-        .swagger-ui .parameter__name, .swagger-ui .parameter__type, .swagger-ui .parameter__in,
-        .swagger-ui .parameter__deprecated, .swagger-ui .response-col_status, .swagger-ui .response-col_description,
-        .swagger-ui table thead tr th, .swagger-ui table thead tr td, .swagger-ui .tab li,
-        .swagger-ui .model, .swagger-ui .model-title, .swagger-ui section.models h4,
-        .swagger-ui label, .swagger-ui .markdown p, .swagger-ui .renderedMarkdown p,
-        .swagger-ui h1, .swagger-ui h2, .swagger-ui h3, .swagger-ui h4, .swagger-ui h5 { color: #e5e7eb; }
-        .swagger-ui .topbar { background: #111827; border-bottom: 1px solid #374151; }
-        .swagger-ui .scheme-container { background: #1f2937; box-shadow: none; border-bottom: 1px solid #374151; }
-        .swagger-ui .opblock { background: #374151; border-color: #4b5563; box-shadow: none; }
-        .swagger-ui .opblock .opblock-summary { border-color: #4b5563; }
-        .swagger-ui section.models { background: #374151; border-color: #4b5563; }
-        .swagger-ui section.models.is-open h4 { border-bottom-color: #4b5563; }
-        .swagger-ui .model-box { background: rgba(0,0,0,0.2); }
-        .swagger-ui table tbody tr td { border-bottom-color: #4b5563; color: #e5e7eb; }
-        .swagger-ui input[type=text], .swagger-ui input[type=email], .swagger-ui input[type=password],
-        .swagger-ui input[type=search], .swagger-ui input[type=number], .swagger-ui textarea,
-        .swagger-ui select { background: #1f2937; color: #e5e7eb; border-color: #4b5563; }
-        .swagger-ui .btn { background: #374151; color: #e5e7eb; border-color: #4b5563; box-shadow: none; }
-        .swagger-ui .btn.cancel { background: #4b5563; color: #e5e7eb; border-color: #6b7280; }
-        .swagger-ui .btn.execute { background: #6366f1; color: #fff; border-color: #6366f1; }
-        .swagger-ui .btn.authorize { background: #374151; color: #34d399; border-color: #34d399; }
-        .swagger-ui .markdown code, .swagger-ui .renderedMarkdown code { background: rgba(255,255,255,0.08); color: #f9a8d4; }
-        .swagger-ui .highlight-code, .swagger-ui pre, .swagger-ui .microlight { background: #111827 !important; color: #e5e7eb !important; }
-        .swagger-ui .response-col_links { color: #9ca3af; }
-        .swagger-ui svg:not(:root) { fill: #e5e7eb; }
-        .swagger-ui .arrow { fill: #e5e7eb; }
-        .swagger-ui .dialog-ux .modal-ux { background: #1f2937; border-color: #4b5563; }
-        .swagger-ui .dialog-ux .modal-ux-header h3, .swagger-ui .dialog-ux .modal-ux-content { color: #e5e7eb; }
-        .swagger-ui .auth-container { background: #374151; border-color: #4b5563; }
-        .swagger-ui .auth-container h4 { color: #e5e7eb; }
-        .swagger-ui .errors-wrapper { background: #422; border-color: #d33; }
+    options
+        .WithTitle("VideoOrganizer API")
+        // Mars is Scalar's dark default; matches the surrounding SvelteKit
+        // app's theme. Was previously ~70 lines of inline Swagger UI CSS.
+        .WithTheme(ScalarTheme.Mars)
+        // Without this, Scalar derives the spec URL from its own mount
+        // path (`/swagger/openapi/v1.json`) instead of the actual route
+        // MapOpenApi() registered (`/openapi/v1.json`), so the UI loads
+        // but renders an empty document.
+        .WithOpenApiRoutePattern("/openapi/{documentName}.json");
 
-        /* Verb badges — soften the default loud Swagger colours to match the
-           site's dim soft fill + brighter border pattern. Each verb gets a
-           tinted bg (/20), a brighter border (/45), and a light text shade.
-           The opblock container border picks up the same hue. */
-        .swagger-ui .opblock-summary-method { background: transparent !important; min-width: 80px; text-align: center; padding: 4px 0; border-radius: 4px; border: 1px solid; font-weight: 700; }
-        .swagger-ui .opblock { border-left-width: 3px; }
-
-        .swagger-ui .opblock.opblock-get { background: rgba(59,130,246,0.05); border-color: rgba(59,130,246,0.45); }
-        .swagger-ui .opblock.opblock-get .opblock-summary { border-color: rgba(59,130,246,0.30); }
-        .swagger-ui .opblock.opblock-get .opblock-summary-method { background: rgba(59,130,246,0.20) !important; border-color: rgba(59,130,246,0.55); color: rgb(147,197,253); }
-
-        .swagger-ui .opblock.opblock-post { background: rgba(34,197,94,0.05); border-color: rgba(34,197,94,0.45); }
-        .swagger-ui .opblock.opblock-post .opblock-summary { border-color: rgba(34,197,94,0.30); }
-        .swagger-ui .opblock.opblock-post .opblock-summary-method { background: rgba(34,197,94,0.20) !important; border-color: rgba(34,197,94,0.55); color: rgb(134,239,172); }
-
-        .swagger-ui .opblock.opblock-put { background: rgba(139,92,246,0.05); border-color: rgba(139,92,246,0.45); }
-        .swagger-ui .opblock.opblock-put .opblock-summary { border-color: rgba(139,92,246,0.30); }
-        .swagger-ui .opblock.opblock-put .opblock-summary-method { background: rgba(139,92,246,0.20) !important; border-color: rgba(139,92,246,0.55); color: rgb(196,181,253); }
-
-        .swagger-ui .opblock.opblock-delete { background: rgba(239,68,68,0.05); border-color: rgba(239,68,68,0.45); }
-        .swagger-ui .opblock.opblock-delete .opblock-summary { border-color: rgba(239,68,68,0.30); }
-        .swagger-ui .opblock.opblock-delete .opblock-summary-method { background: rgba(239,68,68,0.20) !important; border-color: rgba(239,68,68,0.55); color: rgb(252,165,165); }
-
-        .swagger-ui .opblock.opblock-patch { background: rgba(245,158,11,0.05); border-color: rgba(245,158,11,0.45); }
-        .swagger-ui .opblock.opblock-patch .opblock-summary { border-color: rgba(245,158,11,0.30); }
-        .swagger-ui .opblock.opblock-patch .opblock-summary-method { background: rgba(245,158,11,0.20) !important; border-color: rgba(245,158,11,0.55); color: rgb(252,211,77); }
-
-        .swagger-ui .opblock.opblock-head, .swagger-ui .opblock.opblock-options { background: rgba(168,162,158,0.05); border-color: rgba(168,162,158,0.45); }
-        .swagger-ui .opblock.opblock-head .opblock-summary, .swagger-ui .opblock.opblock-options .opblock-summary { border-color: rgba(168,162,158,0.30); }
-        .swagger-ui .opblock.opblock-head .opblock-summary-method, .swagger-ui .opblock.opblock-options .opblock-summary-method { background: rgba(168,162,158,0.20) !important; border-color: rgba(168,162,158,0.55); color: rgb(214,211,209); }
-        </style>
-        """;
+    // Hide the "Open API Client" button. By default it opens the spec in
+    // Scalar's hosted client at client.scalar.com — undesirable for a
+    // self-hosted dev tool (sends our local URL to a third-party site).
+    // The in-page "Try It Out" panel still works for hands-on testing.
+    options.HideClientButton = true;
 });
-
 
 // Disable HTTPS redirection in Development to avoid container redirect issues
 if (!app.Environment.IsDevelopment())

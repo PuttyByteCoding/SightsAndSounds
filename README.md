@@ -23,8 +23,9 @@ Copy-Item .env.example .env   # then edit .env (set POSTGRES_PASSWORD at minimum
 
 UI:        <http://localhost:5173>
 API:       <http://localhost:5098>
-Swagger:   <http://localhost:5098/swagger>
-Seq:       <http://localhost:5341>  (structured log viewer — dev only)
+Scalar:    <http://localhost:5098/swagger>     (interactive API reference)
+OpenAPI:   <http://localhost:5098/openapi/v1.json>  (raw spec)
+Seq:       <http://localhost:5341>             (structured log viewer — dev only)
 
 Stop everything with `./stop.sh` (or `.\stop.ps1` on Windows).
 
