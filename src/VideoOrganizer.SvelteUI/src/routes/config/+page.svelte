@@ -477,34 +477,56 @@
             </td>
           </tr>
           <tr>
-            <td><kbd class="kbd kbd-sm">C</kbd></td>
+            <td>
+              <kbd class="kbd kbd-sm">Ctrl</kbd>+<kbd class="kbd kbd-sm">⇧</kbd>+<kbd class="kbd kbd-sm">[</kbd> /
+              <kbd class="kbd kbd-sm">Ctrl</kbd>+<kbd class="kbd kbd-sm">⇧</kbd>+<kbd class="kbd kbd-sm">]</kbd>
+            </td>
             <td>
               Start / end a <span class="font-semibold">clip</span>.
-              First <kbd class="kbd kbd-xs">C</kbd> captures the clip's
-              in-point at the current time; second <kbd class="kbd kbd-xs">C</kbd>
-              closes the range and saves it as a new video row with
-              <code>IsClip = true</code>. Tags are inherited from the parent.
-              Playing the clip auto-seeks to the in-point and loops at the
-              out-point. Filter your library by the Clip flag to see just
-              your clips.
+              <kbd class="kbd kbd-xs">Ctrl</kbd>+<kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">[</kbd>
+              captures the clip's in-point and pins the scrubber visible.
+              Auto-skip of existing Hide blocks is suspended so the in-point
+              and end-point can both be reached.
+              <kbd class="kbd kbd-xs">Ctrl</kbd>+<kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">]</kbd>
+              commits and saves a new video row with <code>IsClip = true</code>;
+              <kbd class="kbd kbd-xs">Esc</kbd> cancels. Tags are inherited
+              from the parent. Playing the clip auto-seeks to the in-point
+              and loops at the out-point. Filter your library by the Clip
+              flag to see just your clips.
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <kbd class="kbd kbd-sm">⇧</kbd>+<kbd class="kbd kbd-sm">[</kbd> /
+              <kbd class="kbd kbd-sm">⇧</kbd>+<kbd class="kbd kbd-sm">]</kbd>
+            </td>
+            <td>
+              <span class="font-semibold">Block editor.</span>
+              <kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">[</kbd>
+              captures the start of a do-not-play segment at the current
+              time and pins the scrubber visible. Auto-skip is suspended
+              while you're picking the end so the entire timeline is
+              scrubbable. <kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">]</kbd>
+              commits the block; <kbd class="kbd kbd-xs">Esc</kbd> cancels.
+              Overlapping or directly-adjacent blocks merge into one. Blocks
+              render as red strips on the scrubber and in a timestamped
+              list below it for jump-to and delete.
             </td>
           </tr>
           <tr>
             <td>
               <kbd class="kbd kbd-sm">[</kbd> /
               <kbd class="kbd kbd-sm">]</kbd> /
-              <kbd class="kbd kbd-sm">M</kbd>
+              <kbd class="kbd kbd-sm">\</kbd>
             </td>
             <td>
-              <span class="font-semibold">Block editor.</span>
-              <kbd class="kbd kbd-xs">[</kbd> marks the start of a do-not-play
-              segment at the current time (auto-enters mark mode);
-              <kbd class="kbd kbd-xs">]</kbd> closes it at the current time.
-              Blocks show up as red strips on the scrubber and in a list
-              below it for deletion. <kbd class="kbd kbd-xs">M</kbd> toggles
-              mark mode without creating a block — useful for scrubbing
-              through existing blocks to review them. In normal playback
-              (mark mode off), the player auto-seeks past every block.
+              <span class="font-semibold">Video size.</span>
+              <kbd class="kbd kbd-xs">[</kbd> shrinks,
+              <kbd class="kbd kbd-xs">]</kbd> enlarges
+              (cap 2× the native pixel width).
+              <kbd class="kbd kbd-xs">\</kbd> resets to fit-to-column.
+              The current scale shows next to the Download button and is
+              click-to-reset.
             </td>
           </tr>
           <tr>

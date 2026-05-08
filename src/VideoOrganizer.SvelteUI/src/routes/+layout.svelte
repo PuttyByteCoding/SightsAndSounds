@@ -72,10 +72,10 @@
     { keys: ['R'],       label: 'Clear Needs Review' },
     { keys: ['F'],       label: 'Toggle Favorite' },
     { keys: ['K'],       label: 'Add bookmark' },
-    { keys: ['C'],       label: 'Mark clip start/end' },
-    { keys: ['['],       label: 'Start block' },
-    { keys: [']'],       label: 'End block' },
-    { keys: ['M'],       label: 'Toggle mark mode' },
+    // The bracket cluster shares the [/] keys; modifiers pick the layer.
+    { keys: ['⇧+[', '⇧+]'],   label: 'Start / End block' },
+    { keys: ['⌃⇧+[', '⌃⇧+]'], label: 'Start / End clip' },
+    { keys: ['[', ']'],   label: 'Shrink / Enlarge video' },
     { keys: ['\\'],      label: 'Fit video to column' }
   ];
 

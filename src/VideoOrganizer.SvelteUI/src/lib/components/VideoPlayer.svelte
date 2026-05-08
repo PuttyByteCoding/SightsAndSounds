@@ -174,11 +174,10 @@
   let watchBeaconFiredFor: string | null = null;
   const WATCH_BEACON_MS = 10_000;
 
-  // Mark-mode: when true, auto-skip over DoNotShow blocks is disabled so the
-  // user can scrub through "hidden" regions to edit them. `pendingBlockStart`
-  // is the in-flight start time while the user is defining a new block — B
-  // once marks the start, B again commits the block. Both reset per video.
-  let markMode = $state(false);
+  // `pendingBlockStart` is the in-flight start time while the user is
+  // defining a new block — Shift+[ captures the start, Shift+] commits.
+  // Hide blocks auto-skip on every play tick; review/edit happens via
+  // the block list (jump-to + delete) under the player.
   let pendingBlockStart = $state<number | null>(null);
 
   // Clip-in-progress: C captures the start, C again calls the API to create
@@ -205,9 +204,14 @@
   // Resets on every video change so a tweak for one file doesn't stick.
   let videoWidthPx = $state<number | null>(null);
   let videoNativeWidth = $state<number | null>(null);
+  // Native height tracked alongside width so we can compute the actual
+  // pillarboxed/letterboxed content rectangle when the <video> box is
+  // larger than the source's aspect ratio allows. Drives scrubber width.
+  let videoNativeHeight = $state<number | null>(null);
   // Live-updated via ResizeObserver so the size indicator tracks any change —
   // zoom keys, window resize, column resize with the Edit Tags panel, etc.
   let renderedWidth = $state(0);
+  let renderedHeight = $state(0);
   const MAX_ZOOM = 2; // never render larger than 2x the native pixel width
   const ZOOM_STEP = 1.1;
 
@@ -215,6 +219,45 @@
 
   const videoUrl = $derived(video ? api.streamUrl(video.id) : '');
   const isMarkedDelete = $derived(video?.markedForDeletion ?? false);
+
+  // True while Shift+[ or Ctrl+Shift+[ has fired but the corresponding
+  // close key hasn't. Drives auto-skip suppression and scrubber-pinning
+  // so the user can see the whole timeline while picking the end point.
+  const definingRange = $derived(pendingBlockStart !== null || pendingClipStart !== null);
+
+  // Width of the actual rendered video content (not the <video> box).
+  // When the box is letterboxed/pillarboxed by max-height (or zoomed
+  // beyond the aspect rectangle), the content draws inside a smaller
+  // rectangle than the element occupies. Scrubber pins to this width so
+  // it never extends past the picture. Falls back to box width while
+  // metadata is still loading.
+  const videoContentWidth = $derived.by<number | null>(() => {
+    if (renderedWidth <= 0) return null;
+    if (!videoNativeWidth || !videoNativeHeight || renderedHeight <= 0) {
+      return renderedWidth;
+    }
+    const aspect = videoNativeWidth / videoNativeHeight;
+    const widthFromHeight = Math.round(renderedHeight * aspect);
+    return Math.min(renderedWidth, widthFromHeight);
+  });
+
+  // Fit-mode max width derived from the host's height cap. When the
+  // host (browse page) passes a `maxVideoHeightPx` driven by its
+  // drag-resize divider, we want the video to track that value EXACTLY
+  // — no pillarbox bars on either side. Setting the element's width to
+  // `heightCap × aspect` makes the height auto-derive (via aspect
+  // ratio) to match the cap, so the box and the content rectangle are
+  // the same size: zero bars. Falls back to 2× native (the original
+  // ceiling) when no height cap is provided or metadata isn't loaded.
+  const fitMaxWidth = $derived.by<number | null>(() => {
+    if (videoWidthPx !== null) return null; // explicit zoom takes over
+    if (!videoNativeWidth) return null;
+    const cap2x = videoNativeWidth * MAX_ZOOM;
+    if (!videoNativeHeight || maxVideoHeightPx === null) return cap2x;
+    const aspect = videoNativeWidth / videoNativeHeight;
+    const widthFromHeight = Math.round(maxVideoHeightPx * aspect);
+    return Math.min(cap2x, widthFromHeight);
+  });
 
   // Rendered size as a percentage of the native (intrinsic) video dimensions.
   // null while we haven't yet measured native width (metadata not loaded) or
@@ -241,7 +284,7 @@
       videoDuration = 0;
       videoWidthPx = null;
       videoNativeWidth = null;
-      markMode = false;
+      videoNativeHeight = null;
       pendingBlockStart = null;
       pendingClipStart = null;
       clipError = null;
@@ -261,7 +304,7 @@
     videoDuration = 0;
     videoWidthPx = null;
     videoNativeWidth = null;
-    markMode = false;
+    videoNativeHeight = null;
     pendingBlockStart = null;
     pendingClipStart = null;
     clipError = null;
@@ -277,13 +320,18 @@
     });
   });
 
-  // Keep `renderedWidth` in sync with the video element's actual box so the
-  // size indicator responds to fit-mode layout changes (window resize, side
-  // panel toggling) as well as explicit zooms.
+  // Keep `renderedWidth` and `renderedHeight` in sync with the video
+  // element's actual box so the size indicator (width-based) and the
+  // scrubber-width derivation (height-based, via aspect ratio) both
+  // respond to fit-mode layout changes — window resize, side panel
+  // toggling, drag-resize divider — as well as explicit zooms.
   $effect(() => {
     if (!videoEl) return;
     const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) renderedWidth = Math.round(entry.contentRect.width);
+      for (const entry of entries) {
+        renderedWidth = Math.round(entry.contentRect.width);
+        renderedHeight = Math.round(entry.contentRect.height);
+      }
     });
     ro.observe(videoEl);
     return () => ro.disconnect();
@@ -375,10 +423,12 @@
       }
     }
 
-    // Auto-skip DoNotShow blocks during normal playback. Disabled while the
-    // user is editing blocks in mark mode so they can scrub through the
-    // "hidden" regions to review them.
-    if (!markMode && video && video.videoBlocks?.length > 0) {
+    // Auto-skip Hide blocks on every tick — UNLESS the user is mid-way
+    // through defining a new block or clip. While Shift+[ has fired but
+    // Shift+] hasn't, we leave the entire timeline visible so the user
+    // can scrub freely to find their end point. Same gate applies for
+    // clips so the in-point is reachable through any existing blocks.
+    if (!definingRange && video && video.videoBlocks?.length > 0) {
       const t = videoEl.currentTime;
       for (const b of video.videoBlocks) {
         if (b.videoBlockType !== 'hide') continue;
@@ -396,8 +446,11 @@
   function onVideoLoadedMetadata() {
     if (!videoEl) return;
     videoDuration = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
-    // Capture the intrinsic width so zoom / actual-size can reference it.
+    // Capture the intrinsic dimensions. Width drives zoom / actual-size;
+    // height pairs with width to derive aspect ratio so the scrubber can
+    // shrink to the actual content rect when the box is letterboxed.
     videoNativeWidth = videoEl.videoWidth > 0 ? videoEl.videoWidth : null;
+    videoNativeHeight = videoEl.videoHeight > 0 ? videoEl.videoHeight : null;
     // For clip rows, jump to the in-point so the viewer starts at the
     // highlighted range rather than the top of the source file.
     if (video?.isClip && video.clipStartSeconds !== null && video.clipStartSeconds !== undefined) {
@@ -445,26 +498,24 @@
 
   // --- Block editing --------------------------------------------------------
 
-  // Turn mark-mode on/off. Turning off drops any pending-but-unclosed block.
-  function toggleMarkMode() {
-    markMode = !markMode;
-    if (!markMode) pendingBlockStart = null;
-  }
-
-  // [ key — capture the start of a new do-not-play block at the current time
-  // and flip auto-skip off (mark mode) so the user can scrub freely to the
-  // end point. Pressing [ again before ] just moves the start marker.
+  // Shift+[ — capture the start of a new do-not-play block at the
+  // current time. Pressing Shift+[ again before Shift+] just moves the
+  // start marker. Hide blocks always auto-skip during playback; to
+  // review/edit one, jump to its timestamp from the block list and
+  // delete or trim it.
   function startBlock() {
     if (!video || !videoEl) return;
-    markMode = true;
     pendingBlockStart = videoEl.currentTime;
   }
 
-  // ] key — close the block at the current time. No-op if [ wasn't pressed
-  // first. Normalizes regardless of which end is earlier, and drops
-  // micro-blocks that almost certainly came from an accidental double-tap.
-  // VideoBlock offset/length are int seconds server-side; floor/ceil so the
-  // rounded block still fully covers the user's selection.
+  // Shift+] — close the block at the current time. No-op if Shift+[
+  // wasn't pressed first. Normalizes regardless of which end is earlier,
+  // and drops micro-blocks that almost certainly came from an accidental
+  // double-tap. VideoBlock offset/length are int seconds server-side;
+  // floor/ceil so the rounded block still fully covers the user's
+  // selection. Overlapping or directly-adjacent Hide blocks are merged
+  // into one — saves the user the bookkeeping and matches how playback
+  // already treats them (the auto-skip is range-based).
   function endBlock() {
     if (!video || !videoEl) return;
     if (pendingBlockStart === null) return;
@@ -476,9 +527,42 @@
     if (length < 0.25) return;
     const offsetInt = Math.floor(start);
     const lengthInt = Math.max(1, Math.ceil(end) - offsetInt);
-    video.videoBlocks = [
-      ...video.videoBlocks,
-      { offsetInSeconds: offsetInt, lengthInSeconds: lengthInt, videoBlockType: 'hide' }
+    const next: Block = {
+      offsetInSeconds: offsetInt,
+      lengthInSeconds: lengthInt,
+      videoBlockType: 'hide'
+    };
+    video.videoBlocks = mergeHideBlocks([...video.videoBlocks, next]);
+  }
+
+  // Collapse overlapping or touching Hide blocks into the smallest set
+  // of disjoint ranges. Non-Hide blocks (Clip / Other) pass through
+  // untouched — only Hide is range-coalesced. We use `<=` for the
+  // overlap check so two blocks with no gap between them merge too:
+  // [10..20] and [20..30] become [10..30].
+  function mergeHideBlocks(blocks: Block[]): Block[] {
+    const hides = blocks
+      .filter(b => b.videoBlockType === 'hide')
+      .map(b => ({ start: b.offsetInSeconds, end: b.offsetInSeconds + b.lengthInSeconds }))
+      .sort((a, b) => a.start - b.start);
+    const others = blocks.filter(b => b.videoBlockType !== 'hide');
+
+    const merged: Array<{ start: number; end: number }> = [];
+    for (const r of hides) {
+      const last = merged[merged.length - 1];
+      if (last && r.start <= last.end) {
+        if (r.end > last.end) last.end = r.end;
+      } else {
+        merged.push({ ...r });
+      }
+    }
+    return [
+      ...others,
+      ...merged.map<Block>(r => ({
+        offsetInSeconds: r.start,
+        lengthInSeconds: r.end - r.start,
+        videoBlockType: 'hide'
+      }))
     ];
   }
 
@@ -488,21 +572,29 @@
 
   // --- Clip authoring -------------------------------------------------------
 
-  // C key — first press captures the clip's in-point, second press hits the
-  // API to create the clip (tags inherited from parent). Refuses to run on a
-  // clip video since clip-of-clip isn't allowed.
-  async function markClipPoint() {
+  // Capture the clip's in-point (Ctrl+Shift+[). Refuses on a clip video
+  // since clip-of-clip isn't allowed. Pressing again before endClip just
+  // moves the start marker.
+  function startClip() {
     if (!video || !videoEl) return;
     if (video.isClip) {
       clipError = 'Cannot create a clip of a clip.';
       return;
     }
-    const t = videoEl.currentTime;
-    if (pendingClipStart === null) {
-      pendingClipStart = t;
-      clipError = null;
+    pendingClipStart = videoEl.currentTime;
+    clipError = null;
+  }
+
+  // Close the clip (Ctrl+Shift+]) and POST it to the API. Inherits tags
+  // from the parent. No-op if startClip wasn't pressed first.
+  async function endClip() {
+    if (!video || !videoEl) return;
+    if (video.isClip) {
+      clipError = 'Cannot create a clip of a clip.';
       return;
     }
+    if (pendingClipStart === null) return;
+    const t = videoEl.currentTime;
     const start = Math.min(pendingClipStart, t);
     const end = Math.max(pendingClipStart, t);
     pendingClipStart = null;
@@ -1031,6 +1123,15 @@
     // All other shortcuts pause on typing targets.
     if (isTypingTarget(e.target)) return;
 
+    // Escape — cancel any in-progress block or clip definition. Bound
+    // here (after the typing-target guard) so Esc inside a tag input
+    // still gets the input's normal blur/close behavior, not ours.
+    if (e.key === 'Escape' && (pendingBlockStart !== null || pendingClipStart !== null)) {
+      e.preventDefault();
+      cancelPendingBlock();
+      cancelPendingClip();
+      return;
+    }
     if (e.key === ' ') {
       e.preventDefault();
       togglePlayPause();
@@ -1055,16 +1156,20 @@
     // K — drop a bookmark at the current time. Default label is the
     // timestamp; user can rename it inline under the video.
     if (e.key === 'k' || e.key === 'K') { e.preventDefault(); addBookmark(); return; }
-    // C — clip start/end. First press captures the in-point, second press
-    // creates a new clip Video row on the server covering the range.
-    if (e.key === 'c' || e.key === 'C') { e.preventDefault(); await markClipPoint(); return; }
-    // Block editing: [ starts a do-not-play block at the current time,
-    // ] closes it. M toggles mark mode so existing blocks can be scrubbed
-    // through for review.
-    if (e.key === '[') { e.preventDefault(); startBlock(); return; }
-    if (e.key === ']') { e.preventDefault(); endBlock(); return; }
-    if (e.key === 'm' || e.key === 'M') { e.preventDefault(); toggleMarkMode(); return; }
-    // \ snaps the player back to fit-to-column size.
+    // Bracket cluster — three contexts share the [ / ] keys based on
+    // modifiers. Shift produces the shifted glyph (`{` / `}`), and the
+    // browser keeps that even when Ctrl is also held, so we discriminate
+    // on e.key + e.ctrlKey. Order matters: most-modified first.
+    //   Ctrl+Shift+[ / Ctrl+Shift+]  → Start / End clip (creates a new clip Video row)
+    //   Shift+[      / Shift+]       → Start / End block (do-not-play range inside this video)
+    //   [            / ]             → Shrink / enlarge the video element (capped at 2× native)
+    //   \                            → fit-to-column
+    if (e.key === '{' && e.ctrlKey) { e.preventDefault(); startClip(); return; }
+    if (e.key === '}' && e.ctrlKey) { e.preventDefault(); await endClip(); return; }
+    if (e.key === '{') { e.preventDefault(); startBlock(); return; }
+    if (e.key === '}') { e.preventDefault(); endBlock(); return; }
+    if (e.key === '[') { e.preventDefault(); zoomOut(); return; }
+    if (e.key === ']') { e.preventDefault(); zoomIn(); return; }
     if (e.key === '\\') { e.preventDefault(); fitSize(); return; }
     switch (e.key) {
       case '1': e.preventDefault(); seekBy(-playbackSettings.key1Seconds); break;
@@ -1127,7 +1232,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
     <div
       role="presentation"
-      class="relative group/player inline-block align-top {videoWidthPx === null ? 'w-full' : ''}"
+      class="relative group/player inline-block align-top"
       onmouseenter={() => (playerHovered = true)}
       onmouseleave={() => (playerHovered = false)}
     >
@@ -1136,12 +1241,28 @@
       autoplay
       muted
       loop
-      class="bg-black rounded cursor-pointer block {videoWidthPx === null ? 'w-full' : ''}"
+      class="bg-black rounded cursor-pointer block"
       style={[
+        // Width drives the size in every mode — we never set max-height
+        // here because that's what produced the black pillarbox bars.
+        // By picking the width that matches the desired height cap
+        // (heightCap × aspect, computed in fitMaxWidth above), the
+        // browser's intrinsic aspect-ratio handling sizes height to
+        // exactly the cap and the picture fills its own box — same way
+        // the zoom-in/zoom-out keys behave.
         videoWidthPx !== null
           ? `width: ${videoWidthPx}px;`
-          : videoNativeWidth !== null ? `max-width: ${videoNativeWidth * MAX_ZOOM}px;` : '',
-        `max-height: ${maxVideoHeightPx !== null ? maxVideoHeightPx + 'px' : '70vh'};`
+          : (fitMaxWidth !== null
+              ? `width: ${fitMaxWidth}px; max-width: 100%;`
+              // Pre-metadata or no host-provided cap: fall back to the
+              // original full-width / 70vh ceiling so we don't ship a
+              // 0-px video while waiting for loadedmetadata.
+              : `width: 100%; max-height: ${maxVideoHeightPx !== null ? maxVideoHeightPx + 'px' : '70vh'};`),
+        // Left-anchor the picture inside its box so any pillarbox bars
+        // (only possible during the pre-metadata fallback above now)
+        // sit on the right. The scrubber below also left-anchors, so
+        // the two stay aligned regardless of aspect ratio.
+        'object-position: left center;'
       ].join(' ')}
       ontimeupdate={onVideoTimeUpdate}
       onloadedmetadata={onVideoLoadedMetadata}
@@ -1154,10 +1275,23 @@
 
     <!-- Scrubber overlay: fades in on hover, stays visible while the user is
          actively scrubbing (scrubHoverX !== null) so the mouse doesn't have
-         to stay perfectly inside the bar. -->
+         to stay perfectly inside the bar, AND stays pinned visible whenever
+         the user is mid-way through defining a block or clip — they need
+         the scrubber as a target to pick the end point.
+
+         Width is pinned to the actual rendered video content rectangle
+         (videoContentWidth), left-anchored to match the video's
+         left-anchored content (object-position: left center on the
+         <video> above), so the bar always sits under the visible
+         picture and any pillarbox bars stay clear on the right. Falls
+         back to an 8px-inset full-width bar if metadata isn't loaded. -->
     <div
-      class="absolute inset-x-2 bottom-2 pointer-events-none transition-opacity duration-150
-             {playerHovered || scrubHoverX !== null ? 'opacity-100' : 'opacity-0'}"
+      class="absolute bottom-2 pointer-events-none transition-opacity duration-150
+             {videoContentWidth !== null ? '' : 'inset-x-2'}
+             {playerHovered || scrubHoverX !== null || definingRange ? 'opacity-100' : 'opacity-0'}"
+      style={videoContentWidth !== null
+        ? `left: 8px; width: ${videoContentWidth - 16}px;`
+        : ''}
     >
     <div class="relative pointer-events-auto">
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -1175,9 +1309,9 @@
         aria-valuenow={Math.round(videoProgress * 100)}
       >
         <div class="absolute inset-y-0 left-0 bg-primary/60" style="width: {videoProgress * 100}%"></div>
-        <!-- DoNotShow blocks overlay the scrubber as red bands. pointer-events
-             stay off so scrubber clicks still seek; deletion lives in the
-             list below when mark mode is on. -->
+        <!-- Hide blocks overlay the scrubber as red bands. pointer-events
+             stay off so scrubber clicks still seek; deletion lives in
+             the timestamped list under the player. -->
         {#if videoDuration > 0 && video?.videoBlocks?.length}
           {#each video.videoBlocks as b, i (i)}
             {#if b.videoBlockType === 'hide'}
@@ -1260,7 +1394,9 @@
       {#if pendingClipStart !== null}
         <span class="badge badge-success badge-sm uppercase tracking-wide">Clip</span>
         <span class="text-success">
-          In @ {formatClock(pendingClipStart)} — press <kbd class="kbd kbd-xs">C</kbd> to close
+          In @ {formatClock(pendingClipStart)} —
+          <kbd class="kbd kbd-xs">Ctrl</kbd>+<kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">]</kbd> to close,
+          <kbd class="kbd kbd-xs">Esc</kbd> to cancel
         </span>
         <button type="button" class="btn btn-ghost btn-xs" onclick={cancelPendingClip}>Cancel</button>
       {:else if clipCreating}
@@ -1271,18 +1407,14 @@
       {#if clipError}
         <span class="text-error">{clipError}</span>
       {/if}
-      {#if markMode}
-        <span class="badge badge-warning badge-sm uppercase tracking-wide">Mark Mode</span>
-        {#if pendingBlockStart !== null}
-          <span class="text-warning">
-            Block start @ {formatClock(pendingBlockStart)} — press <kbd class="kbd kbd-xs">]</kbd> to close
-          </span>
-          <button type="button" class="btn btn-ghost btn-xs" onclick={cancelPendingBlock}>Cancel</button>
-        {:else}
-          <span class="text-base-content/60">
-            Press <kbd class="kbd kbd-xs">[</kbd> to start a block, <kbd class="kbd kbd-xs">M</kbd> to exit
-          </span>
-        {/if}
+      {#if pendingBlockStart !== null}
+        <span class="badge badge-warning badge-sm uppercase tracking-wide">Block</span>
+        <span class="text-warning">
+          Start @ {formatClock(pendingBlockStart)} —
+          <kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">]</kbd> to close,
+          <kbd class="kbd kbd-xs">Esc</kbd> to cancel
+        </span>
+        <button type="button" class="btn btn-ghost btn-xs" onclick={cancelPendingBlock}>Cancel</button>
       {/if}
       <!-- Right-hand cluster: zoom on the left, Download icon flush to the
            far right. Kept as one flex group so the Download stays pinned
@@ -1328,7 +1460,7 @@
       </div>
     </div>
 
-    {#if markMode && video && sortedBlocks.length > 0}
+    {#if video && sortedBlocks.length > 0}
       <div class="mt-2 border border-base-300 rounded p-2 space-y-1 text-xs">
         <div class="text-base-content/70 uppercase tracking-wide">Blocks (always skipped on playback)</div>
         {#each sortedBlocks as row (row.idx)}
