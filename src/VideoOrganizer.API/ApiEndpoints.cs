@@ -300,6 +300,23 @@ public static class ApiEndpoints
         }
     }
 
+    // Permission-safe directory enumeration. Used by the import browse
+    // endpoint to decide whether a folder has subdirectories without
+    // letting an UnauthorizedAccessException / IOException take down
+    // the whole response. Returns -1 on failure so callers can
+    // distinguish "0 subdirs (readable)" from "couldn't list".
+    private static int SafeGetDirectoryCount(string path, ILogger? logger = null)
+    {
+        try { return Directory.GetDirectories(path).Length; }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex,
+                "Directory.GetDirectories failed for {Path} — treating as no subdirectories.",
+                path);
+            return -1;
+        }
+    }
+
     private static string? DescribeDirectoryIssue(string path)
     {
         if (Directory.Exists(path)) return null;
@@ -670,16 +687,23 @@ public static class ApiEndpoints
 
         var videoSets = api.MapGroup("/video-sets").WithTags("VideoSets");
 
-        videoSets.MapGet("/", async (VideoOrganizerDbContext db, CancellationToken ct) =>
+        videoSets.MapGet("/", async (
+            VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
+            // Same per-row resilience as /import/browse: a single bad
+            // path (permission-denied, broken symlink, unreachable
+            // mount) should not 500 the whole listing. Project to an
+            // anonymous shape outside the EF query so the PathExists
+            // probe runs once per row in C# memory, with TryDirectoryExists
+            // already swallowing filesystem failures.
             var sets = await db.VideoSets
                 .OrderBy(s => s.SortOrder).ThenBy(s => s.Name)
                 .ToListAsync(ct);
             var result = sets.Select(s => new
             {
                 s.Id, s.Name, s.Path, s.Enabled, s.SortOrder,
-                PathExists = TryDirectoryExists(s.Path)
-            });
+                PathExists = TryDirectoryExists(s.Path, logger)
+            }).ToList();
             return Results.Ok(result);
         }).WithName("ListVideoSets");
 
@@ -778,6 +802,10 @@ public static class ApiEndpoints
         api.MapGet("/videos/count", async (VideoOrganizerDbContext db, CancellationToken ct) =>
         {
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+            // Same empty-roots short-circuit as the filter / list
+            // endpoints — see /videos/filter for the rationale.
+            if (enabledRoots.Count == 0)
+                return Results.Ok(0);
             var count = await db.Videos
                 .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)))
                 .CountAsync(ct);
@@ -790,6 +818,12 @@ public static class ApiEndpoints
         api.MapGet("/videos", async (HttpContext http, VideoOrganizerDbContext db, CancellationToken ct) =>
         {
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+
+            // Same empty-DB short-circuit as POST /videos/filter — see
+            // the comment there for why the EF Any() expression below
+            // can be fragile with an empty parameter list.
+            if (enabledRoots.Count == 0)
+                return Results.Ok(new List<VideoDto>());
 
             IQueryable<Video> query = IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
@@ -813,6 +847,14 @@ public static class ApiEndpoints
         {
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled)
                 .Select(s => s.Path).ToListAsync(ct);
+
+            // Empty-DB short-circuit. With no enabled VideoSets the
+            // EF translation of the StartsWith-Any expression below
+            // can throw on certain Npgsql/EF combos. There's nothing
+            // to filter against anyway — return an empty list so the
+            // browse page can render its empty state instead of a 500.
+            if (enabledRoots.Count == 0)
+                return Results.Ok(new List<VideoDto>());
 
             var candidates = await IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
@@ -1273,7 +1315,21 @@ public static class ApiEndpoints
                 _ => "application/octet-stream"
             };
             logger.LogInformation("Serving video: {Path}", fullPath);
-            return Results.File(fullPath, contentType, enableRangeProcessing: true);
+            // Open with FileShare.Read|Delete so a concurrent File.Move
+            // (e.g. user presses W to mark Won't Play, which moves the
+            // file into _WontPlay/) doesn't fail with "file in use".
+            // Default Results.File(path, ...) opens with FileShare.Read
+            // only on Windows, which locks the inode against renames.
+            // Results.File takes ownership of the FileStream and
+            // disposes it after the response writes.
+            var stream = new FileStream(
+                fullPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read | FileShare.Delete,
+                bufferSize: 64 * 1024,
+                useAsync: true);
+            return Results.File(stream, contentType, enableRangeProcessing: true);
         }).WithName("StreamVideo");
 
         api.MapGet("/videos/by-folder", async (
@@ -1406,12 +1462,25 @@ public static class ApiEndpoints
 
         tagGroups.MapGet("/", async (VideoOrganizerDbContext db, CancellationToken ct) =>
         {
-            var rows = await db.TagGroups.AsNoTracking()
+            // Two queries instead of one-with-correlated-subquery. The
+            // earlier `db.Tags.Count(t => t.TagGroupId == g.Id)` inside
+            // the projection threw 500 on certain Npgsql/EF combos
+            // (specifically when TagGroups was empty or partially
+            // seeded). Pre-fetching the counts as a separate dictionary
+            // sidesteps the correlated-subquery translation entirely.
+            var counts = await db.Tags.AsNoTracking()
+                .GroupBy(t => t.TagGroupId)
+                .Select(g => new { TagGroupId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.TagGroupId, x => x.Count, ct);
+
+            var groups = await db.TagGroups.AsNoTracking()
                 .OrderBy(g => g.SortOrder).ThenBy(g => g.Name)
-                .Select(g => new TagGroupDto(
-                    g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes,
-                    db.Tags.Count(t => t.TagGroupId == g.Id)))
+                .Select(g => new { g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes })
                 .ToListAsync(ct);
+
+            var rows = groups.Select(g => new TagGroupDto(
+                g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes,
+                counts.GetValueOrDefault(g.Id, 0))).ToList();
             return Results.Ok(rows);
         }).WithName("ListTagGroups");
 
@@ -2149,18 +2218,33 @@ public static class ApiEndpoints
 
                 if (string.IsNullOrWhiteSpace(path))
                 {
+                    // Per-source try/catch — a single source with an
+                    // invalid path, permission-denied folder, or
+                    // unreachable network mount used to take down the
+                    // whole endpoint with a 500. Now we log and skip
+                    // so the user can still see / add other sources.
                     var annotated = new List<ImportBrowseDirectory>();
                     foreach (var s in sets)
                     {
-                        var full = Path.GetFullPath(s.Path);
-                        var hasSubs = TryDirectoryExists(s.Path) && Directory.GetDirectories(s.Path).Length > 0;
-                        var normalizedSet = PathNormalizer.Normalize(s.Path);
-                        var importedCount = await db.Videos
-                            .CountAsync(v => v.FilePath.StartsWith(normalizedSet), ct);
-                        annotated.Add(new ImportBrowseDirectory(
-                            Name: s.Name, FullPath: full, HasSubdirectories: hasSubs,
-                            VideoCount: CountVideoFilesRecursive(full),
-                            ImportedCount: importedCount));
+                        try
+                        {
+                            var full = Path.GetFullPath(s.Path);
+                            var hasSubs = TryDirectoryExists(s.Path, logger)
+                                && SafeGetDirectoryCount(s.Path, logger) > 0;
+                            var normalizedSet = PathNormalizer.Normalize(s.Path);
+                            var importedCount = await db.Videos
+                                .CountAsync(v => v.FilePath.StartsWith(normalizedSet), ct);
+                            annotated.Add(new ImportBrowseDirectory(
+                                Name: s.Name, FullPath: full, HasSubdirectories: hasSubs,
+                                VideoCount: CountVideoFilesRecursive(full),
+                                ImportedCount: importedCount));
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogWarning(ex,
+                                "Skipping VideoSet {VideoSetId} '{Name}' ({Path}) in /import/browse — listing failed",
+                                s.Id, s.Name, s.Path);
+                        }
                     }
                     return Results.Ok(new ImportBrowseResponse(string.Empty, null, annotated));
                 }

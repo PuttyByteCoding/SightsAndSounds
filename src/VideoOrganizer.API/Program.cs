@@ -224,6 +224,18 @@ builder.Services.AddOpenApi(options =>
 
 var app = builder.Build();
 
+// Surface unhandled-exception detail in the response body during dev.
+// Without this, ASP.NET Core's default in dev is to return an empty
+// 500 for AJAX requests — the SvelteKit error toasts then show only
+// "GET /foo failed: 500" with no clue what threw. With it, the response
+// includes the type, message, and stack trace so the user can debug
+// without needing to open Seq for every 500. Production keeps the
+// default empty body for safety.
+if (app.Environment.IsDevelopment())
+{
+    app.UseDeveloperExceptionPage();
+}
+
 // Download FFmpeg if not already present (needed for thumbnail generation).
 // On native Windows the Xabe.FFmpeg downloader doesn't auto-register its install
 // path with the runtime, so we pin both the download dir and the lookup dir.
