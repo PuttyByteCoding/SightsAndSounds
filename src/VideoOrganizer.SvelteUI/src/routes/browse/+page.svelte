@@ -3,6 +3,7 @@
   // video filtered by tag + status + folder filters. Plays inline with
   // the existing VideoPlayer and offers the generic EditTagsPanel.
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { api } from '$lib/api';
   import type { Video, VideoSet, Tag, TagGroup, FilterRef } from '$lib/types';
   import VideoCard from '$lib/components/VideoCard.svelte';
@@ -25,6 +26,12 @@
 
   let playingVideo = $state<Video | null>(null);
   let showEditTagsPanel = $state(false);
+  // Set true while the EditTagsPanel's inner TagEditModal is open. The
+  // modal portals out to <body>, which strips the strip of its
+  // :focus-within state, so without this we'd collapse out from under
+  // the user the second they open Create-New-Tag. Bubbles up via
+  // EditTagsPanel's onModalOpenChange.
+  let tagsStripPinned = $state(false);
   // True until the first videos load and we've shuffled-and-auto-played.
   let initialAutoplayPending = true;
 
@@ -92,6 +99,7 @@
     if (Number.isFinite(storedThumb) && storedThumb >= THUMB_WIDTH_MIN && storedThumb <= THUMB_WIDTH_MAX) {
       thumbWidth = storedThumb;
     }
+    sidebarCollapsed = localStorage.getItem('browseSidebarCollapsed') === '1';
   });
 
   // Save on each change. Cheap (a few writes per drag) and keeps the
@@ -152,6 +160,10 @@
   }
 
   async function refreshVideos() {
+    // Empty-install case: loadSidebar has navigated to /import. Skip
+    // the filter call so we don't pop a transient error banner during
+    // the navigation.
+    if (isEmptyInstall) return;
     videosLoading = true;
     loadError = null;
     try {
@@ -187,10 +199,51 @@
     refreshVideos();
   });
 
+  // Once the initial sidebar load decides the DB is empty (no
+  // VideoSets configured) we skip the filterVideos call entirely and
+  // bounce to the import page. Tracked so the $effect that re-fetches
+  // on filter changes (below) doesn't kick off an /api/videos/filter
+  // request before the navigation completes.
+  let isEmptyInstall = $state(false);
+
+  // Filter-tree collapse state. When collapsed the sidebar shrinks to
+  // a thin column with just a re-open chevron, freeing the entire row
+  // for the player + thumbnails. Persisted so the choice survives
+  // navigation away and back.
+  let sidebarCollapsed = $state(false);
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('browseSidebarCollapsed', sidebarCollapsed ? '1' : '0');
+    }
+  }
+
   async function loadSidebar() {
     try {
-      groups = await api.listTagGroups();
+      // VideoSets must load FIRST so the empty-install redirect fires
+      // before we try other sidebar fetches (tag-groups, tags). Those
+      // can also fail on a fresh DB if seeding hasn't completed, and
+      // there's no point loading them when we're about to navigate
+      // away anyway. Two redirect cases collapse into the same code
+      // path: no VideoSets configured, OR sets exist but no videos
+      // have been imported yet — in both, /browse has nothing to
+      // show, so send the user to /import.
       sets = await api.listVideoSets();
+      if (sets.length === 0) {
+        isEmptyInstall = true;
+        goto('/import', { replaceState: true });
+        return;
+      }
+      const totalVideos = await api.getVideoCount();
+      if (totalVideos === 0) {
+        // Sets exist but the library is empty — same destination.
+        // replaceState keeps the back-button history clean so the
+        // user doesn't get bounced /browse → /import → /browse.
+        isEmptyInstall = true;
+        goto('/import', { replaceState: true });
+        return;
+      }
+      groups = await api.listTagGroups();
       await loadFavorites();
     } catch (e: any) {
       loadError = e?.message ?? 'Failed to load sidebar';
@@ -206,6 +259,21 @@
       allTags = await api.listTags({ withCounts: true });
     } catch (e: any) {
       loadError = e?.message ?? 'Failed to load tags';
+    }
+  }
+
+  // Refresh sidebar tag-attachment counts after any save that could
+  // change them — a panel save, a video nav-save with dirty tagIds, or
+  // a tag-create/update from the modal. One round-trip via
+  // loadFavorites() picks up every tag's videoCount; we then re-bucket
+  // the result into the per-group caches that the expanded
+  // tag-tree section displays. Unexpanded groups stay empty until
+  // toggleGroup() loads them lazily — no need to fetch what isn't
+  // showing.
+  async function refreshSidebarTagCounts() {
+    await loadFavorites();
+    for (const groupId of Object.keys(tagsByGroup)) {
+      tagsByGroup[groupId] = allTags.filter(t => t.tagGroupId === groupId);
     }
   }
 
@@ -294,16 +362,14 @@
     editingTag = tag;
     editTagModalShow = true;
   }
-  async function onTagSavedFromSidebar(saved: Tag) {
-    // Refresh that group's tag list so name/aliases reflect.
-    if (tagsByGroup[saved.tagGroupId]) {
-      tagsByGroup[saved.tagGroupId] = await api.listTags({
-        groupId: saved.tagGroupId,
-        withCounts: true
-      });
-    }
-    // The favorite flag may have been toggled — refresh the top section.
-    await loadFavorites();
+  async function onTagSavedFromSidebar(_saved: Tag) {
+    // Re-pull groups for the tagCount badge that counts tags-per-group
+    // (only changes when tags are created/deleted). Then refresh
+    // allTags + every expanded group cache via the shared helper so
+    // pill names, aliases, favorites, and per-tag video counts are
+    // all in sync after a create/edit.
+    groups = await api.listTagGroups();
+    await refreshSidebarTagCounts();
   }
 
   function pickStatus(status: 'needsReview' | 'wontPlay' | 'markedForDeletion' | 'favorite', label: string) {
@@ -347,6 +413,10 @@
     const fresh = await api.getVideo(playingVideo.id);
     if (fresh) playingVideo = fresh;
     await refreshVideos();
+    // Tag attachments may have changed → sidebar pill counts could
+    // be stale. Cheaper than refetching every expanded group
+    // separately because loadFavorites returns all tags in one call.
+    await refreshSidebarTagCounts();
   }
 
   onMount(loadSidebar);
@@ -364,7 +434,14 @@
     </div>
   {/if}
 
-  <div class="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+  <!-- Grid columns swap based on sidebar collapse state. Collapsed
+       state shrinks the aside to a 48px chevron-only column so the
+       player + thumbnails get the full width back. Both transitions
+       go through grid-template-columns, which animates smoothly with
+       a CSS transition on the grid container. -->
+  <div
+    class="grid grid-cols-1 gap-4 transition-[grid-template-columns] duration-150 {sidebarCollapsed ? 'lg:grid-cols-[48px_1fr]' : 'lg:grid-cols-[280px_1fr]'}"
+  >
     <!-- Sidebar -->
     <!-- Filter sidebar — sticky-pinned to the viewport top so it stays
          visible while the user scrolls thumbnails on the right. The
@@ -374,8 +451,36 @@
          sticky video player when the user has scrolled both into the
          same vertical band. -->
     <aside
-      class="card bg-base-200 p-3 space-y-3 sticky top-0 z-20 max-h-screen overflow-y-auto"
+      class="card bg-base-200 sticky top-0 z-20 max-h-screen overflow-y-auto {sidebarCollapsed ? 'p-1' : 'p-3 space-y-3'}"
     >
+      <!-- Sidebar header. Expanded shows the "Filters" title on the
+           left with a ‹ chevron on the right (clicks to collapse).
+           Collapsed shows just the › chevron centered in the 48px
+           column (clicks to expand). The title gives the chevron
+           something to anchor against — without it the lone arrow
+           reads as floating UI noise. -->
+      <div class="flex items-center {sidebarCollapsed ? 'justify-center' : 'justify-between'} border-b border-base-300/70 pb-2">
+        {#if !sidebarCollapsed}
+          <h2 class="text-base font-semibold pl-1">Filters</h2>
+        {/if}
+        <button
+          type="button"
+          class="btn btn-ghost btn-square"
+          aria-label={sidebarCollapsed ? 'Expand filter sidebar' : 'Collapse filter sidebar'}
+          title={sidebarCollapsed ? 'Expand filter sidebar' : 'Collapse filter sidebar'}
+          onclick={toggleSidebar}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-7 w-7 fill-current">
+            {#if sidebarCollapsed}
+              <path d="M9 6l6 6-6 6V6z" />
+            {:else}
+              <path d="M15 6l-6 6 6 6V6z" />
+            {/if}
+          </svg>
+        </button>
+      </div>
+
+      {#if !sidebarCollapsed}
       <!-- Global search: scans tag names + aliases, system statuses, and
            Missing-<group>. Each row labels its source so the user can tell
            "Bob Marley · Performer" apart from "Won't Play · System". -->
@@ -597,16 +702,22 @@
           {/each}
         </div>
       </div>
+      {/if}
     </aside>
 
-    <!-- Main area: natural document flow so the thumbnails pane bumps
-         down as the player grows (drag-resize divider OR the video's
-         own aspect ratio pushing the box taller). The player is
-         sticky-pinned to the page top so it stays visible while the
-         user scrolls thumbnails. EditTagsPanel docks as an absolute-
-         positioned hover strip on the right edge of this section so
-         toggling it doesn't reflow the player's width. -->
-    <section class="relative flex flex-col">
+    <!-- Main area: a flex-row of (content column | tags strip). The
+         tags strip is a flow sibling instead of an absolute overlay,
+         so when it expands on hover the content column shrinks to fit
+         and the video reflows down to whatever room is left — no more
+         floating over the picture. The content column is its own flex
+         column with the sticky player at top, drag-resize divider,
+         header row, and thumbnail grid in document flow. -->
+    <section class="relative flex flex-row">
+      <!-- Content column: holds player + handle + header + thumbs.
+           min-w-0 lets it shrink past its content width when the strip
+           expands; without it flex children refuse to shrink below
+           their content's natural size. -->
+      <div class="flex-1 min-w-0 flex flex-col">
       {#if playingVideo}
         <!-- Player area — wrapper sticks to the page top so it doesn't
              scroll away while the user browses thumbs. `min-height`
@@ -630,6 +741,7 @@
             onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
             onRequestNext={goNext}
             onRequestPrev={goPrev}
+            onAfterSave={refreshSidebarTagCounts}
           />
           <div class="flex justify-end gap-2 mt-2">
             <button class="btn btn-sm" onclick={() => (showEditTagsPanel = !showEditTagsPanel)}>
@@ -744,21 +856,24 @@
           <p class="text-base-content/60">No videos match the current filter.</p>
         {/if}
       </div>
+      </div>
+      <!-- ↑ end of content column -->
 
-      <!-- Hover-expandable Tags panel docked on the right edge of the
-           section. Default state is a thin 12-px strip with a vertical
-           "TAGS" label; hovering or focusing inside grows it to 360px
-           and reveals the full EditTagsPanel content. The panel itself
-           is generic — the strip styling lives entirely here so the
-           panel keeps its standalone shape for other pages. The wrapper
-           is absolutely positioned so toggling it on/off doesn't push
-           the player or thumbnail grid around. -->
+      <!-- Hover-expandable Tags panel — now a flow sibling of the
+           content column instead of an absolute overlay. Default state
+           is a thin 16-px column with a vertical "TAGS" label;
+           hovering or focusing inside grows it to 360px and the
+           content column shrinks to fit (its `flex-1 min-w-0` lets
+           the video and thumbs reflow live). Sticky-pinned to the
+           viewport top with a max-height so the strip stays visible
+           and self-scrolls when the user is deep into the thumbnail
+           grid. -->
       {#if showEditTagsPanel && playingVideo}
         <div
-          class="tags-strip absolute top-0 right-0 bottom-0 z-20 flex items-stretch shadow-xl overflow-hidden bg-base-200 border-l border-base-300 transition-[width] duration-150 ease-out"
+          class="tags-strip sticky top-0 self-start max-h-screen flex items-stretch shadow-xl overflow-hidden bg-base-200 border-l border-base-300 transition-[width,flex-basis] duration-150 ease-out {tagsStripPinned ? 'pinned' : ''}"
         >
           <div
-            class="strip-label w-3 shrink-0 bg-primary/20 hover:bg-primary/30 border-r border-base-300 flex items-center justify-center text-[10px] font-semibold uppercase tracking-widest text-base-content/70 select-none cursor-ew-resize transition-opacity"
+            class="strip-label w-4 shrink-0 bg-primary/20 hover:bg-primary/30 border-r border-base-300 flex items-center justify-center text-[10px] font-semibold uppercase tracking-widest text-base-content/70 select-none cursor-ew-resize transition-opacity"
             style="writing-mode: vertical-rl; text-orientation: mixed;"
             aria-hidden="true"
           >Tags</div>
@@ -767,6 +882,8 @@
               bind:video={playingVideo}
               bind:show={showEditTagsPanel}
               onAfterSave={refreshPlaying}
+              onTagSaved={onTagSavedFromSidebar}
+              onModalOpenChange={(open) => (tagsStripPinned = open)}
             />
           </div>
         </div>
@@ -783,13 +900,27 @@
      through arbitrary widths via utility classes alone, so the
      collapsed/expanded sizes live here. The body fades alongside the
      width so half-width frames during the transition aren't visually
-     jarring. */
+     jarring.
+
+     The strip is a flex sibling of the content column now (no longer
+     `position: absolute`), so its width is what the flex parent
+     allocates to it. flex-basis carries the size; we set both width
+     AND flex-basis on each rule so the strip's intrinsic size and
+     its flex allocation agree as the transition runs. */
   .tags-strip {
     width: 1rem;
+    flex: 0 0 1rem;
   }
+  /* Three triggers pin the strip open: hover, focus-within (panel
+     itself), and the .pinned class set by the host while the
+     create-new-tag modal is up — without that third trigger the
+     panel collapses the second the modal portals to <body> and
+     :focus-within stops matching. */
   .tags-strip:hover,
-  .tags-strip:focus-within {
+  .tags-strip:focus-within,
+  .tags-strip.pinned {
     width: 360px;
+    flex: 0 0 360px;
   }
   .tags-strip .strip-body {
     opacity: 0;
@@ -797,14 +928,16 @@
     pointer-events: none;
   }
   .tags-strip:hover .strip-body,
-  .tags-strip:focus-within .strip-body {
+  .tags-strip:focus-within .strip-body,
+  .tags-strip.pinned .strip-body {
     opacity: 1;
     pointer-events: auto;
   }
   /* Subtle accent on the label when the user hasn't expanded yet so
      it reads as an interactive handle, not a static border. */
   .tags-strip:hover .strip-label,
-  .tags-strip:focus-within .strip-label {
+  .tags-strip:focus-within .strip-label,
+  .tags-strip.pinned .strip-label {
     opacity: 0.4;
   }
 </style>

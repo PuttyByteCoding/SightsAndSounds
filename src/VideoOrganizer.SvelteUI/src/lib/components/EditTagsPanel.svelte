@@ -13,9 +13,25 @@
     video: Video | null;
     show: boolean;
     onAfterSave?: () => void | Promise<void>;
+    // Fires whenever a tag is created or updated via the panel's
+    // autocomplete + TagEditModal flow. The host uses this to refresh
+    // its own copies of allTags / tagsByGroup / groups so the sidebar
+    // tag tree picks up the change without waiting for a route reload.
+    onTagSaved?: (saved: Tag) => void | Promise<void>;
+    // Fires when the inner TagEditModal opens or closes. The host on
+    // /browse keys the tags strip's expanded state off this so the
+    // panel doesn't collapse when the modal portals out to <body>
+    // (which kills the strip's :focus-within).
+    onModalOpenChange?: (open: boolean) => void;
   }
 
-  let { video = $bindable(), show = $bindable(), onAfterSave }: Props = $props();
+  let {
+    video = $bindable(),
+    show = $bindable(),
+    onAfterSave,
+    onTagSaved: onTagSavedExternal,
+    onModalOpenChange
+  }: Props = $props();
 
   let groups = $state<TagGroup[]>([]);
   // Tag list per group, lazy-loaded on first focus.
@@ -40,12 +56,18 @@
     if (!composer[groupId]) composer[groupId] = { input: '', open: false, highlighted: -1 };
   }
 
-  // Focus the first tag-group composer whenever the video changes (Shift+
-  // arrow nav swaps videos) or the panel opens. Reads composerInputs[0]
-  // inside the effect so $state catches the bind:this write that lands
-  // after the groups load and re-fires us once the input exists.
+  // Focus the first tag-group composer ONLY when the panel transitions
+  // from closed to open — not on every video change. Refocusing on
+  // every nav (R clears review, W marks won't-play, →, etc.) used to
+  // re-trigger :focus-within on the host's hover-strip wrapper and
+  // visually expand it on each keystroke, which felt like the panel
+  // was "opening itself". Tracking the previous `show` value lets us
+  // discriminate the open transition from later video swaps.
+  let prevShow = false;
   $effect(() => {
-    if (!video?.id || !show) return;
+    const opened = show && !prevShow;
+    prevShow = show;
+    if (!opened || !video?.id) return;
     const first = composerInputs[0];
     if (first) queueMicrotask(() => first.focus());
   });
@@ -207,6 +229,14 @@
   let editModalShow = $state(false);
   let editingTag = $state<Tag | null>(null);
   let editTagGroupId = $state<string | undefined>(undefined);
+
+  // Bubble open/close transitions up so the host (e.g. /browse) can
+  // pin the surrounding tags strip expanded while the modal is up.
+  // Without this, the modal's portal-to-body strips :focus-within
+  // from the strip and it collapses out from under the user.
+  $effect(() => {
+    onModalOpenChange?.(editModalShow);
+  });
   let editInitialName = $state('');
   // When create flow comes from autocomplete, auto-apply the new tag to the
   // video on save (mimics the old behavior where + Create added it).
@@ -289,6 +319,10 @@
       }
     }
 
+    // Notify the host so its sidebar (allTags / tagsByGroup / group
+    // counts) picks up the new or renamed tag without a route reload.
+    if (onTagSavedExternal) await onTagSavedExternal(saved);
+
     // After saving (or applying via autocomplete), return focus to the
     // composer input the user was on so they can keep typing more tags.
     returnFocus();
@@ -299,12 +333,17 @@
   }
 
   function suggestionsFor(group: TagGroup): Tag[] {
-    const all = tagsByGroup[group.id] ?? [];
+    // No query → no dropdown. The user wants the field to look like
+    // a clean text input until they actually type; surfacing the full
+    // tag inventory on focus was overwhelming and meant the suggestion
+    // list mostly lived in the way of typing.
     const q = (composer[group.id]?.input ?? '').toLowerCase().trim();
+    if (!q) return [];
+    const all = tagsByGroup[group.id] ?? [];
     const selectedIds = new Set((video?.tags ?? []).map(t => t.id));
     return all
       .filter(t => !selectedIds.has(t.id))
-      .filter(t => !q ||
+      .filter(t =>
         t.name.toLowerCase().includes(q) ||
         t.aliases.some(a => a.toLowerCase().includes(q)))
       .slice(0, 12);

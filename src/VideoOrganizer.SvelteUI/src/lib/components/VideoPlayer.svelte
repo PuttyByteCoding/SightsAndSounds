@@ -38,6 +38,13 @@
     tagsPanelOpen?: boolean;
     // Fired when the user presses T. Host owns the panel state.
     onToggleTags?: () => void;
+    // Fired after a successful saveIfDirty() persists changes to the
+    // server. The host uses this to refresh anything keyed off the
+    // saved data — most notably the sidebar tag-video-count badges,
+    // which would otherwise stay stale when the user applies a tag and
+    // then navigates with arrow keys (the panel's own onAfterSave only
+    // fires when the user clicks Save in the panel, not on nav-save).
+    onAfterSave?: () => void | Promise<void>;
   }
 
   let {
@@ -47,7 +54,8 @@
     shortcutsEnabled = true,
     maxVideoHeightPx = null,
     tagsPanelOpen = false,
-    onToggleTags
+    onToggleTags,
+    onAfterSave
   }: Props = $props();
 
   // --- Internal state -------------------------------------------------------
@@ -875,6 +883,10 @@
         tagIds: video.tags.map(t => t.id)
       });
       loadedVideoSnapshot = currentJson;
+      // Notify the host after the server-confirmed save. Awaited so a
+      // following navigation (goNext/goPrev) sees the freshened sidebar
+      // by the time it loads the next video.
+      if (onAfterSave) await onAfterSave();
       return true;
     } catch (e) {
       errorMessage = `Failed to save: ${e instanceof Error ? e.message : String(e)}`;
@@ -976,17 +988,29 @@
     await onRequestNext?.();
   }
 
-  async function clearNeedsReview() {
-    if (!video || !video.needsReview) return;
+  // R key — toggle Needs Review. Used to be a one-way "clear" + advance,
+  // which lost any way to UN-clear from the player. Now it flips the
+  // flag in either direction so a quick R-tap is reversible. The
+  // auto-advance behavior is preserved only for the clear direction
+  // (the more common case — burning through a review pile); setting
+  // needs-review keeps you on the current video so you can continue
+  // working with it.
+  async function toggleNeedsReview() {
+    if (!video) return;
+    const wasNeedingReview = video.needsReview;
     try {
-      await api.markReviewed(video.id);
-      if (video) video.needsReview = false;
+      if (wasNeedingReview) {
+        await api.markReviewed(video.id);
+      } else {
+        await api.unmarkReviewed(video.id);
+      }
+      if (video) video.needsReview = !wasNeedingReview;
       loadedVideoSnapshot = JSON.stringify(video);
     } catch (e) {
-      errorMessage = `Failed to clear Needs Review: ${e instanceof Error ? e.message : String(e)}`;
+      errorMessage = `Failed to toggle Needs Review: ${e instanceof Error ? e.message : String(e)}`;
       return;
     }
-    await goNext();
+    if (wasNeedingReview) await goNext();
   }
 
   // Toggle the structural IsFavorite flag. No file-system side effect; just
@@ -1148,7 +1172,7 @@
       return;
     }
     if (e.key === 'u' || e.key === 'U') { e.preventDefault(); await performUndo(); return; }
-    if (e.key === 'r' || e.key === 'R') { e.preventDefault(); await clearNeedsReview(); return; }
+    if (e.key === 'r' || e.key === 'R') { e.preventDefault(); await toggleNeedsReview(); return; }
     // T — toggle Edit Tags panel. Host owns the panel state.
     if (e.key === 't' || e.key === 'T') { e.preventDefault(); onToggleTags?.(); return; }
     // F — toggle the structural IsFavorite flag (★).

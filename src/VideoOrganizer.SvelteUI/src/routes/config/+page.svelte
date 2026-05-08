@@ -444,9 +444,10 @@
           <tr>
             <td><kbd class="kbd kbd-sm">R</kbd></td>
             <td>
-              Clear the <span class="font-semibold">Needs Review</span> flag on the
-              current video, save, and advance to the next video. No-op if the
-              flag isn't set.
+              Toggle the <span class="font-semibold">Needs Review</span> flag on
+              the current video. If it was set, clears it and advances to the
+              next video (the common review-pile workflow). If it was unset,
+              re-flags the video and stays put so you can keep working with it.
             </td>
           </tr>
           <tr>

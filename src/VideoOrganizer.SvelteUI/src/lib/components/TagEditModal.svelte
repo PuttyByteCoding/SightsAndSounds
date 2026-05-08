@@ -10,6 +10,25 @@
   import { api, ApiError } from '$lib/api';
   import type { Tag } from '$lib/types';
 
+  // Portal action — re-parents the element to <body> on mount so the
+  // modal escapes every ancestor stacking context, transform-
+  // containing-block, and overflow-hidden it might be sitting under
+  // (e.g. inside the EditTagsPanel hover strip on /browse, or any
+  // sticky+z-index card). Position-fixed inside the portaled element
+  // then renders relative to the viewport unconditionally.
+  //
+  // On destroy we just `node.remove()` — putting the node back into
+  // the original parent (which we tried first) confused Svelte's own
+  // unmount of the {#if show} block: the modal stayed in body when
+  // show flipped to false. `node.remove()` is idempotent and works
+  // regardless of where the node is currently attached.
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() { node.remove(); }
+    };
+  }
+
   interface Props {
     tag?: Tag | null;
     tagGroupId?: string;
@@ -178,7 +197,17 @@
 
 {#if show}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div bind:this={modalEl} class="modal modal-open" role="dialog" aria-modal="true" tabindex="-1">
+  <!-- use:portal moves this node to <body> so the modal renders over
+       everything regardless of where the component is instantiated.
+       Without it, when this component lives inside the /browse hover
+       tags-strip (sticky + overflow-hidden) the modal would render
+       clipped or behind the video.
+       Inline z-index forces it above the daisyUI default (999); the
+       sticky+z parents on /browse (player z-10, sidebar z-20) sit in
+       the same root stacking context after the portal moves us to
+       body, but some browsers still get the layering wrong without a
+       big-numbered hint. -->
+  <div bind:this={modalEl} use:portal class="modal modal-open" role="dialog" aria-modal="true" tabindex="-1" style="z-index: 9999;">
     <div class="modal-box max-w-md">
       <h3 class="font-bold text-lg mb-3">{isEdit ? 'Edit Tag' : 'New Tag'}</h3>
 

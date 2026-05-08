@@ -69,7 +69,7 @@
     { keys: ['W'],       label: "Won't Play + advance" },
     { keys: ['D'],       label: 'Delete + advance' },
     { keys: ['U'],       label: 'Undo W/D' },
-    { keys: ['R'],       label: 'Clear Needs Review' },
+    { keys: ['R'],       label: 'Toggle Needs Review' },
     { keys: ['F'],       label: 'Toggle Favorite' },
     { keys: ['K'],       label: 'Add bookmark' },
     // The bracket cluster shares the [/] keys; modifiers pick the layer.
