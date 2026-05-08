@@ -28,6 +28,110 @@
   // True until the first videos load and we've shuffled-and-auto-played.
   let initialAutoplayPending = true;
 
+  // --- Infinite-scroll chunking -----------------------------------------
+  // We render the grid in pages of CHUNK_SIZE so a 1000-video filter
+  // doesn't try to mount 1000 VideoCards (each of which warms a VTT) at
+  // once. An IntersectionObserver on a sentinel at the bottom of the
+  // grid bumps the visible count as the user scrolls.
+  const CHUNK_SIZE = 24;
+  let visibleCount = $state(CHUNK_SIZE);
+  // Reset back to one chunk whenever the underlying list changes — the
+  // user just changed filter / reshuffled, so old scroll position is
+  // meaningless. Using a counter trips the $effect even when length
+  // stays the same (e.g. reshuffle of the same set).
+  let visibleResetSeed = $state(0);
+  $effect(() => {
+    void visibleResetSeed;
+    visibleCount = CHUNK_SIZE;
+  });
+  const visibleVideos = $derived(videos.slice(0, visibleCount));
+  let scrollSentinelEl: HTMLDivElement | null = $state(null);
+  $effect(() => {
+    if (!scrollSentinelEl) return;
+    const obs = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting && visibleCount < videos.length) {
+          // Bump by a chunk; clamp at the total so we don't overshoot.
+          visibleCount = Math.min(videos.length, visibleCount + CHUNK_SIZE);
+        }
+      }
+    }, { rootMargin: '300px' });
+    obs.observe(scrollSentinelEl);
+    return () => obs.disconnect();
+  });
+
+  // --- Player / grid drag-resize ---------------------------------------
+  // The right pane is a sticky-player-on-top + thumbnail-grid-below
+  // layout. The drag handle controls the player's min-height so the
+  // player still grows when the video naturally needs more space.
+  // Persisted so the layout survives navigation away and back.
+  const PLAYER_HEIGHT_MIN = 220;
+  const PLAYER_HEIGHT_DEFAULT = 480;
+  let playerHeight = $state(PLAYER_HEIGHT_DEFAULT);
+  let dragging = $state(false);
+  // Snapshot of the values at the moment dragging starts so we don't
+  // re-read the DOM on every mousemove tick.
+  let dragStartY = 0;
+  let dragStartHeight = 0;
+
+  // --- Thumbnail size --------------------------------------------------
+  // User-controlled minimum tile width; the grid uses auto-fill +
+  // minmax so columns reflow naturally as the user drags. Persisted to
+  // localStorage so the choice sticks.
+  const THUMB_WIDTH_MIN = 120;
+  const THUMB_WIDTH_MAX = 400;
+  const THUMB_WIDTH_DEFAULT = 200;
+  let thumbWidth = $state(THUMB_WIDTH_DEFAULT);
+
+  onMount(() => {
+    const stored = Number(localStorage.getItem('browsePlayerHeight'));
+    if (Number.isFinite(stored) && stored >= PLAYER_HEIGHT_MIN) {
+      playerHeight = stored;
+    }
+    const storedThumb = Number(localStorage.getItem('browseThumbWidth'));
+    if (Number.isFinite(storedThumb) && storedThumb >= THUMB_WIDTH_MIN && storedThumb <= THUMB_WIDTH_MAX) {
+      thumbWidth = storedThumb;
+    }
+  });
+
+  // Save on each change. Cheap (a few writes per drag) and keeps the
+  // localStorage in sync without a separate "save" gesture.
+  $effect(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem('browseThumbWidth', String(thumbWidth));
+  });
+
+  // Pointer-event-based drag (works for mouse, touch, pen). Using
+  // PointerEvent + setPointerCapture means even if the cursor sails off
+  // the handle mid-drag we keep getting move events from the same
+  // pointer — no need for window-level listeners or worrying about
+  // child-element pointer leakage.
+  function startDrag(e: PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = true;
+    dragStartY = e.clientY;
+    dragStartHeight = playerHeight;
+    const target = e.currentTarget as Element;
+    target.setPointerCapture(e.pointerId);
+  }
+  function onDragMove(e: PointerEvent) {
+    if (!dragging) return;
+    const delta = e.clientY - dragStartY;
+    // Clamp so the player can't shrink below a usable size or grow
+    // past the viewport. The 300px floor reserves room for at least
+    // one row of thumbnails below.
+    const max = window.innerHeight - 300;
+    playerHeight = Math.max(PLAYER_HEIGHT_MIN, Math.min(max, dragStartHeight + delta));
+  }
+  function endDrag(e: PointerEvent) {
+    if (!dragging) return;
+    dragging = false;
+    const target = e.currentTarget as Element;
+    if (target.hasPointerCapture(e.pointerId)) target.releasePointerCapture(e.pointerId);
+    localStorage.setItem('browsePlayerHeight', String(playerHeight));
+  }
+
   function shuffleInPlace<T>(arr: T[]): T[] {
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i--) {
@@ -38,11 +142,13 @@
   }
 
   // User-triggered reshuffle of the current grid into a new random order
-  // and jump to the new first video.
+  // and jump to the new first video. Resets the infinite-scroll window
+  // so the user starts at the top of the new playlist.
   function reshufflePlaylist() {
     if (videos.length === 0) return;
     videos = shuffleInPlace(videos);
     playingVideo = videos[0];
+    visibleResetSeed++;
   }
 
   async function refreshVideos() {
@@ -65,6 +171,9 @@
       } else {
         videos = fetched;
       }
+      // Filter change → reset the infinite-scroll window so the new
+      // result set starts from the top.
+      visibleResetSeed++;
     } catch (e: any) {
       loadError = e?.message ?? 'Failed to load videos';
     } finally {
@@ -257,7 +366,16 @@
 
   <div class="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
     <!-- Sidebar -->
-    <aside class="card bg-base-200 p-3 space-y-3 h-fit">
+    <!-- Filter sidebar — sticky-pinned to the viewport top so it stays
+         visible while the user scrolls thumbnails on the right. The
+         max-height + internal overflow-y-auto means tall sidebars
+         (lots of expanded tag groups) get their own scroll bar instead
+         of pushing past the viewport. The z-index keeps it above the
+         sticky video player when the user has scrolled both into the
+         same vertical band. -->
+    <aside
+      class="card bg-base-200 p-3 space-y-3 sticky top-0 z-20 max-h-screen overflow-y-auto"
+    >
       <!-- Global search: scans tag names + aliases, system statuses, and
            Missing-<group>. Each row labels its source so the user can tell
            "Bob Marley · Performer" apart from "Won't Play · System". -->
@@ -481,41 +599,108 @@
       </div>
     </aside>
 
-    <!-- Main area -->
-    <section class="space-y-3">
+    <!-- Main area: natural document flow so the thumbnails pane bumps
+         down as the player grows (drag-resize divider OR the video's
+         own aspect ratio pushing the box taller). The player is
+         sticky-pinned to the page top so it stays visible while the
+         user scrolls thumbnails. EditTagsPanel docks as an absolute-
+         positioned hover strip on the right edge of this section so
+         toggling it doesn't reflow the player's width. -->
+    <section class="relative flex flex-col">
       {#if playingVideo}
-        <div class="grid grid-cols-1 {showEditTagsPanel ? 'lg:grid-cols-[1fr_360px]' : ''} gap-3">
-          <div class="card bg-base-200 p-3">
-            <VideoPlayer
-              bind:video={playingVideo}
-              shortcutsEnabled={true}
-              tagsPanelOpen={showEditTagsPanel}
-              onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
-              onRequestNext={goNext}
-              onRequestPrev={goPrev}
-            />
-            <div class="flex justify-end gap-2 mt-2">
-              <button class="btn btn-sm" onclick={() => (showEditTagsPanel = !showEditTagsPanel)}>
-                {showEditTagsPanel ? 'Close Tags' : 'Tags'}
-              </button>
-              <button class="btn btn-sm" onclick={() => (playingVideo = null)}>Close Player</button>
-            </div>
+        <!-- Player area — wrapper sticks to the page top so it doesn't
+             scroll away while the user browses thumbs. `min-height`
+             tracks the divider so dragging down enlarges the wrapper
+             (and lets the video grow into the new room). The video's
+             own `max-height` is wired to the same divider value via
+             `maxVideoHeightPx` below — that's what makes dragging UP
+             actually shrink the picture. Without that wiring the video
+             holds at its 70vh default no matter how high you drag.
+             Subtract ~72px of wrapper chrome (p-3 + button row + gap)
+             so the picture fits cleanly inside the wrapper. -->
+        <div
+          class="card bg-base-200 p-3 sticky top-0 z-10"
+          style="min-height: {playerHeight}px;"
+        >
+          <VideoPlayer
+            bind:video={playingVideo}
+            shortcutsEnabled={true}
+            maxVideoHeightPx={Math.max(100, playerHeight - 72)}
+            tagsPanelOpen={showEditTagsPanel}
+            onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
+            onRequestNext={goNext}
+            onRequestPrev={goPrev}
+          />
+          <div class="flex justify-end gap-2 mt-2">
+            <button class="btn btn-sm" onclick={() => (showEditTagsPanel = !showEditTagsPanel)}>
+              {showEditTagsPanel ? 'Close Tags' : 'Tags'}
+            </button>
+            <button class="btn btn-sm" onclick={() => (playingVideo = null)}>Close Player</button>
           </div>
-          {#if showEditTagsPanel}
-            <EditTagsPanel
-              bind:video={playingVideo}
-              bind:show={showEditTagsPanel}
-              onAfterSave={refreshPlaying}
-            />
-          {/if}
+        </div>
+
+        <!-- Drag handle: 12px hit area, visible 4px bar with three grip
+             dots. Pointer-event-based drag with setPointerCapture so the
+             cursor can leave the handle mid-drag. Double-click resets to
+             the default height. Stays in normal flow (not sticky) —
+             it's an occasional control. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize player (double-click to reset)"
+          tabindex="0"
+          class="group relative h-3 shrink-0 cursor-ns-resize select-none w-full touch-none"
+          title="Drag to resize · double-click to reset"
+          onpointerdown={startDrag}
+          onpointermove={onDragMove}
+          onpointerup={endDrag}
+          onpointercancel={endDrag}
+          ondblclick={() => { playerHeight = PLAYER_HEIGHT_DEFAULT; localStorage.setItem('browsePlayerHeight', String(PLAYER_HEIGHT_DEFAULT)); }}
+        >
+          <span
+            class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1 rounded-full transition-colors pointer-events-none
+                   {dragging ? 'bg-primary' : 'bg-base-300 group-hover:bg-primary/60'}"
+          ></span>
+          <span
+            class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-1 pointer-events-none"
+            aria-hidden="true"
+          >
+            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
+            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
+            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
+          </span>
         </div>
       {/if}
 
-      <div class="flex justify-between items-center">
+      <!-- Header row — count, loading indicator, thumb-size slider,
+           reshuffle. flex-wrap so the slider drops to its own row on
+           narrow viewports instead of squeezing into nothing. -->
+      <div class="flex justify-between items-center shrink-0 mb-2 mt-2 gap-3 flex-wrap">
         <p class="text-sm text-base-content/70">
-          {videosLoading ? 'Loading…' : `${videos.length} videos`}
+          {#if videosLoading}
+            Loading…
+          {:else}
+            {videos.length} videos{#if visibleCount < videos.length} · showing {visibleCount}{/if}
+          {/if}
         </p>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-3 ml-auto">
+          <!-- Thumbnail size slider. Smaller icon on the left, larger
+               on the right so the direction is intuitive. The grid uses
+               auto-fill so changing this value reflows columns live. -->
+          <label class="flex items-center gap-2 text-xs text-base-content/60" title="Thumbnail size">
+            <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+            <input
+              type="range"
+              class="range range-xs w-32"
+              min={THUMB_WIDTH_MIN}
+              max={THUMB_WIDTH_MAX}
+              step="20"
+              bind:value={thumbWidth}
+              aria-label="Thumbnail size"
+            />
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current"><rect x="2" y="2" width="20" height="20" rx="2"/></svg>
+          </label>
           {#if videosLoading}<span class="loading loading-dots loading-sm"></span>{/if}
           <button
             type="button"
@@ -527,18 +712,64 @@
         </div>
       </div>
 
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-        {#each videos as v (v.id)}
-          <VideoCard
-            video={v}
-            onopen={open}
-            active={playingVideo?.id === v.id}
-          />
-        {/each}
+      <!-- Thumbnail grid — natural document flow now. Page scrolls when
+           total content exceeds viewport; the sticky player above stays
+           pinned at the top of the viewport during that scroll. The
+           grid uses auto-fill + minmax so changing the thumbnail-size
+           slider above immediately reflows the column count. -->
+      <div>
+        <div
+          class="grid gap-3"
+          style="grid-template-columns: repeat(auto-fill, minmax({thumbWidth}px, 1fr));"
+        >
+          {#each visibleVideos as v (v.id)}
+            <VideoCard
+              video={v}
+              onopen={open}
+              active={playingVideo?.id === v.id}
+            />
+          {/each}
+        </div>
+
+        <!-- Sentinel: empty div the IntersectionObserver watches for to
+             load the next chunk. Lives inside the scroll region so its
+             intersections fire against the right root. -->
+        {#if visibleCount < videos.length}
+          <div bind:this={scrollSentinelEl} class="h-12 flex items-center justify-center text-xs text-base-content/50">
+            Loading more… ({videos.length - visibleCount} remaining)
+          </div>
+        {/if}
+
+        {#if !videosLoading && videos.length === 0}
+          <p class="text-base-content/60">No videos match the current filter.</p>
+        {/if}
       </div>
 
-      {#if !videosLoading && videos.length === 0}
-        <p class="text-base-content/60">No videos match the current filter.</p>
+      <!-- Hover-expandable Tags panel docked on the right edge of the
+           section. Default state is a thin 12-px strip with a vertical
+           "TAGS" label; hovering or focusing inside grows it to 360px
+           and reveals the full EditTagsPanel content. The panel itself
+           is generic — the strip styling lives entirely here so the
+           panel keeps its standalone shape for other pages. The wrapper
+           is absolutely positioned so toggling it on/off doesn't push
+           the player or thumbnail grid around. -->
+      {#if showEditTagsPanel && playingVideo}
+        <div
+          class="tags-strip absolute top-0 right-0 bottom-0 z-20 flex items-stretch shadow-xl overflow-hidden bg-base-200 border-l border-base-300 transition-[width] duration-150 ease-out"
+        >
+          <div
+            class="strip-label w-3 shrink-0 bg-primary/20 hover:bg-primary/30 border-r border-base-300 flex items-center justify-center text-[10px] font-semibold uppercase tracking-widest text-base-content/70 select-none cursor-ew-resize transition-opacity"
+            style="writing-mode: vertical-rl; text-orientation: mixed;"
+            aria-hidden="true"
+          >Tags</div>
+          <div class="strip-body flex-1 min-w-0 overflow-y-auto">
+            <EditTagsPanel
+              bind:video={playingVideo}
+              bind:show={showEditTagsPanel}
+              onAfterSave={refreshPlaying}
+            />
+          </div>
+        </div>
       {/if}
     </section>
   </div>
@@ -546,3 +777,34 @@
 
 <FilterDialog />
 <TagEditModal bind:show={editTagModalShow} tag={editingTag} onSaved={onTagSavedFromSidebar} />
+
+<style>
+  /* Hover-expandable Tags strip. Tailwind can't drive a transition
+     through arbitrary widths via utility classes alone, so the
+     collapsed/expanded sizes live here. The body fades alongside the
+     width so half-width frames during the transition aren't visually
+     jarring. */
+  .tags-strip {
+    width: 1rem;
+  }
+  .tags-strip:hover,
+  .tags-strip:focus-within {
+    width: 360px;
+  }
+  .tags-strip .strip-body {
+    opacity: 0;
+    transition: opacity 120ms ease-out 30ms;
+    pointer-events: none;
+  }
+  .tags-strip:hover .strip-body,
+  .tags-strip:focus-within .strip-body {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  /* Subtle accent on the label when the user hasn't expanded yet so
+     it reads as an interactive handle, not a static border. */
+  .tags-strip:hover .strip-label,
+  .tags-strip:focus-within .strip-label {
+    opacity: 0.4;
+  }
+</style>
