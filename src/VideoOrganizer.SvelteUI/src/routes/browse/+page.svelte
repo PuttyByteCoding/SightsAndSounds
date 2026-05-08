@@ -9,6 +9,7 @@
   import VideoCard from '$lib/components/VideoCard.svelte';
   import VideoPlayer from '$lib/components/VideoPlayer.svelte';
   import EditTagsPanel from '$lib/components/EditTagsPanel.svelte';
+  import FileInfoPanel from '$lib/components/FileInfoPanel.svelte';
   import FilterDialog from '$lib/components/FilterDialog.svelte';
   import TagEditModal from '$lib/components/TagEditModal.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
@@ -26,12 +27,9 @@
 
   let playingVideo = $state<Video | null>(null);
   let showEditTagsPanel = $state(false);
-  // Set true while the EditTagsPanel's inner TagEditModal is open. The
-  // modal portals out to <body>, which strips the strip of its
-  // :focus-within state, so without this we'd collapse out from under
-  // the user the second they open Create-New-Tag. Bubbles up via
-  // EditTagsPanel's onModalOpenChange.
-  let tagsStripPinned = $state(false);
+  // I-key toggles a read-only File Info side panel. Independent of
+  // the Tags panel: either or both can be open at once.
+  let showFileInfo = $state(false);
   // True until the first videos load and we've shuffled-and-auto-played.
   let initialAutoplayPending = true;
 
@@ -739,16 +737,11 @@
             maxVideoHeightPx={Math.max(100, playerHeight - 72)}
             tagsPanelOpen={showEditTagsPanel}
             onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
+            onToggleFileInfo={() => (showFileInfo = !showFileInfo)}
             onRequestNext={goNext}
             onRequestPrev={goPrev}
             onAfterSave={refreshSidebarTagCounts}
           />
-          <div class="flex justify-end gap-2 mt-2">
-            <button class="btn btn-sm" onclick={() => (showEditTagsPanel = !showEditTagsPanel)}>
-              {showEditTagsPanel ? 'Close Tags' : 'Tags'}
-            </button>
-            <button class="btn btn-sm" onclick={() => (playingVideo = null)}>Close Player</button>
-          </div>
         </div>
 
         <!-- Drag handle: 12px hit area, visible 4px bar with three grip
@@ -859,33 +852,34 @@
       </div>
       <!-- ↑ end of content column -->
 
-      <!-- Hover-expandable Tags panel — now a flow sibling of the
-           content column instead of an absolute overlay. Default state
-           is a thin 16-px column with a vertical "TAGS" label;
-           hovering or focusing inside grows it to 360px and the
-           content column shrinks to fit (its `flex-1 min-w-0` lets
-           the video and thumbs reflow live). Sticky-pinned to the
-           viewport top with a max-height so the strip stays visible
-           and self-scrolls when the user is deep into the thumbnail
-           grid. -->
+      <!-- Side panels — File Info on the inside (closer to the video,
+           since reading metadata pairs naturally with watching), Tags
+           on the outside. Each is a fixed 360px sticky column visible
+           only while its own toggle is true; the I and T keys flip
+           them independently. Both can be open at once on wide enough
+           viewports. Each panel has internal overflow-y-auto + max-
+           h-screen so they stay visible during thumbnail scroll and
+           self-scroll when content is tall. -->
+      {#if showFileInfo && playingVideo}
+        <div
+          class="sticky top-0 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
+        >
+          <FileInfoPanel
+            bind:show={showFileInfo}
+            video={playingVideo}
+          />
+        </div>
+      {/if}
       {#if showEditTagsPanel && playingVideo}
         <div
-          class="tags-strip sticky top-0 self-start max-h-screen flex items-stretch shadow-xl overflow-hidden bg-base-200 border-l border-base-300 transition-[width,flex-basis] duration-150 ease-out {tagsStripPinned ? 'pinned' : ''}"
+          class="sticky top-0 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
         >
-          <div
-            class="strip-label w-4 shrink-0 bg-primary/20 hover:bg-primary/30 border-r border-base-300 flex items-center justify-center text-[10px] font-semibold uppercase tracking-widest text-base-content/70 select-none cursor-ew-resize transition-opacity"
-            style="writing-mode: vertical-rl; text-orientation: mixed;"
-            aria-hidden="true"
-          >Tags</div>
-          <div class="strip-body flex-1 min-w-0 overflow-y-auto">
-            <EditTagsPanel
-              bind:video={playingVideo}
-              bind:show={showEditTagsPanel}
-              onAfterSave={refreshPlaying}
-              onTagSaved={onTagSavedFromSidebar}
-              onModalOpenChange={(open) => (tagsStripPinned = open)}
-            />
-          </div>
+          <EditTagsPanel
+            bind:video={playingVideo}
+            bind:show={showEditTagsPanel}
+            onAfterSave={refreshPlaying}
+            onTagSaved={onTagSavedFromSidebar}
+          />
         </div>
       {/if}
     </section>
@@ -895,49 +889,3 @@
 <FilterDialog />
 <TagEditModal bind:show={editTagModalShow} tag={editingTag} onSaved={onTagSavedFromSidebar} />
 
-<style>
-  /* Hover-expandable Tags strip. Tailwind can't drive a transition
-     through arbitrary widths via utility classes alone, so the
-     collapsed/expanded sizes live here. The body fades alongside the
-     width so half-width frames during the transition aren't visually
-     jarring.
-
-     The strip is a flex sibling of the content column now (no longer
-     `position: absolute`), so its width is what the flex parent
-     allocates to it. flex-basis carries the size; we set both width
-     AND flex-basis on each rule so the strip's intrinsic size and
-     its flex allocation agree as the transition runs. */
-  .tags-strip {
-    width: 1rem;
-    flex: 0 0 1rem;
-  }
-  /* Three triggers pin the strip open: hover, focus-within (panel
-     itself), and the .pinned class set by the host while the
-     create-new-tag modal is up — without that third trigger the
-     panel collapses the second the modal portals to <body> and
-     :focus-within stops matching. */
-  .tags-strip:hover,
-  .tags-strip:focus-within,
-  .tags-strip.pinned {
-    width: 360px;
-    flex: 0 0 360px;
-  }
-  .tags-strip .strip-body {
-    opacity: 0;
-    transition: opacity 120ms ease-out 30ms;
-    pointer-events: none;
-  }
-  .tags-strip:hover .strip-body,
-  .tags-strip:focus-within .strip-body,
-  .tags-strip.pinned .strip-body {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  /* Subtle accent on the label when the user hasn't expanded yet so
-     it reads as an interactive handle, not a static border. */
-  .tags-strip:hover .strip-label,
-  .tags-strip:focus-within .strip-label,
-  .tags-strip.pinned .strip-label {
-    opacity: 0.4;
-  }
-</style>

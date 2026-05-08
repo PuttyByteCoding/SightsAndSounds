@@ -38,6 +38,11 @@
     tagsPanelOpen?: boolean;
     // Fired when the user presses T. Host owns the panel state.
     onToggleTags?: () => void;
+    // Fired when the user presses I. Host owns the panel state and
+    // renders FileInfoPanel as a side column. Toggling — like Tags —
+    // so both panels can be opened/closed independently and shown
+    // alongside each other.
+    onToggleFileInfo?: () => void;
     // Fired after a successful saveIfDirty() persists changes to the
     // server. The host uses this to refresh anything keyed off the
     // saved data — most notably the sidebar tag-video-count badges,
@@ -55,6 +60,7 @@
     maxVideoHeightPx = null,
     tagsPanelOpen = false,
     onToggleTags,
+    onToggleFileInfo,
     onAfterSave
   }: Props = $props();
 
@@ -780,6 +786,25 @@
       .sort((a, b) => a.bookmark.offset - b.bookmark.offset);
   });
 
+  // Which bookmark row is in name-edit mode. Click ✎ or the name
+  // itself to enter; Enter / Escape / blur to leave. The bookmark
+  // input's `bind:value` mutates video.chapterMarkers[idx].comment
+  // directly, so changes persist on the next save (Shift+arrow nav,
+  // Save button, etc.) without us tracking pending state.
+  let editingBookmarkIdx = $state<number | null>(null);
+
+  // Action: focus + select-all on mount. Used on the bookmark-name
+  // input when it appears, so the user can type to overwrite an
+  // existing name immediately. queueMicrotask defers past Svelte's
+  // own initial render so the focus call lands on a node that's
+  // actually attached to the DOM.
+  function bookmarkAutofocus(node: HTMLInputElement) {
+    queueMicrotask(() => {
+      node.focus();
+      node.select();
+    });
+  }
+
   function togglePlayPause() {
     if (!videoEl) return;
     if (videoEl.paused) videoEl.play().catch(() => {});
@@ -1175,6 +1200,9 @@
     if (e.key === 'r' || e.key === 'R') { e.preventDefault(); await toggleNeedsReview(); return; }
     // T — toggle Edit Tags panel. Host owns the panel state.
     if (e.key === 't' || e.key === 'T') { e.preventDefault(); onToggleTags?.(); return; }
+    // I — toggle the read-only File Info side panel. Host owns
+    // visibility; the panel coexists with the Tags panel.
+    if (e.key === 'i' || e.key === 'I') { e.preventDefault(); onToggleFileInfo?.(); return; }
     // F — toggle the structural IsFavorite flag (★).
     if (e.key === 'f' || e.key === 'F') { e.preventDefault(); await toggleFavorite(); return; }
     // K — drop a bookmark at the current time. Default label is the
@@ -1297,25 +1325,16 @@
       Your browser does not support the video tag.
     </video>
 
-    <!-- Scrubber overlay: fades in on hover, stays visible while the user is
-         actively scrubbing (scrubHoverX !== null) so the mouse doesn't have
-         to stay perfectly inside the bar, AND stays pinned visible whenever
-         the user is mid-way through defining a block or clip — they need
-         the scrubber as a target to pick the end point.
-
-         Width is pinned to the actual rendered video content rectangle
-         (videoContentWidth), left-anchored to match the video's
-         left-anchored content (object-position: left center on the
-         <video> above), so the bar always sits under the visible
-         picture and any pillarbox bars stay clear on the right. Falls
-         back to an 8px-inset full-width bar if metadata isn't loaded. -->
+    <!-- Scrubber: persistent (in-flow) row directly under the video so
+         the controls row below sits beneath it visually. Width caps
+         at the actual rendered video content rectangle so the bar
+         never extends past the picture into pillarbox bars; falls
+         back to a width: 100% bar when metadata isn't loaded yet. -->
     <div
-      class="absolute bottom-2 pointer-events-none transition-opacity duration-150
-             {videoContentWidth !== null ? '' : 'inset-x-2'}
-             {playerHovered || scrubHoverX !== null || definingRange ? 'opacity-100' : 'opacity-0'}"
+      class="mt-2 pointer-events-none"
       style={videoContentWidth !== null
-        ? `left: 8px; width: ${videoContentWidth - 16}px;`
-        : ''}
+        ? `width: ${videoContentWidth}px;`
+        : 'width: 100%;'}
     >
     <div class="relative pointer-events-auto">
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -1411,38 +1430,43 @@
       {/if}
     </div>
     </div>
-    </div>
 
-    <div class="mt-1 text-xs text-base-content/70 tabular-nums font-mono flex items-center gap-2">
-      <span>{formatClock(videoCurrentTime)} / {formatClock(videoDuration)}</span>
+    <!-- Controls row directly under the scrubber, inside the inline-
+         block wrapper so its width is bounded by the video (not the
+         player pane). Time on the left in the same text-base
+         tabular-nums style as the zoom %; clip/block status badges
+         tail the time when active; zoom + download cluster on the
+         right via justify-between. -->
+    <div class="flex items-center gap-3 mt-1">
+      <span class="text-base tabular-nums px-2 text-base-content/70">
+        {formatClock(videoCurrentTime)} / {formatClock(videoDuration)}
+      </span>
       {#if pendingClipStart !== null}
         <span class="badge badge-success badge-sm uppercase tracking-wide">Clip</span>
-        <span class="text-success">
+        <span class="text-success text-xs">
           In @ {formatClock(pendingClipStart)} —
           <kbd class="kbd kbd-xs">Ctrl</kbd>+<kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">]</kbd> to close,
           <kbd class="kbd kbd-xs">Esc</kbd> to cancel
         </span>
         <button type="button" class="btn btn-ghost btn-xs" onclick={cancelPendingClip}>Cancel</button>
       {:else if clipCreating}
-        <span class="text-base-content/60">
+        <span class="text-base-content/60 text-xs">
           <span class="loading loading-spinner loading-xs"></span> Saving clip…
         </span>
       {/if}
       {#if clipError}
-        <span class="text-error">{clipError}</span>
+        <span class="text-error text-xs">{clipError}</span>
       {/if}
       {#if pendingBlockStart !== null}
         <span class="badge badge-warning badge-sm uppercase tracking-wide">Block</span>
-        <span class="text-warning">
+        <span class="text-warning text-xs">
           Start @ {formatClock(pendingBlockStart)} —
           <kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">]</kbd> to close,
           <kbd class="kbd kbd-xs">Esc</kbd> to cancel
         </span>
         <button type="button" class="btn btn-ghost btn-xs" onclick={cancelPendingBlock}>Cancel</button>
       {/if}
-      <!-- Right-hand cluster: zoom on the left, Download icon flush to the
-           far right. Kept as one flex group so the Download stays pinned
-           right regardless of whether the zoom controls are rendered. -->
+
       <div class="ml-auto flex items-center gap-4">
         {#if sizePercent !== null}
           <!-- Size controls: −/+ zoom, % indicator resets to fit-to-column.
@@ -1482,6 +1506,7 @@
           </svg>
         </a>
       </div>
+    </div>
     </div>
 
     {#if video && sortedBlocks.length > 0}
@@ -1525,18 +1550,53 @@
               title="Jump to {formatClock(row.bookmark.offset)}"
               onclick={() => jumpToBookmark(row.bookmark.offset)}
             >{formatClock(row.bookmark.offset)}</button>
-            <input
-              type="text"
-              class="input input-xs input-ghost flex-1 min-w-0"
-              bind:value={video.chapterMarkers[row.idx].comment}
-              placeholder={formatClock(row.bookmark.offset)}
-            />
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs shrink-0"
-              onclick={() => removeBookmark(row.idx)}
-              aria-label="Delete bookmark"
-            >×</button>
+            {#if editingBookmarkIdx === row.idx}
+              <input
+                type="text"
+                class="input input-xs input-bordered min-w-0 max-w-xs"
+                bind:value={video.chapterMarkers[row.idx].comment}
+                placeholder={formatClock(row.bookmark.offset)}
+                use:bookmarkAutofocus
+                onblur={() => (editingBookmarkIdx = null)}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === 'Escape') {
+                    (e.currentTarget as HTMLInputElement).blur();
+                  }
+                }}
+              />
+            {:else}
+              <!-- Name + edit/delete buttons sit right next to each
+                   other (no flex-1 stretching the name to the row's
+                   right edge). max-w-xs caps long names with ellipsis;
+                   anything beyond that just truncates instead of
+                   shoving the action buttons off-screen. -->
+              <button
+                type="button"
+                class="min-w-0 max-w-xs truncate text-left cursor-text {video.chapterMarkers[row.idx].comment ? '' : 'italic text-base-content/40'}"
+                title="Click ✎ to rename"
+                onclick={() => (editingBookmarkIdx = row.idx)}
+              >{video.chapterMarkers[row.idx].comment || formatClock(row.bookmark.offset)}</button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs shrink-0"
+                onclick={() => (editingBookmarkIdx = row.idx)}
+                aria-label="Edit bookmark name"
+                title="Edit name"
+              >✎</button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs shrink-0 text-base-content/60 hover:text-error"
+                onclick={() => removeBookmark(row.idx)}
+                aria-label="Delete bookmark"
+                title="Delete bookmark"
+              >
+                <!-- Trash-can SVG. Reads unambiguously as "delete"
+                     where the previous bare × glyph was easy to miss. -->
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-4 w-4 fill-current">
+                  <path d="M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z" />
+                </svg>
+              </button>
+            {/if}
           </div>
         {/each}
       </div>

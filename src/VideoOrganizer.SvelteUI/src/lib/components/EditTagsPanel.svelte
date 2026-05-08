@@ -18,19 +18,13 @@
     // its own copies of allTags / tagsByGroup / groups so the sidebar
     // tag tree picks up the change without waiting for a route reload.
     onTagSaved?: (saved: Tag) => void | Promise<void>;
-    // Fires when the inner TagEditModal opens or closes. The host on
-    // /browse keys the tags strip's expanded state off this so the
-    // panel doesn't collapse when the modal portals out to <body>
-    // (which kills the strip's :focus-within).
-    onModalOpenChange?: (open: boolean) => void;
   }
 
   let {
     video = $bindable(),
     show = $bindable(),
     onAfterSave,
-    onTagSaved: onTagSavedExternal,
-    onModalOpenChange
+    onTagSaved: onTagSavedExternal
   }: Props = $props();
 
   let groups = $state<TagGroup[]>([]);
@@ -229,14 +223,6 @@
   let editModalShow = $state(false);
   let editingTag = $state<Tag | null>(null);
   let editTagGroupId = $state<string | undefined>(undefined);
-
-  // Bubble open/close transitions up so the host (e.g. /browse) can
-  // pin the surrounding tags strip expanded while the modal is up.
-  // Without this, the modal's portal-to-body strips :focus-within
-  // from the strip and it collapses out from under the user.
-  $effect(() => {
-    onModalOpenChange?.(editModalShow);
-  });
   let editInitialName = $state('');
   // When create flow comes from autocomplete, auto-apply the new tag to the
   // video on save (mimics the old behavior where + Create added it).
