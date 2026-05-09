@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
-  import type { Video } from '$lib/types';
+  import type { Video, FfprobeResult } from '$lib/types';
+  import { runtimeStore } from '$lib/runtimeStore.svelte';
+  import FfprobeResultModal from '$lib/components/FfprobeResultModal.svelte';
+  import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
   import {
     applySortClick,
     compareBySortStack,
@@ -13,42 +16,46 @@
     type SortEntry,
   } from '$lib/tableUtils.svelte';
 
+  // Triage page for videos flagged with PlaybackIssue. Mirrors /purge —
+  // same column layout, sort + resize, busy map, bulk-progress modal,
+  // styled confirmation modal — with these differences:
+  //   · no Purge button (playback issues aren't terminal, the user
+  //     has to decide whether to restore or escalate to mark-for-
+  //     deletion before purging happens via the /purge page)
+  //   · per-row "Delete" → mark-for-deletion (decision: file is bad)
+  //   · per-row "Show in Folder" + "Diagnose" rendered when the
+  //     browser is local, hidden when remote (endpoints would 403)
+  //   · bulk: Restore All only (no bulk delete, since the
+  //     per-row decision is intentional)
+
   let videos = $state<Video[]>([]);
   let loading = $state(false);
   let errorMessage = $state<string | null>(null);
 
-  // Sort + column-width state shared across this table.
-  type PurgeCol = 'file' | 'size';
-  let sortStack = $state<SortEntry<PurgeCol>[]>([]);
-  function onSortClick(col: PurgeCol, e: MouseEvent) {
+  type IssuesCol = 'file' | 'size';
+  let sortStack = $state<SortEntry<IssuesCol>[]>([]);
+  function onSortClick(col: IssuesCol, e: MouseEvent) {
     sortStack = applySortClick(sortStack, col, e.shiftKey);
   }
 
-  const PURGE_WIDTHS_KEY = 'purge.list';
-  let widths = $state<Record<string, number>>(loadColumnWidths(PURGE_WIDTHS_KEY, {
+  const WIDTHS_KEY = 'playbackIssues.list';
+  let widths = $state<Record<string, number>>(loadColumnWidths(WIDTHS_KEY, {
     preview: 176,
     file: 480,
     size: 96,
-    actions: 224,
+    actions: 360,
   }));
-  // Reassign rather than mutate — Svelte 5's deep $state proxy *can*
-  // track property writes, but only if every read sits in a directly
-  // tracked spot in the template. Wrapping reads in a helper function
-  // (getWidth) breaks that, so a write via `widths[col] = w` doesn't
-  // re-trigger the colgroup. Reassigning the whole object always
-  // invalidates dependents.
   function setWidth(col: string, w: number) {
     widths = { ...widths, [col]: w };
-    saveColumnWidths(PURGE_WIDTHS_KEY, widths);
+    saveColumnWidths(WIDTHS_KEY, widths);
   }
   function getWidth(col: string, fallback: number): number {
     return widths[col] ?? fallback;
   }
 
-  // Multi-column sort applied on top of the marked-for-deletion list.
   const sortedVideos = $derived.by(() => {
     if (sortStack.length === 0) return videos;
-    const cmp = compareBySortStack<Video, PurgeCol>(
+    const cmp = compareBySortStack<Video, IssuesCol>(
       {
         file: (v) => v.fileName,
         size: (v) => v.fileSize,
@@ -58,24 +65,19 @@
     return [...videos].sort(cmp);
   });
 
-  // Busy map keyed by video id while its own Purge is in flight, so we can
-  // show per-row spinners without freezing the whole list.
+  // Per-row in-flight tracker → drives spinners on individual rows
+  // without freezing the rest of the table.
   let busyIds = $state<Set<string>>(new Set());
-  let purgeAllBusy = $state(false);
   let restoreAllBusy = $state(false);
+  let purgeAllBusy = $state(false);
 
-  // Results from the most recent Purge All, so the user can see the count
-  // and any failures without digging into logs.
-  let lastResult = $state<{ purged: number; failed: Array<{ fileName: string; error: string }> } | null>(null);
-
-  // --- Bulk-operation progress modal ---------------------------------
-  // Single modal drives both bulk ops: Purge All and Restore All. The
-  // shape distinguishes "indeterminate" (server-side bulk endpoint
-  // can't report per-file progress mid-flight) from "determinate"
-  // (client-side per-file loop, increments done after each await).
-  // The modal stays open after completion when there were failures so
-  // the user can read what went wrong; otherwise auto-closes.
-  type ProgressOp = 'purge' | 'restore';
+  // --- Bulk-operation progress modal (same shape as /purge) ----------
+  // Both Restore All and Purge All run as client-side per-file
+  // loops so we get determinate progress + Pause / Stop semantics.
+  // The loop polls `paused` between iterations and breaks on
+  // `stopRequested`; the user dismisses via Esc or Close after
+  // isComplete (so success summaries / failure lists stay readable).
+  type ProgressOp = 'restore' | 'purge';
   let progressModal = $state<{
     op: ProgressOp;
     done: number;
@@ -83,27 +85,17 @@
     currentFile: string | null;
     failed: Array<{ fileName: string; error: string }>;
     isComplete: boolean;
-    // True after the user clicked Stop (loop terminated early).
-    // Drives the "stopped early" hint on the summary so it's
-    // distinguishable from "ran to completion".
     stopped: boolean;
   } | null>(null);
 
-  // Pause / Stop state for the bulk loops below. Both bulk
-  // operations run client-side per-file so pause/stop are real:
-  // the loop polls these between iterations. Pause halts at the
-  // next iteration boundary; Stop terminates the loop entirely.
+  // Pause / Stop state shared by both bulk loops below.
   let paused = $state(false);
   let stopRequested = $state(false);
 
   function pauseLoop()  { paused = true; }
   function resumeLoop() { paused = false; }
-  function stopLoop()   { stopRequested = true; paused = false; /* don't deadlock the wait loop */ }
+  function stopLoop()   { stopRequested = true; paused = false; }
 
-  // Polled between iterations by the bulk loops. Resolves
-  // immediately when not paused; otherwise busy-waits in 100ms
-  // ticks until either resumed or stopped. Fine grain: a 100ms
-  // delay is invisible to a human pressing Resume/Stop.
   async function waitWhilePaused() {
     while (paused && !stopRequested) {
       await new Promise(r => setTimeout(r, 100));
@@ -116,23 +108,48 @@
     stopRequested = false;
   }
 
-  // Restore-All confirmation. Replaces window.confirm() so the
-  // dialog matches the page's daisyUI style instead of falling out
-  // of the design system as a system-native prompt.
+  // --- Restore All confirmation -------------------------------------
   let restoreConfirmOpen = $state(false);
   function openRestoreConfirm() {
-    if (videos.length === 0 || restoreAllBusy || purgeAllBusy) return;
+    if (videos.length === 0 || restoreAllBusy) return;
     restoreConfirmOpen = true;
   }
-  function cancelRestoreConfirm() {
-    restoreConfirmOpen = false;
+  function cancelRestoreConfirm() { restoreConfirmOpen = false; }
+
+  // --- Purge All confirmation --------------------------------------
+  // Bulk-deletes every playback-issue file from disk + DB in one
+  // server call. More destructive than the per-row Delete (which
+  // just queues for purge). Modal styled to match the rest of the
+  // page; backdrop click cancels.
+  let purgeConfirmOpen = $state(false);
+  function openPurgeConfirm() {
+    if (videos.length === 0 || purgeAllBusy || restoreAllBusy) return;
+    purgeConfirmOpen = true;
   }
+  function cancelPurgeConfirm() { purgeConfirmOpen = false; }
+
+  // --- Per-row Delete (escalate to mark-for-deletion) confirmation -
+  // Replaces window.confirm() with a page-styled daisyUI modal so the
+  // dialog matches the rest of the design system. Holds the pending
+  // video; null = closed. confirmDelete consumes the pending video
+  // and runs the actual API call.
+  let pendingDelete = $state<Video | null>(null);
+  function openDeleteConfirm(v: Video) {
+    if (busyIds.has(v.id)) return;
+    pendingDelete = v;
+  }
+  function cancelDeleteConfirm() { pendingDelete = null; }
+
+  // --- ffprobe diagnostic modal -------------------------------------
+  // The modal markup + filter / pretty-print logic lives in the
+  // shared FfprobeResultModal component. We only own the state.
+  let ffprobeResult = $state<FfprobeResult | null>(null);
 
   async function load() {
     loading = true;
     errorMessage = null;
     try {
-      videos = await api.getMarkedForDeletion();
+      videos = await api.getPlaybackIssues();
     } catch (e) {
       errorMessage = e instanceof Error ? e.message : String(e);
     } finally {
@@ -153,29 +170,12 @@
 
   const totalBytes = $derived(videos.reduce((sum, v) => sum + (v.fileSize || 0), 0));
 
-  async function purgeOne(v: Video) {
-    if (busyIds.has(v.id)) return;
-    const confirmMsg = `Permanently delete this file and remove it from the database?\n\n${v.fileName}\n${v.filePath}\n\nThis cannot be undone.`;
-    if (!window.confirm(confirmMsg)) return;
-    busyIds.add(v.id);
-    busyIds = new Set(busyIds);
-    try {
-      await api.purgeVideo(v.id);
-      videos = videos.filter(x => x.id !== v.id);
-    } catch (e) {
-      errorMessage = `Failed to purge ${v.fileName}: ${e instanceof Error ? e.message : String(e)}`;
-    } finally {
-      busyIds.delete(v.id);
-      busyIds = new Set(busyIds);
-    }
-  }
-
   async function restore(v: Video) {
     if (busyIds.has(v.id)) return;
     busyIds.add(v.id);
     busyIds = new Set(busyIds);
     try {
-      await api.unmarkForDeletion(v.id);
+      await api.unmarkPlaybackIssue(v.id);
       videos = videos.filter(x => x.id !== v.id);
     } catch (e) {
       errorMessage = `Failed to restore ${v.fileName}: ${e instanceof Error ? e.message : String(e)}`;
@@ -185,21 +185,115 @@
     }
   }
 
-  async function purgeAll() {
+  // Escalate: user has reviewed the playback issue and decided the
+  // file isn't worth keeping. Move to _ToDelete; actual purge still
+  // happens on the /purge page so this stays a two-step destructive
+  // action rather than a one-click landmine. Invoked by the styled
+  // confirmation modal's Delete button — the row's Delete button on
+  // the page just opens the modal via openDeleteConfirm.
+  async function confirmDelete() {
+    const v = pendingDelete;
+    if (!v) return;
+    pendingDelete = null;
+    if (busyIds.has(v.id)) return;
+    busyIds.add(v.id);
+    busyIds = new Set(busyIds);
+    try {
+      // The mark-for-deletion endpoint sets MarkedForDeletion=true.
+      // It also moves the file out of _PlaybackIssue/ into _ToDelete/
+      // (server-side path math), so the row drops off this page.
+      await api.markForDeletion(v.id);
+      videos = videos.filter(x => x.id !== v.id);
+    } catch (e) {
+      errorMessage = `Failed to mark for deletion: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      busyIds.delete(v.id);
+      busyIds = new Set(busyIds);
+    }
+  }
+
+  async function revealRow(v: Video) {
+    if (busyIds.has(v.id)) return;
+    busyIds.add(v.id);
+    busyIds = new Set(busyIds);
+    try {
+      await api.revealVideo(v.id);
+    } catch (e) {
+      errorMessage = `Failed to open folder for ${v.fileName}: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      busyIds.delete(v.id);
+      busyIds = new Set(busyIds);
+    }
+  }
+
+  async function diagnoseRow(v: Video) {
+    if (busyIds.has(v.id)) return;
+    busyIds.add(v.id);
+    busyIds = new Set(busyIds);
+    try {
+      ffprobeResult = await api.ffprobeVideo(v.id);
+    } catch (e) {
+      errorMessage = `ffprobe failed for ${v.fileName}: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      busyIds.delete(v.id);
+      busyIds = new Set(busyIds);
+    }
+  }
+
+  async function confirmRestoreAll() {
+    if (videos.length === 0 || restoreAllBusy) return;
+    restoreConfirmOpen = false;
+    restoreAllBusy = true;
+    errorMessage = null;
+    const list = [...videos];
+    paused = false;
+    stopRequested = false;
+    progressModal = {
+      op: 'restore',
+      done: 0,
+      total: list.length,
+      currentFile: null,
+      failed: [],
+      isComplete: false,
+      stopped: false
+    };
+    for (const v of list) {
+      await waitWhilePaused();
+      if (stopRequested) break;
+      progressModal = { ...progressModal, currentFile: v.fileName };
+      try {
+        await api.unmarkPlaybackIssue(v.id);
+        videos = videos.filter(x => x.id !== v.id);
+        progressModal = { ...progressModal, done: progressModal.done + 1 };
+      } catch (e) {
+        progressModal = {
+          ...progressModal,
+          done: progressModal.done + 1,
+          failed: [
+            ...progressModal.failed,
+            { fileName: v.fileName, error: e instanceof Error ? e.message : String(e) }
+          ]
+        };
+      }
+    }
+    progressModal = {
+      ...progressModal,
+      isComplete: true,
+      currentFile: null,
+      stopped: stopRequested
+    };
+    restoreAllBusy = false;
+  }
+
+  async function confirmPurgeAll() {
     if (videos.length === 0 || purgeAllBusy) return;
-    const confirmMsg =
-      `Permanently delete ${videos.length} file${videos.length === 1 ? '' : 's'} from disk and remove them from the database?\n\nTotal size: ${formatBytes(totalBytes)}\n\nThis cannot be undone.`;
-    if (!window.confirm(confirmMsg)) return;
+    purgeConfirmOpen = false;
     purgeAllBusy = true;
     errorMessage = null;
-    lastResult = null;
-    // Client-side per-file loop (replaces the prior server-side
-    // bulk endpoint call) so the user can Pause / Stop mid-run.
-    // Parents are sorted to the front because the server cascade-
-    // deletes clip rows when their parent is purged — sending a
-    // clip after its parent has already been cascaded would 404,
-    // which we'd then have to filter out. Sorting keeps the loop's
-    // success/failure counts honest.
+    // Client-side per-file loop (same pattern as /purge#purgeAll).
+    // The /api/videos/{id}/purge endpoint accepts PlaybackIssue=true
+    // rows now, so we can hit it directly without staging through
+    // mark-for-deletion first. Parents-first sort matches /purge.
     const list = [...videos].sort(
       (a, b) => Number(!!a.parentVideoId) - Number(!!b.parentVideoId)
     );
@@ -239,69 +333,7 @@
       currentFile: null,
       stopped: stopRequested
     };
-    lastResult = {
-      purged: progressModal.done - progressModal.failed.length,
-      failed: progressModal.failed
-    };
     purgeAllBusy = false;
-    // Modal stays open until the user dismisses it via Esc or the
-    // Close button.
-  }
-
-  // Invoked by the styled confirmation modal's "Restore" button.
-  // The Restore-All button on the page just opens the confirmation;
-  // this is where the actual loop runs.
-  async function confirmRestoreAll() {
-    if (videos.length === 0 || restoreAllBusy) return;
-    restoreConfirmOpen = false;
-    restoreAllBusy = true;
-    errorMessage = null;
-    // No bulk-restore endpoint exists; loop client-side. Snapshot
-    // the list before mutating `videos` so we keep iterating after
-    // each removal. Determinate progress: increment `done` after
-    // every await so the bar tracks real per-file completion.
-    // Pause/Stop are polled between iterations.
-    const list = [...videos];
-    paused = false;
-    stopRequested = false;
-    progressModal = {
-      op: 'restore',
-      done: 0,
-      total: list.length,
-      currentFile: null,
-      failed: [],
-      isComplete: false,
-      stopped: false
-    };
-    for (const v of list) {
-      await waitWhilePaused();
-      if (stopRequested) break;
-      progressModal = { ...progressModal, currentFile: v.fileName };
-      try {
-        await api.unmarkForDeletion(v.id);
-        videos = videos.filter(x => x.id !== v.id);
-        progressModal = { ...progressModal, done: progressModal.done + 1 };
-      } catch (e) {
-        progressModal = {
-          ...progressModal,
-          done: progressModal.done + 1,
-          failed: [
-            ...progressModal.failed,
-            { fileName: v.fileName, error: e instanceof Error ? e.message : String(e) }
-          ]
-        };
-      }
-    }
-    progressModal = {
-      ...progressModal,
-      isComplete: true,
-      currentFile: null,
-      stopped: stopRequested
-    };
-    restoreAllBusy = false;
-    // Modal stays open after completion — user dismisses via Esc
-    // or the Close button (so success summaries / failure lists
-    // remain readable).
   }
 
   // Escape closes the progress modal once the operation finishes.
@@ -317,12 +349,20 @@
 
 <svelte:window onkeydown={onWindowKeyDown} />
 
+<svelte:head><title>Playback Issues - Video Organizer</title></svelte:head>
+
 <div class="max-w-6xl mx-auto">
+  <!-- Local-only buttons (Show in Folder, Diagnose) on each row only
+       render when the browser is on the API's host machine. The
+       banner explains why they're missing if the user is remote. -->
+  <RemoteHostBanner />
   <div class="flex items-start justify-between gap-4 mb-4">
     <div>
-      <h1 class="text-2xl font-semibold">Purge Deleted</h1>
+      <h1 class="text-2xl font-semibold">Playback Issues</h1>
       <p class="text-sm text-base-content/70 mt-1">
-        Videos marked for deletion. Purging removes the file from disk <em>and</em> the database record — this is permanent.
+        Videos you've flagged as not playing cleanly in the browser. Files live under
+        <code class="text-xs">&lt;set&gt;/_PlaybackIssue/</code> until you Restore them
+        (move back, clear the flag) or escalate to Delete (move to the purge queue).
       </p>
     </div>
     <div class="flex gap-2 shrink-0">
@@ -330,16 +370,15 @@
         {#if loading}<span class="loading loading-spinner loading-xs"></span>{/if}
         Refresh
       </button>
-      <!-- Restore All sits to the LEFT of Purge All so the safer
-           action is the closer-to-finger default — Purge is on the
-           outside in error-tinted styling, Restore in the cancel/
-           neutral palette. -->
+      <!-- Restore (safe) on the inside, Purge (destructive) on the
+           outside — same arrangement as /purge so the dangerous
+           action is visually offset. -->
       <button
         type="button"
         class="btn btn-sm btn-cancel"
         onclick={openRestoreConfirm}
         disabled={restoreAllBusy || purgeAllBusy || videos.length === 0}
-        title="Move every staged file back to its original location and clear the marked-for-deletion flag"
+        title="Move every staged file back to its original location and clear the playback-issue flag"
       >
         {#if restoreAllBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
         Restore All ({videos.length})
@@ -347,8 +386,9 @@
       <button
         type="button"
         class="btn btn-sm btn-soft btn-error border border-error/50"
-        onclick={purgeAll}
+        onclick={openPurgeConfirm}
         disabled={purgeAllBusy || restoreAllBusy || videos.length === 0}
+        title="Permanently delete every flagged file from disk and remove the database row — bypasses the To Delete queue"
       >
         {#if purgeAllBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
         Purge All ({videos.length})
@@ -357,50 +397,30 @@
   </div>
 
   {#if errorMessage}
-    <div class="alert alert-error mb-4 text-sm">{errorMessage}</div>
-  {/if}
-
-  {#if lastResult}
-    <div class="alert {lastResult.failed.length === 0 ? 'alert-success' : 'alert-warning'} mb-4 text-sm">
-      <div>
-        <div>Purged {lastResult.purged} file{lastResult.purged === 1 ? '' : 's'}.</div>
-        {#if lastResult.failed.length > 0}
-          <ul class="mt-2 list-disc ml-5 space-y-0.5">
-            {#each lastResult.failed as f, i (i)}
-              <li class="break-all"><strong>{f.fileName}:</strong> {f.error}</li>
-            {/each}
-          </ul>
-        {/if}
-      </div>
+    <div class="alert alert-error mb-4 text-sm flex items-start gap-2">
+      <span class="flex-1">{errorMessage}</span>
+      <button class="btn btn-xs btn-ghost" onclick={() => (errorMessage = null)}>Dismiss</button>
     </div>
   {/if}
 
   {#if !loading && videos.length === 0}
     <div class="text-center py-16 text-base-content/60">
-      Nothing marked for deletion.
+      No videos flagged with a playback issue.
     </div>
   {:else if videos.length > 0}
     <div class="text-xs text-base-content/60 mb-2 tabular-nums">
       {videos.length} video{videos.length === 1 ? '' : 's'} · {formatBytes(totalBytes)} total
     </div>
     <div class="overflow-x-auto border border-base-300 rounded">
-      <!-- Drop min-width:100% — with table-layout:fixed and explicit
-           col widths summing < container, the browser redistributes the
-           leftover space across columns, which made col 1 appear to not
-           shrink (the freed space was being given right back to it).
-           Plain `width: max-content` makes the table = exactly sum-of-cols
-           so each drag affects only the column being dragged. -->
       <table class="table table-sm" style="table-layout: fixed; width: max-content;">
         <colgroup>
           <col style="width: {getWidth('preview', 176)}px" />
           <col style="width: {getWidth('file', 480)}px" />
           <col style="width: {getWidth('size', 96)}px" />
-          <col style="width: {getWidth('actions', 224)}px" />
+          <col style="width: {getWidth('actions', 360)}px" />
         </colgroup>
         <thead>
           <tr>
-            <!-- Preview: not sortable, but resizable so users can shrink
-                 the thumbnail column when they want a denser list. -->
             <th class="relative select-none">
               Preview
               <button
@@ -442,7 +462,7 @@
                 type="button"
                 aria-label="Resize Actions"
                 class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
-                onmousedown={(e) => startColumnResize(e, getWidth('actions', 224), (w) => setWidth('actions', w))}
+                onmousedown={(e) => startColumnResize(e, getWidth('actions', 360), (w) => setWidth('actions', w))}
               ></button>
             </th>
           </tr>
@@ -451,12 +471,6 @@
           {#each sortedVideos as v (v.id)}
             {@const busy = busyIds.has(v.id)}
             <tr>
-              <!-- w-full max-w-40 so the thumbnail tracks the column's
-                   actual rendered width (it caps at 160px, the natural
-                   preview size, but shrinks when the user drags the
-                   Preview column smaller). overflow-hidden on the cell
-                   prevents long content from visually defeating the
-                   resize. -->
               <td class="align-top overflow-hidden">
                 <div class="w-full max-w-40 aspect-video bg-base-300 rounded overflow-hidden">
                   <img
@@ -487,27 +501,42 @@
                   class="btn btn-xs btn-soft btn-primary btn-cta"
                   href={api.streamUrl(v.id)}
                   download={v.fileName}
-                  title="Download the video file before purging"
+                  title="Download the file before deciding what to do with it"
                 >
                   Download
                 </a>
+                {#if runtimeStore.isLocal}
+                  <button
+                    type="button"
+                    class="btn btn-xs btn-ghost ml-1"
+                    onclick={() => revealRow(v)}
+                    disabled={busy}
+                    title="Reveal in the host file manager"
+                  >Show in Folder</button>
+                  <button
+                    type="button"
+                    class="btn btn-xs btn-ghost ml-1"
+                    onclick={() => diagnoseRow(v)}
+                    disabled={busy}
+                    title="Run ffprobe and show codec / format / stream details"
+                  >Diagnose</button>
+                {/if}
                 <button
                   type="button"
                   class="btn btn-xs btn-cancel ml-1"
                   onclick={() => restore(v)}
                   disabled={busy}
-                  title="Unmark for deletion and move the file back to its original location"
-                >
-                  Restore
-                </button>
+                  title="Clear the playback-issue flag and move the file back to its original location"
+                >Restore</button>
                 <button
                   type="button"
                   class="btn btn-xs btn-soft btn-error border border-error/50 ml-1"
-                  onclick={() => purgeOne(v)}
+                  onclick={() => openDeleteConfirm(v)}
                   disabled={busy}
+                  title="Escalate: move the file to the purge queue instead of restoring it"
                 >
                   {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
-                  Purge
+                  Delete
                 </button>
               </td>
             </tr>
@@ -518,37 +547,89 @@
   {/if}
 </div>
 
-<!-- Restore All confirmation. Custom daisyUI modal matching the
-     page's design system — the previous window.confirm() prompt
-     dropped out of the styling and felt like a browser dialog. -->
+<!-- Per-row Delete (escalate to mark-for-deletion) confirmation.
+     Replaces a window.confirm() prompt so it matches the page's
+     styling. Same skeleton as the Restore All dialog: cancel on the
+     left, destructive primary action on the right, backdrop click
+     also cancels. -->
+{#if pendingDelete !== null}
+  {@const v = pendingDelete}
+  <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+    <div class="modal-box">
+      <h3 id="delete-confirm-title" class="font-bold text-lg text-error">Move to deletion queue?</h3>
+      <p class="mt-3 text-sm text-base-content/80 break-all">
+        <span class="font-semibold">{v.fileName}</span>
+      </p>
+      <p class="mt-3 text-sm text-base-content/80">
+        The file will be moved to <code class="text-xs bg-base-200 px-1 rounded">&lt;set&gt;/_ToDelete/</code>
+        and listed on the Purge page. It is <em>not</em> deleted from disk yet — you can restore it from
+        Purge, or run Purge All there to remove it permanently.
+      </p>
+      <div class="modal-action">
+        <button type="button" class="btn btn-sm btn-cancel" onclick={cancelDeleteConfirm}>Cancel</button>
+        <button type="button" class="btn btn-sm btn-soft btn-error border border-error/50" onclick={confirmDelete}>Move to Delete</button>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Cancel delete"
+      onclick={cancelDeleteConfirm}
+    ></button>
+  </div>
+{/if}
+
+<!-- Purge All confirmation. Bulk-deletes every playback-issue
+     file from disk + DB in one server call — destructive, bypasses
+     the staging step that the per-row Delete uses. Styled with
+     error-tinted heading + button so it visually matches the gravity
+     of the action. -->
+{#if purgeConfirmOpen}
+  <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="purge-confirm-title">
+    <div class="modal-box">
+      <h3 id="purge-confirm-title" class="font-bold text-lg text-error">Purge all videos?</h3>
+      <p class="mt-3 text-sm text-base-content/80">
+        Permanently delete <span class="font-semibold tabular-nums">{videos.length}</span>
+        playback-issue file{videos.length === 1 ? '' : 's'} from disk
+        <em>and</em> remove the database row{videos.length === 1 ? '' : 's'}.
+      </p>
+      <p class="mt-2 text-xs text-base-content/60">
+        Total size: <span class="tabular-nums">{formatBytes(totalBytes)}</span>. This cannot be undone.
+        Use Restore All instead if you want to put the files back where they came from.
+      </p>
+      <div class="modal-action">
+        <button type="button" class="btn btn-sm btn-cancel" onclick={cancelPurgeConfirm}>Cancel</button>
+        <button type="button" class="btn btn-sm btn-soft btn-error border border-error/50" onclick={confirmPurgeAll}>Purge All</button>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Cancel purge all"
+      onclick={cancelPurgeConfirm}
+    ></button>
+  </div>
+{/if}
+
+<!-- Restore All confirmation — same daisyUI pattern as /purge so the
+     two triage pages feel like a matched pair. -->
 {#if restoreConfirmOpen}
   <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="restore-confirm-title">
     <div class="modal-box">
       <h3 id="restore-confirm-title" class="font-bold text-lg">Restore all videos?</h3>
       <p class="mt-3 text-sm text-base-content/80">
         Move <span class="font-semibold tabular-nums">{videos.length}</span>
-        marked-for-deletion file{videos.length === 1 ? '' : 's'} back to their
-        original locations and clear the deletion flag?
+        playback-issue file{videos.length === 1 ? '' : 's'} back to their original locations
+        and clear the flag?
       </p>
       <p class="mt-2 text-xs text-base-content/60">
         Each file is restored individually — progress will appear in a follow-up dialog.
       </p>
       <div class="modal-action">
-        <button
-          type="button"
-          class="btn btn-sm btn-cancel"
-          onclick={cancelRestoreConfirm}
-        >Cancel</button>
-        <button
-          type="button"
-          class="btn btn-sm btn-soft btn-primary btn-cta"
-          onclick={confirmRestoreAll}
-        >Restore All</button>
+        <button type="button" class="btn btn-sm btn-cancel" onclick={cancelRestoreConfirm}>Cancel</button>
+        <button type="button" class="btn btn-sm btn-soft btn-primary btn-cta" onclick={confirmRestoreAll}>Restore All</button>
       </div>
     </div>
-    <!-- Backdrop click cancels — same affordance as the Cancel
-         button. Rendered as a <button> so screen readers and the
-         keyboard pick it up natively, no svelte-ignore needed. -->
     <button
       type="button"
       class="modal-backdrop"
@@ -558,18 +639,14 @@
   </div>
 {/if}
 
-<!-- Bulk-operation progress modal. Both Purge All and Restore All
-     run as client-side per-file loops so we get determinate
-     progress and Pause / Stop semantics that actually do something.
-     Stays open until dismissed via Esc or Close so success
-     summaries (and any failure list) remain readable. Pause and
-     Stop are non-closing actions: they affect the loop, not the
-     modal's visibility. -->
+<!-- Bulk Restore progress modal — determinate per-file progress
+     since we loop client-side. Stays open after completion if any
+     files failed so the user can read the per-file errors. -->
 {#if progressModal !== null}
   {@const m = progressModal}
-  <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="purge-progress-title">
+  <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="bulk-progress-title">
     <div class="modal-box">
-      <h3 id="purge-progress-title" class="font-bold text-lg">
+      <h3 id="bulk-progress-title" class="font-bold text-lg">
         {m.op === 'purge' ? 'Purging videos' : 'Restoring videos'}
         {#if paused && !m.isComplete}
           <span class="badge badge-sm badge-warning ml-2 align-middle">Paused</span>
@@ -608,11 +685,9 @@
           </div>
         {/if}
       </div>
-      <!-- Action row. While running: Pause/Resume + Stop (both
-           non-closing — they affect the loop only). Once complete:
-           Close. The Close button is intentionally only available
-           after isComplete so the user can't dismiss mid-run and
-           lose track of what's still happening. -->
+      <!-- Pause / Stop while running (non-closing); Close once
+           complete. Same arrangement as /purge so the two pages
+           feel like a matched pair. -->
       <div class="modal-action">
         {#if !m.isComplete}
           {#if paused}
@@ -632,9 +707,11 @@
         {/if}
       </div>
     </div>
-    <!-- Backdrop is non-interactive — Pause / Stop / Close drive the
-         dismissal; clicking outside the modal during a long operation
-         shouldn't accidentally close it. -->
     <div class="modal-backdrop"></div>
   </div>
 {/if}
+
+<!-- Shared ffprobe diagnostic modal — same component the player
+     overlay uses, so users get identical output (and the same line
+     filter) regardless of where they invoked it. -->
+<FfprobeResultModal bind:result={ffprobeResult} />
