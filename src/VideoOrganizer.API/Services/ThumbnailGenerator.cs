@@ -28,9 +28,9 @@ public class ThumbnailGenerator : IThumbnailGenerator
         Directory.CreateDirectory(_thumbnailCacheDir);
     }
 
-    // Target ~25 frames across the whole video, with a minimum 2s spacing so
+    // Target ~15 frames across the whole video, with a minimum 2s spacing so
     // very short clips don't produce a pile of near-duplicate frames.
-    private const int TargetFrameCount = 25;
+    private const int TargetFrameCount = 15;
     private const int MinIntervalSeconds = 2;
 
     // Pass intervalSeconds <= 0 to use the adaptive default (TargetFrameCount frames
@@ -68,7 +68,7 @@ public class ThumbnailGenerator : IThumbnailGenerator
         var mediaInfo = await FFmpeg.GetMediaInfo(videoPath, ct);
         var duration = mediaInfo.Duration;
 
-        // Pick interval so we target 25 frames, but no tighter than MinIntervalSeconds.
+        // Pick interval so we target TargetFrameCount frames, but no tighter than MinIntervalSeconds.
         if (intervalSeconds <= 0)
         {
             intervalSeconds = Math.Max(MinIntervalSeconds, (int)Math.Ceiling(duration.TotalSeconds / TargetFrameCount));

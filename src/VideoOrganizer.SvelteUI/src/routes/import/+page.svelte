@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api';
   import type {
     ImportBrowseDirectory,
@@ -117,9 +118,19 @@
   const importableCount = $derived(pendingFiles.length);
   const hasImportableFiles = $derived(importableCount > 0);
 
+  // "Import More" checkbox under the floating Import button. Checked
+  // = stay on the import tool after kicking off a job so the user
+  // can queue up another folder. Unchecked (default) = navigate to
+  // /background-tasks afterwards so they can watch progress. Stored
+  // in localStorage so the choice persists across sessions — most
+  // users settle into one of the two workflows.
+  let importMore = $state(false);
+
   // --- Lifecycle ------------------------------------------------------------
 
   onMount(async () => {
+    importMore = localStorage.getItem('importMore') === '1';
+
     try {
       sets = await api.listVideoSets();
     } catch (e) {
@@ -133,6 +144,13 @@
     }
 
     await loadTreeRoot();
+  });
+
+  // Cheap on every flip; keeps localStorage in sync without a save
+  // gesture.
+  $effect(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem('importMore', importMore ? '1' : '0');
   });
 
   // --- Add-dataset modal ----------------------------------------------------
@@ -378,6 +396,13 @@
       // Refresh the totals counter; the file list is intentionally NOT
       // reloaded since the import is still in flight server-side.
       void refreshVideoCount();
+      // "Import More" unchecked → user is done queuing jobs and wants
+      // to watch them run. Hand them off to Background Tasks so they
+      // don't have to navigate manually. Checked (default) keeps them
+      // on this page to queue up another folder.
+      if (!importMore) {
+        await goto('/background-tasks');
+      }
     } catch (e) {
       formError = toMessage('Import failed', e);
     } finally {
@@ -754,13 +779,22 @@
   </div>
 </div>
 
-<!-- Floating Import button — always visible on the bottom-right of the
-     viewport, regardless of scroll position. Disabled states explain in the
-     tooltip why it isn't clickable yet. -->
-<div class="fixed bottom-6 right-6 z-30">
+<!-- Floating CTA cluster — always visible on the bottom-right of the
+     viewport, regardless of scroll position. Stacked column with the
+     Import button on top and an "Import More" checkbox below.
+     Checked (default) keeps the user on this page after kicking off
+     a job so they can queue another folder; unchecked navigates to
+     Background Tasks afterwards. Right-aligned (items-end) so the
+     checkbox label and button trail share the same right edge. -->
+<div class="fixed bottom-6 right-6 z-30 flex flex-col items-end gap-2">
+  <!-- min-w sized empirically so the Import button is a touch wider
+       than the "Import More" checkbox pill below it (which is
+       content-sized around the label + checkbox). Keeps the two
+       chrome elements visually anchored as a vertical stack rather
+       than reading as two unrelated widths. -->
   <button
     type="button"
-    class="btn btn-lg btn-soft btn-primary btn-cta shadow-lg"
+    class="btn btn-lg btn-soft btn-primary btn-cta shadow-lg min-w-56"
     disabled={!folderSelected || !hasImportableFiles || importing}
     onclick={handleImport}
     title={!folderSelected
@@ -774,6 +808,15 @@
     {#if importing}<span class="loading loading-spinner loading-sm"></span>{/if}
     Import{folderSelected && hasImportableFiles ? ` (${importableCount})` : ''}
   </button>
+  <!-- Solid-bg pill so the label is readable against any thumbnail
+       grid that scrolls behind the floating cluster. -->
+  <label
+    class="flex items-center gap-2 cursor-pointer bg-base-100/95 border border-base-300 rounded-full px-3 py-1 shadow text-sm"
+    title="Checked: stay on the import tool after the job starts. Unchecked: jump to Background Tasks to watch progress."
+  >
+    <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" bind:checked={importMore} />
+    <span>Import More</span>
+  </label>
 </div>
 
 {#if showAddSetDialog}
