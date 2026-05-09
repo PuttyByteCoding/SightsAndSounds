@@ -11,11 +11,13 @@
 
   import { tick, onMount } from 'svelte';
   import { api } from '$lib/api';
-  import type { Tag, Video } from '$lib/types';
+  import type { Tag, Video, FfprobeResult } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { pillClass } from '$lib/tagColors';
+  import { runtimeStore } from '$lib/runtimeStore.svelte';
   import TagEditModal from './TagEditModal.svelte';
+  import FfprobeResultModal from './FfprobeResultModal.svelte';
 
   interface Props {
     video: Video | null;
@@ -50,6 +52,12 @@
     // then navigates with arrow keys (the panel's own onAfterSave only
     // fires when the user clicks Save in the panel, not on nav-save).
     onAfterSave?: () => void | Promise<void>;
+    // Fired when a server endpoint returns an updated Video (e.g.
+    // mark-for-deletion advances to the next video, but the marked
+    // row's `markedForDeletion` flag also needs to propagate to the
+    // host's grid so the thumbnail can grey out + show the trash
+    // icon). Host patches its videos array by id.
+    onVideoChanged?: (video: Video) => void | Promise<void>;
   }
 
   let {
@@ -61,7 +69,8 @@
     tagsPanelOpen = false,
     onToggleTags,
     onToggleFileInfo,
-    onAfterSave
+    onAfterSave,
+    onVideoChanged
   }: Props = $props();
 
   // --- Internal state -------------------------------------------------------
@@ -165,14 +174,27 @@
   // whether to POST before firing onRequestPrev/Next.
   let loadedVideoSnapshot = $state<string | null>(null);
 
-  // Mark+move (To Delete) busy state. Won't Play is a plain toggle now,
+  // Mark+move (To Delete) busy state. Playback Issue is a plain toggle now,
   // so it doesn't participate here.
-  let markActionBusy = $state<'delete' | null>(null);
+  let markActionBusy = $state<'delete' | 'playbackissue' | null>(null);
   let errorMessage = $state<string | null>(null);
 
   // Fade the column during navigation for immediate visual feedback before
   // the save POST + host's onRequestNext/Prev round-trip finishes.
   let isNavigating = $state(false);
+
+  // Buffering / load-progress indicator. Drives a centered spinner
+  // overlay on the video element. Toggled by the standard HTMLMedia
+  // events: loadstart and waiting flip it on, canplay/playing/
+  // loadeddata flip it off. The id-change effect below also forces
+  // it on so the spinner appears immediately when the user navigates
+  // — without waiting for the browser to fire loadstart.
+  let videoLoading = $state(true);
+  function onVideoLoadStart() { videoLoading = true; }
+  function onVideoWaiting()   { videoLoading = true; }
+  function onVideoCanPlay()   { videoLoading = false; }
+  function onVideoPlaying()   { videoLoading = false; }
+  function onVideoLoadedData(){ videoLoading = false; }
 
   // Whichever video ID we've most recently initialized state for. Used to
   // avoid re-running the reset effect on every unrelated field mutation
@@ -233,6 +255,13 @@
 
   const videoUrl = $derived(video ? api.streamUrl(video.id) : '');
   const isMarkedDelete = $derived(video?.markedForDeletion ?? false);
+  // Playback Issue follows the same UX as marked-for-deletion (heavy
+  // grayscale on the player + an overlay with an Undo button) but
+  // with warning-tinted chrome and a different icon. Marked-for-
+  // deletion takes visual precedence when both flags are set so the
+  // user sees the destructive state first.
+  const isPlaybackIssue = $derived(video?.playbackIssue ?? false);
+  const isInactive = $derived(isMarkedDelete || isPlaybackIssue);
 
   // True while Shift+[ or Ctrl+Shift+[ has fired but the corresponding
   // close key hasn't. Drives auto-skip suppression and scrubber-pinning
@@ -308,6 +337,11 @@
     }
     if (video.id === initializedForId) return;
     initializedForId = video.id;
+    // New video → spinner on until the browser tells us it's ready
+    // to play (canplay/playing/loadeddata). Set up-front instead of
+    // relying on `loadstart` to avoid a frame of leftover "ready"
+    // state from the previous video.
+    videoLoading = true;
     loadedVideoSnapshot = JSON.stringify(video);
     loadScrubberFrames(video.id);
     // Reset watch-beacon accumulation for the new video.
@@ -814,7 +848,7 @@
   // True when any structural status flag is set.
   function hasAnyStatus(v: Video | null): boolean {
     if (!v) return false;
-    return v.needsReview || v.wontPlay || v.markedForDeletion;
+    return v.needsReview || v.playbackIssue || v.markedForDeletion;
   }
 
   function formatClock(seconds: number): string {
@@ -951,7 +985,12 @@
         videoEl.load();
       }
       await onRequestNext?.();
-      await api.markForDeletion(markId);
+      const updated = await api.markForDeletion(markId);
+      // Propagate the freshly-marked row back to the host so the
+      // grid thumbnail can re-render greyed-out + trash-icon. The
+      // user is already viewing the next video by now; only the
+      // background grid needs the patch.
+      if (updated) await onVideoChanged?.(updated);
     } catch (e) {
       errorMessage = e instanceof Error ? e.message : String(e);
     } finally {
@@ -973,6 +1012,10 @@
       const updated = await api.unmarkForDeletion(id);
       video = updated;
       loadedVideoSnapshot = JSON.stringify(updated);
+      // Mirror the local update into the host's videos array so a
+      // sibling thumbnail (and any other view of this video) clears
+      // its marked-state styling.
+      await onVideoChanged?.(updated);
       await tick();
       if (videoEl) {
         videoEl.muted = true;
@@ -990,27 +1033,113 @@
     }
   }
 
+  // U is the universal "undo last destructive mark" key. Routes to
+  // whichever flag is currently set on this video — marked-for-
+  // deletion takes precedence when both are set. No-op when neither
+  // flag is set so users can hold U safely.
   async function performUndo() {
     if (!video || markActionBusy !== null) return;
-    if (!video.markedForDeletion) return;
-    await performUnmarkDelete();
+    if (video.markedForDeletion) {
+      await performUnmarkDelete();
+    } else if (video.playbackIssue) {
+      await performUnmarkPlaybackIssue();
+    }
   }
 
-  // Toggle the Won't Play flag on the current video and advance. Calls the
-  // mark/unmark endpoints which also handle the file move into _WontPlay.
-  async function toggleWontPlayAndAdvance() {
+  // Mirrors performMarkDelete: pause + clear src + load to release the
+  // file handle so the server's File.Move can succeed, advance to the
+  // next video so the user keeps moving through the playlist, then hit
+  // the API and propagate the updated DTO back to the host's grid.
+  async function performMarkPlaybackIssue() {
     if (!video) return;
+    const markId = video.id;
+    markActionBusy = 'playbackissue';
+    errorMessage = null;
     try {
-      const updated = video.wontPlay
-        ? await api.unmarkWontPlay(video.id)
-        : await api.markWontPlay(video.id);
+      if (videoEl) {
+        videoEl.pause();
+        videoEl.removeAttribute('src');
+        videoEl.load();
+      }
+      await onRequestNext?.();
+      const updated = await api.markPlaybackIssue(markId);
+      if (updated) await onVideoChanged?.(updated);
+    } catch (e) {
+      errorMessage = `Failed to mark Playback Issue: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      markActionBusy = null;
+    }
+  }
+
+  // Mirrors performUnmarkDelete: pause + clear src + load, hit the
+  // unmark endpoint (server moves the file back out of _PlaybackIssue/),
+  // then update local + host video state and resume playback.
+  async function performUnmarkPlaybackIssue() {
+    if (!video) return;
+    const id = video.id;
+    markActionBusy = 'playbackissue';
+    errorMessage = null;
+    if (videoEl) {
+      videoEl.pause();
+      videoEl.removeAttribute('src');
+      videoEl.load();
+    }
+    try {
+      const updated = await api.unmarkPlaybackIssue(id);
       video = updated;
       loadedVideoSnapshot = JSON.stringify(updated);
+      await onVideoChanged?.(updated);
+      await tick();
+      if (videoEl) {
+        videoEl.muted = true;
+        videoEl.load();
+        videoEl.play().catch(() => {});
+      }
     } catch (e) {
-      errorMessage = `Failed to toggle Won't Play: ${e instanceof Error ? e.message : String(e)}`;
-      return;
+      errorMessage = `Failed to unmark Playback Issue: ${e instanceof Error ? e.message : String(e)}`;
+      if (videoEl) {
+        videoEl.load();
+        videoEl.play().catch(() => {});
+      }
+    } finally {
+      markActionBusy = null;
     }
-    await onRequestNext?.();
+  }
+
+  // --- Local-only diagnostics: reveal in file manager + ffprobe ----
+  // Both wrap loopback-gated server endpoints. The Playback Issue
+  // overlay below renders the buttons only when runtimeStore.isLocal,
+  // so a remote browser doesn't see them at all; calling them anyway
+  // would 403. ffprobe results land in `ffprobeResult`, which the
+  // template renders as a modal alongside everything else.
+  let revealBusy = $state(false);
+  let ffprobeBusy = $state(false);
+  let ffprobeResult = $state<FfprobeResult | null>(null);
+
+  async function revealCurrentInFolder() {
+    if (!video || revealBusy) return;
+    revealBusy = true;
+    errorMessage = null;
+    try {
+      await api.revealVideo(video.id);
+    } catch (e) {
+      errorMessage = `Failed to open folder: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      revealBusy = false;
+    }
+  }
+
+  async function runFfprobeOnCurrent() {
+    if (!video || ffprobeBusy) return;
+    ffprobeBusy = true;
+    errorMessage = null;
+    try {
+      ffprobeResult = await api.ffprobeVideo(video.id);
+    } catch (e) {
+      errorMessage = `ffprobe failed: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      ffprobeBusy = false;
+    }
   }
 
   // R key — toggle Needs Review. Used to be a one-way "clear" + advance,
@@ -1031,6 +1160,9 @@
       }
       if (video) video.needsReview = !wasNeedingReview;
       loadedVideoSnapshot = JSON.stringify(video);
+      // Propagate the flag flip up so the host's grid + sidebar
+      // counts stay in sync (e.g. the Flags-tree count badges).
+      if (video) await onVideoChanged?.(video);
     } catch (e) {
       errorMessage = `Failed to toggle Needs Review: ${e instanceof Error ? e.message : String(e)}`;
       return;
@@ -1048,6 +1180,9 @@
       else await api.unmarkFavorite(video.id);
       if (video) video.isFavorite = next;
       loadedVideoSnapshot = JSON.stringify(video);
+      // Propagate the flag flip up so the host's grid + sidebar
+      // counts stay in sync (e.g. the Flags-tree count badges).
+      if (video) await onVideoChanged?.(video);
     } catch (e) {
       errorMessage = `Failed to toggle Favorite: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -1188,12 +1323,30 @@
     }
     if (e.key === 'w' || e.key === 'W') {
       e.preventDefault();
-      await toggleWontPlayAndAdvance();
+      if (markActionBusy !== null) return;
+      if (video.playbackIssue) {
+        // Player is already on a Playback Issue video — W skips past it
+        // instead of being a no-op. Mirrors the D-on-deleted fix.
+        // Use U (or the overlay button) to actually un-mark.
+        await onRequestNext?.();
+      } else {
+        await performMarkPlaybackIssue();
+      }
       return;
     }
     if (e.key === 'd' || e.key === 'D') {
       e.preventDefault();
-      if (markActionBusy === null && !video.markedForDeletion) await performMarkDelete();
+      if (markActionBusy !== null) return;
+      if (video.markedForDeletion) {
+        // The video pane is sitting on an already-deleted video
+        // (the user navigated back to it, or performMarkDelete
+        // couldn't auto-advance because we were at the end of the
+        // grid). D acts as "skip past this one" — advance to next
+        // instead of being a no-op the user can't escape.
+        await onRequestNext?.();
+      } else {
+        await performMarkDelete();
+      }
       return;
     }
     if (e.key === 'u' || e.key === 'U') { e.preventDefault(); await performUndo(); return; }
@@ -1255,26 +1408,18 @@
       <span class="ml-auto text-base-content/60">Loops automatically</span>
     </div>
   {/if}
-  {#if isMarkedDelete}
-    <div class="alert alert-error gap-3 mb-2">
-      <span class="font-semibold uppercase tracking-wide text-sm">Marked to Delete</span>
-      <span class="text-sm opacity-80">Press <kbd class="kbd kbd-sm">U</kbd> to undo.</span>
-      <button
-        type="button"
-        class="btn btn-sm ml-auto"
-        disabled={markActionBusy !== null}
-        onclick={performUndo}
-      >
-        {#if markActionBusy !== null}<span class="loading loading-spinner loading-xs"></span>{/if}
-        Undo
-      </button>
-    </div>
-  {/if}
-
+  <!-- Marked-for-deletion treatment: heavy grayscale + low opacity +
+       pointer-events-off on the entire player content, with a single
+       Undelete button in a centered overlay. The overlay is a sibling
+       of the content (both inside this `relative` parent) so we can
+       absolutely-position it over the whole pane regardless of how
+       tall the bookmark/block lists below grow. Auto-advance on D
+       still happens server-side via performMarkDelete; this state
+       only renders if the user navigates BACK to a marked video. -->
+  <div class="relative">
   <div
-    class="transition-opacity duration-100 {isNavigating ? 'opacity-0 pointer-events-none' : 'opacity-100'}"
-    class:grayscale={isMarkedDelete}
-    class:opacity-60={isMarkedDelete && !isNavigating}
+    class="transition-opacity duration-100 {isNavigating ? 'opacity-0 pointer-events-none' : isInactive ? 'opacity-15 pointer-events-none' : 'opacity-100'}"
+    class:grayscale={isInactive}
   >
     <!-- Fit mode (videoWidthPx === null): w-full + 70vh cap, with max-width
          clamped to 2x native so a low-res file doesn't balloon. Explicit mode
@@ -1288,6 +1433,12 @@
       onmouseenter={() => (playerHovered = true)}
       onmouseleave={() => (playerHovered = false)}
     >
+    <!-- relative wrapper scopes the loading overlay to the video box;
+         without it the absolute overlay would also cover the scrubber
+         that sits outside this div in the parent. The wrapper takes
+         on the same width controls as the <video> by being inline-
+         block so its layout box matches the video's. -->
+    <div class="relative inline-block align-top">
     <video
       bind:this={videoEl}
       autoplay
@@ -1318,12 +1469,30 @@
       ].join(' ')}
       ontimeupdate={onVideoTimeUpdate}
       onloadedmetadata={onVideoLoadedMetadata}
+      onloadstart={onVideoLoadStart}
+      onloadeddata={onVideoLoadedData}
+      oncanplay={onVideoCanPlay}
+      onplaying={onVideoPlaying}
+      onwaiting={onVideoWaiting}
       onclick={togglePlayPause}
     >
       <source src={videoUrl} type="video/mp4" />
       <track kind="captions" />
       Your browser does not support the video tag.
     </video>
+    <!-- Centered loading spinner. Sits in front of the video while
+         the browser is fetching/buffering. Semi-opaque puck behind
+         the spinner so it stays legible against bright video frames
+         and pure-black <video> backgrounds alike. pointer-events:none
+         so click-to-play still goes through. -->
+    {#if videoLoading}
+      <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div class="bg-black/50 rounded-full p-3 backdrop-blur-sm">
+          <span class="loading loading-spinner loading-lg text-white"></span>
+        </div>
+      </div>
+    {/if}
+    </div>
 
     <!-- Scrubber: persistent (in-flow) row directly under the video so
          the controls row below sits beneath it visually. Width caps
@@ -1651,8 +1820,8 @@
         {#if video.needsReview}
           <span class="inline-block px-2 py-0.5 rounded-full text-xs border" style="background-color: rgb(168 162 158 / 0.20); border-color: rgb(168 162 158 / 0.45); color: rgb(214 211 209);">Needs Review</span>
         {/if}
-        {#if video.wontPlay}
-          <span class="inline-block px-2 py-0.5 rounded-full text-xs border" style="background-color: rgb(249 115 22 / 0.20); border-color: rgb(249 115 22 / 0.45); color: rgb(253 186 116);">Won't Play</span>
+        {#if video.playbackIssue}
+          <span class="inline-block px-2 py-0.5 rounded-full text-xs border" style="background-color: rgb(249 115 22 / 0.20); border-color: rgb(249 115 22 / 0.45); color: rgb(253 186 116);">Playback Issue</span>
         {/if}
         {#if video.markedForDeletion}
           <span class="inline-block px-2 py-0.5 rounded-full text-xs border" style="background-color: rgb(239 68 68 / 0.20); border-color: rgb(239 68 68 / 0.45); color: rgb(252 165 165);">To Delete</span>
@@ -1660,6 +1829,98 @@
       </div>
     {/if}
   </div>
+
+  <!-- Marked-for-deletion overlay. The faded content beneath stays
+       in the layout to preserve the player's height (so the page
+       doesn't jump when toggling state), but everything is dimmed
+       and pointer-events-disabled. The user has exactly one action
+       available — Undelete — plus the U keyboard shortcut. -->
+  {#if isMarkedDelete && !isNavigating}
+    <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <div
+        class="bg-base-100/95 border-2 border-error rounded-lg px-6 py-5 flex flex-col items-center gap-3 shadow-2xl pointer-events-auto max-w-sm"
+      >
+        <svg viewBox="0 0 24 24" class="h-14 w-14 fill-current text-error" aria-hidden="true">
+          <path d="M9 3a1 1 0 00-1 1v1H5a1 1 0 100 2h14a1 1 0 100-2h-3V4a1 1 0 00-1-1H9zm-2 6v11a2 2 0 002 2h6a2 2 0 002-2V9H7zm2 2h2v8H9v-8zm4 0h2v8h-2v-8z"/>
+        </svg>
+        <div class="text-lg font-semibold uppercase tracking-wide text-error">
+          Marked for Deletion
+        </div>
+        <button
+          type="button"
+          class="btn btn-error btn-wide"
+          disabled={markActionBusy !== null}
+          onclick={performUndo}
+        >
+          {#if markActionBusy !== null}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Undelete
+        </button>
+        <div class="text-xs text-base-content/60">
+          or press <kbd class="kbd kbd-sm">U</kbd>
+        </div>
+      </div>
+    </div>
+  {:else if isPlaybackIssue && !isNavigating}
+    <!-- Playback Issue overlay. Same skeleton as the deletion overlay
+         but warning-tinted (orange) and uses the prohibition-symbol
+         icon to read as "broken / unwatchable" rather than "to be
+         destroyed". Two diagnostic affordances ride along when the
+         user is on the host machine: "Show in Folder" reveals the
+         file in the OS file manager, and "Diagnose" runs ffprobe and
+         pops the structured output in a modal. Hidden when the
+         browser isn't on the same box as the API since both
+         endpoints would 403 anyway. -->
+    <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <div
+        class="bg-base-100/95 border-2 border-warning rounded-lg px-6 py-5 flex flex-col items-center gap-3 shadow-2xl pointer-events-auto max-w-sm"
+      >
+        <svg viewBox="0 0 24 24" class="h-14 w-14 fill-current text-warning" aria-hidden="true">
+          <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.32 12.9L7.1 5.68A8 8 0 0112 4zM5.68 7.1l11.22 11.22A8 8 0 015.68 7.1z" />
+        </svg>
+        <div class="text-lg font-semibold uppercase tracking-wide text-warning">
+          Playback Issue
+        </div>
+        <button
+          type="button"
+          class="btn btn-warning btn-wide"
+          disabled={markActionBusy !== null}
+          onclick={performUndo}
+        >
+          {#if markActionBusy !== null}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Undo
+        </button>
+        <div class="text-xs text-base-content/60">
+          or press <kbd class="kbd kbd-sm">U</kbd>
+        </div>
+        {#if runtimeStore.isLocal}
+          <div class="flex gap-2 pt-1 border-t border-base-300/60 mt-1 w-full justify-center">
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost"
+              disabled={revealBusy}
+              onclick={revealCurrentInFolder}
+              title="Reveal this file in the host OS file manager"
+            >
+              {#if revealBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
+              Show in Folder
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost"
+              disabled={ffprobeBusy}
+              onclick={runFfprobeOnCurrent}
+              title="Run ffprobe and show the codec / format / stream details"
+            >
+              {#if ffprobeBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
+              Diagnose
+            </button>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+  </div>
+  <!-- ↑ end of `relative` wrapper around player content + overlay -->
 
   <TagEditModal
     bind:show={editTagModalShow}
@@ -1673,6 +1934,11 @@
       <button class="btn btn-xs btn-ghost" onclick={() => (errorMessage = null)}>Dismiss</button>
     </div>
   {/if}
+
+  <!-- Shared ffprobe diagnostic modal. Component owns the filter
+       state + pretty-printer; we just hand it the result and let it
+       null-out on close. -->
+  <FfprobeResultModal bind:result={ffprobeResult} />
 {/if}
 
 {#if previewingClip}

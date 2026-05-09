@@ -213,7 +213,7 @@ export interface Video {
   watchCount: number;
   notes: string;
   needsReview: boolean;
-  wontPlay: boolean;
+  playbackIssue: boolean;
   markedForDeletion: boolean;
   isFavorite: boolean;
   parentVideoId: string | null;
@@ -265,7 +265,7 @@ export type FilterRefType = 'tag' | 'folder' | 'missing' | 'status';
 //   tag       -> Tag.id
 //   folder    -> absolute folder path
 //   missing   -> "tagGroup:<groupId>"
-//   status    -> "needsReview" | "wontPlay" | "markedForDeletion"
+//   status    -> "needsReview" | "playbackIssue" | "markedForDeletion"
 export interface FilterRef {
   type: FilterRefType;
   value: string;
@@ -421,6 +421,35 @@ export interface ImportJobSummary {
   currentFilePath: string | null;
   thumbnails: ImportTaskProgress;
   md5: ImportTaskProgress;
+}
+
+// --- Runtime / Diagnostics -------------------------------------------------
+
+// GET /api/runtime-info. `isLocal` is true when the inbound request
+// is loopback (i.e. the browser is on the same machine as the API);
+// the layout uses this to decide whether to show the "must be on
+// host" banner and whether to render local-only diagnostic buttons.
+export interface RuntimeInfo {
+  isLocal: boolean;
+  os: 'windows' | 'macos' | 'linux' | 'other';
+}
+
+// GET /api/videos/{id}/ffprobe.
+export interface FfprobeResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  filePath: string;
+}
+
+// GET /api/videos/flag-counts. Drives the per-flag count badges on
+// the Flags tree in the browse sidebar — number of videos whose
+// boolean flag is set, scoped to enabled VideoSets.
+export interface FlagCounts {
+  favorite: number;
+  needsReview: number;
+  playbackIssue: number;
+  markedForDeletion: number;
 }
 
 // --- VideoSet --------------------------------------------------------------

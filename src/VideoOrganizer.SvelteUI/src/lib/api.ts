@@ -30,7 +30,10 @@ import type {
   UpdateVideoRequest,
   Video,
   VideoSet,
-  VideoSetInput
+  VideoSetInput,
+  RuntimeInfo,
+  FfprobeResult,
+  FlagCounts
 } from './types';
 
 const BASE = '';
@@ -124,6 +127,9 @@ export const api = {
   // --- Videos --------------------------------------------------------------
 
   getVideoCount: () => request<number>('/api/videos/count'),
+  // Per-flag aggregate counts — drives the count badges on the
+  // browse-page Flags tree.
+  getFlagCounts: () => request<FlagCounts>('/api/videos/flag-counts'),
   getVideo: (id: string) => request<Video | null>(`/api/videos/${id}`),
 
   // POST the three-way filter (Required / Optional / Excluded). Empty filter
@@ -167,10 +173,10 @@ export const api = {
     request<Video>(`/api/videos/${id}/mark-for-deletion`, { method: 'POST' }),
   unmarkForDeletion: (id: string) =>
     request<Video>(`/api/videos/${id}/unmark-for-deletion`, { method: 'POST' }),
-  markWontPlay: (id: string) =>
-    request<Video>(`/api/videos/${id}/mark-wont-play`, { method: 'POST' }),
-  unmarkWontPlay: (id: string) =>
-    request<Video>(`/api/videos/${id}/unmark-wont-play`, { method: 'POST' }),
+  markPlaybackIssue: (id: string) =>
+    request<Video>(`/api/videos/${id}/mark-playback-issue`, { method: 'POST' }),
+  unmarkPlaybackIssue: (id: string) =>
+    request<Video>(`/api/videos/${id}/unmark-playback-issue`, { method: 'POST' }),
   markReviewed: (id: string) =>
     request<void>(`/api/videos/${id}/mark-reviewed`, { method: 'POST' }),
   unmarkReviewed: (id: string) =>
@@ -197,6 +203,27 @@ export const api = {
       '/api/videos/purge-all',
       { method: 'POST' }
     ),
+
+  // Triage list — videos the user has flagged with PlaybackIssue.
+  // Powers the /playback-issues page (parallel to /purge).
+  getPlaybackIssues: () => request<Video[]>('/api/videos/playback-issues'),
+  // Bulk-purge every PlaybackIssue row in one shot. Same response
+  // shape as purgeAllMarkedForDeletion so the page's bulk-progress
+  // modal can consume both interchangeably.
+  purgeAllPlaybackIssues: () =>
+    request<{ purged: number; failed: Array<{ id: string; fileName: string; error: string }> }>(
+      '/api/videos/purge-all-playback-issues',
+      { method: 'POST' }
+    ),
+
+  // Diagnostic affordances — both gated server-side on a loopback
+  // request, so calling them from a remote browser returns 403.
+  // Frontend reads /api/runtime-info and hides the buttons when not
+  // local so the failure isn't surprising.
+  revealVideo: (id: string) =>
+    request<void>(`/api/videos/${id}/reveal`, { method: 'POST' }),
+  ffprobeVideo: (id: string) =>
+    request<FfprobeResult>(`/api/videos/${id}/ffprobe`),
 
   streamUrl: (id: string) => `${BASE}/api/videos/${id}/stream`,
   thumbnailsVttUrl: (id: string) => `${BASE}/api/videos/${id}/thumbnails.vtt`,
@@ -283,6 +310,7 @@ export const api = {
   // --- Logs / Imports ------------------------------------------------------
 
   getLogs: () => request<LogEvent[]>('/api/logs'),
+  getRuntimeInfo: () => request<RuntimeInfo>('/api/runtime-info'),
 
   browseImport: (path?: string | null) => {
     const url = path && path.trim().length > 0

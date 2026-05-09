@@ -718,9 +718,19 @@
               </span>
             </div>
 
-            {#if !job.isCompleted && job.currentFilePath}
-              <div class="text-xs text-base-content/70 break-all" title={job.currentFilePath}>
-                <span class="text-base-content/50">Now importing:</span> {job.currentFilePath}
+            <!-- "Now importing" line stays in document flow whenever
+                 the job is active so the rest of the card doesn't
+                 reflow each time the worker advances between files.
+                 Empty placeholder fills the slot during inter-file
+                 hand-off (currentFilePath transiently null). -->
+            {#if !job.isCompleted}
+              <div class="text-xs text-base-content/70 break-all" title={job.currentFilePath ?? ''}>
+                <span class="text-base-content/50">Now importing:</span>
+                {#if job.currentFilePath}
+                  {job.currentFilePath}
+                {:else}
+                  <span class="italic text-base-content/40">No File Processing</span>
+                {/if}
               </div>
             {/if}
 
@@ -860,9 +870,14 @@
         max={thumbStatus.total}
       ></progress>
 
-      {#if thumbStatus.currentFilePath}
-        <div class="mt-4 p-3 bg-base-200 rounded space-y-2">
-          <div class="flex items-center gap-2">
+      <!-- "Now processing" row is always rendered so the card height
+           is stable across worker idle/active transitions. When the
+           worker has nothing in flight, the spinner + Skip button
+           reserve their footprint via `invisible` and the file slot
+           shows the "No File Processing" placeholder. -->
+      <div class="mt-4 p-3 bg-base-200 rounded space-y-2">
+        <div class="flex items-center gap-2">
+          {#if thumbStatus.currentFilePath}
             <span class="loading loading-spinner loading-xs"></span>
             <span class="text-sm font-medium truncate flex-1" title={thumbStatus.currentFilePath}>
               {thumbStatus.currentFilePath}
@@ -877,9 +892,13 @@
               {#if thumbSkipBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
               Skip
             </button>
-          </div>
+          {:else}
+            <span class="loading loading-spinner loading-xs invisible" aria-hidden="true"></span>
+            <span class="text-sm italic text-base-content/50 flex-1">No File Processing</span>
+            <span class="btn btn-xs btn-soft btn-error border border-error/50 invisible" aria-hidden="true">Skip</span>
+          {/if}
         </div>
-      {/if}
+      </div>
 
       <!-- Queue preview moved to the "Show Queue" modal at the top of this
            card. Same data, but with FileName + FileSize columns + search. -->
@@ -1009,9 +1028,17 @@
         max={md5Status.total}
       ></progress>
 
-      {#if md5Status.currentFileName}
-        <div class="mt-4 p-3 bg-base-200 rounded space-y-2">
-          <div class="flex items-center gap-2">
+      <!-- "Now processing" row is always rendered so the card height
+           is stable across worker idle/active transitions. When the
+           worker has nothing in flight, the spinner + Skip button
+           reserve their footprint via `invisible` and the file slot
+           shows the "No File Processing" placeholder. The byte
+           progress sub-row is conditional — it only ever appears
+           while a file is in flight, so its appearance/disappearance
+           reflects real work, not idle reflow. -->
+      <div class="mt-4 p-3 bg-base-200 rounded space-y-2">
+        <div class="flex items-center gap-2">
+          {#if md5Status.currentFileName}
             <span class="loading loading-spinner loading-xs"></span>
             <span class="text-sm font-medium truncate flex-1" title={md5Status.currentFilePath ?? ''}>
               {md5Status.currentFileName}
@@ -1026,7 +1053,13 @@
               {#if md5SkipBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
               Skip
             </button>
-          </div>
+          {:else}
+            <span class="loading loading-spinner loading-xs invisible" aria-hidden="true"></span>
+            <span class="text-sm italic text-base-content/50 flex-1">No File Processing</span>
+            <span class="btn btn-xs btn-soft btn-error border border-error/50 invisible" aria-hidden="true">Skip</span>
+          {/if}
+        </div>
+        {#if md5Status.currentFileName}
           {#if md5Status.totalBytes > 0}
             <progress
               class="progress progress-accent w-full"
@@ -1040,8 +1073,8 @@
           {:else}
             <div class="text-xs text-base-content/70">Starting...</div>
           {/if}
-        </div>
-      {/if}
+        {/if}
+      </div>
 
       <!-- Queue preview moved to the "Show Queue" modal at the top of this
            card. Same data, but with FileName + FileSize columns + search. -->

@@ -180,6 +180,8 @@
       bind:this={imgWrapEl}
       bind:clientWidth={imgWidth}
       class="relative bg-base-300 aspect-video w-full"
+      class:grayscale={video.markedForDeletion || video.playbackIssue}
+      class:opacity-60={video.markedForDeletion || video.playbackIssue}
     >
       <img
         src={posterUrl}
@@ -191,6 +193,41 @@
       />
       {#if hovering && currentFrame !== null}
         <div class="absolute inset-0" style={scrubStyle()}></div>
+      {/if}
+      <!-- State overlays sit on top of the (already grayscaled +
+           dimmed) thumbnail so the row reads at a glance as "this
+           is in a non-playable state". Marked-for-deletion wins
+           when both flags are set (it's the destructive end-state).
+           pointer-events-none so the underlying thumbnail still
+           handles click + hover scrubbing for navigation back into
+           the player overlay (where the user can Undelete / Undo). -->
+      {#if video.markedForDeletion}
+        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            class="w-1/3 h-1/3 fill-current text-error drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
+            aria-label="Marked for deletion"
+          >
+            <title>Marked for deletion</title>
+            <path d="M9 3a1 1 0 00-1 1v1H5a1 1 0 100 2h14a1 1 0 100-2h-3V4a1 1 0 00-1-1H9zm-2 6v11a2 2 0 002 2h6a2 2 0 002-2V9H7zm2 2h2v8H9v-8zm4 0h2v8h-2v-8z"/>
+          </svg>
+        </div>
+      {:else if video.playbackIssue}
+        <!-- Won't-Play overlay: prohibition symbol (orange) so the
+             user can scan the grid and tell unwatchable rows apart
+             from rows headed for permanent deletion at a glance. -->
+        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            class="w-1/3 h-1/3 fill-current text-warning drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
+            aria-label="Playback issue"
+          >
+            <title>Playback issue</title>
+            <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.32 12.9L7.1 5.68A8 8 0 0112 4zM5.68 7.1l11.22 11.22A8 8 0 015.68 7.1z"/>
+          </svg>
+        </div>
       {/if}
       {#if warmState === 'warming' || warmState === 'pending'}
         <div

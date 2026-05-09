@@ -12,7 +12,8 @@
     TagGroup,
     FilterRef,
     ImportBrowseDirectory,
-    VideoTagSummary
+    VideoTagSummary,
+    FlagCounts
   } from '$lib/types';
   import VideoCard from '$lib/components/VideoCard.svelte';
   import VideoPlayer from '$lib/components/VideoPlayer.svelte';
@@ -21,6 +22,7 @@
   import FilterDialog from '$lib/components/FilterDialog.svelte';
   import TagEditModal from '$lib/components/TagEditModal.svelte';
   import FolderTreeNode from '$lib/components/FolderTreeNode.svelte';
+  import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { pillClass, filterSlot, filterSlotClass } from '$lib/tagColors';
 
@@ -296,6 +298,7 @@
       }
       groups = await api.listTagGroups();
       await loadFavorites();
+      void refreshFlagCounts();
       // Fetch annotated source roots so the Folders tree shows
       // import-progress badges at the root level (and we get the
       // real `hasSubdirectories` flag rather than an always-on
@@ -351,16 +354,20 @@
     for (const groupId of Object.keys(tagsByGroup)) {
       tagsByGroup[groupId] = allTags.filter(t => t.tagGroupId === groupId);
     }
+    // Flags can flip in lockstep with tag saves (e.g. R toggles
+    // NeedsReview, the player nav-save can flip various flags) —
+    // refresh the badge counts here so they don't go stale.
+    void refreshFlagCounts();
   }
 
   // ---- Global filter search ----
   // One search box that scans tag names + aliases, system statuses, and
   // "Missing <group>" entries. Each result tags itself with its source so
-  // the row label reads e.g. "Bob Marley · Performer" or "Won't Play · System".
+  // the row label reads e.g. "Bob Marley · Performer" or "Playback Issue · System".
   let searchQuery = $state('');
   type SearchResult =
     | { kind: 'tag'; tag: Tag; matchedAlias?: string }
-    | { kind: 'status'; value: 'favorite' | 'needsReview' | 'wontPlay' | 'markedForDeletion'; label: string }
+    | { kind: 'status'; value: 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion'; label: string }
     | { kind: 'missing'; group: TagGroup };
 
   const searchResults = $derived.by<SearchResult[]>(() => {
@@ -378,7 +385,7 @@
     const statuses = [
       { value: 'favorite', label: 'Favorite' },
       { value: 'needsReview', label: 'Needs Review' },
-      { value: 'wontPlay', label: "Won't Play" },
+      { value: 'playbackIssue', label: "Playback Issue" },
       { value: 'markedForDeletion', label: 'To Delete' }
     ] as const;
     for (const s of statuses) {
@@ -448,7 +455,7 @@
     await refreshSidebarTagCounts();
   }
 
-  function pickStatus(status: 'needsReview' | 'wontPlay' | 'markedForDeletion' | 'favorite', label: string) {
+  function pickStatus(status: 'needsReview' | 'playbackIssue' | 'markedForDeletion' | 'favorite', label: string) {
     // Status hits from the search box still go through the picker
     // dialog (Required / Optional / Excluded). The Flags tree skips
     // the dialog and uses applyFlag below; both call paths can
@@ -460,7 +467,7 @@
   // --- Flags tree -----------------------------------------------------
   // The Flags tree mixes two kinds of items:
   //   • Built-in boolean flags on the Video entity (Favorite,
-  //     Needs Review, Won't Play, To Delete) — these write `status`
+  //     Needs Review, Playback Issue, To Delete) — these write `status`
   //     filters.
   //   • Tags that live in a tag group named "Flags" (case-insensitive)
   //     — these write `tag` filters but use the same three-option UI
@@ -472,14 +479,35 @@
   // We skip the picker dialog entirely; filterStore.apply() routes
   // straight into the chosen bucket, idempotently replacing whatever
   // bucket the same item was in before.
-  type FlagValue = 'favorite' | 'needsReview' | 'wontPlay' | 'markedForDeletion';
+  type FlagValue = 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion';
   interface FlagDef { value: FlagValue; label: string; }
   const FLAG_DEFS: FlagDef[] = [
     { value: 'favorite',          label: 'Favorite' },
     { value: 'needsReview',       label: 'Needs Review' },
-    { value: 'wontPlay',          label: "Won't Play" },
+    { value: 'playbackIssue',          label: "Playback Issue" },
     { value: 'markedForDeletion', label: 'To Delete' }
   ];
+
+  // Per-flag total counts, refreshed on initial sidebar load and
+  // after any save that could flip a flag (refreshSidebarTagCounts).
+  // Rendered as a small muted count to the right of each flag row in
+  // the Flags tree so the user can see how many videos would match
+  // before applying the filter.
+  let flagCounts = $state<FlagCounts>({
+    favorite: 0,
+    needsReview: 0,
+    playbackIssue: 0,
+    markedForDeletion: 0
+  });
+  async function refreshFlagCounts() {
+    try {
+      flagCounts = await api.getFlagCounts();
+    } catch {
+      // Non-fatal — leave existing counts (or zeros) in place. The
+      // sidebar still works; the badges just go stale until the
+      // next successful refresh.
+    }
+  }
 
   type FlagItem =
     | { kind: 'bool'; def: FlagDef }
@@ -661,12 +689,34 @@
     await refreshSidebarTagCounts();
   }
 
+  // Surgical patch into the videos array for a single row. Used when
+  // the player returns an updated Video from a state-mutating call
+  // (mark-for-deletion, unmark-for-deletion, toggleFavorite,
+  // toggleNeedsReview, mark/unmark Playback Issue) so the grid
+  // thumbnail can re-render with its new flag — most visibly the
+  // marked-for-deletion grayscale + trash overlay — without a full
+  // refetch. Auto-advance may have moved playingVideo on by the
+  // time we land here, so the patched row is purely a background
+  // grid update. Flag-count badges in the sidebar's Flags tree key
+  // off `flagCounts`, so we refresh those too — otherwise hitting
+  // F or R in the player wouldn't move the count.
+  function patchVideoInGrid(updated: Video) {
+    const idx = videos.findIndex(v => v.id === updated.id);
+    if (idx < 0) return;
+    videos = [...videos.slice(0, idx), updated, ...videos.slice(idx + 1)];
+    void refreshFlagCounts();
+  }
+
   onMount(loadSidebar);
 </script>
 
 <svelte:head><title>Videos - Video Organizer</title></svelte:head>
 
 <div class="flex flex-col gap-4">
+  <!-- Local-only diagnostic affordances live in the player's
+       Playback Issue overlay — banner reminds remote users those
+       buttons won't appear. -->
+  <RemoteHostBanner />
   <h1 class="text-2xl font-semibold">Videos</h1>
 
   {#if loadError}
@@ -725,7 +775,7 @@
       {#if !sidebarCollapsed}
       <!-- Global search: scans tag names + aliases, system statuses, and
            Missing-<group>. Each row labels its source so the user can tell
-           "Bob Marley · Performer" apart from "Won't Play · System". -->
+           "Bob Marley · Performer" apart from "Playback Issue · System". -->
       <div>
         <input
           type="text"
@@ -798,6 +848,7 @@
           {#each flagItems as item (flagItemKey(item))}
             {@const itemLabel = flagItemLabel(item)}
             {@const state = flagState(item)}
+            {@const itemCount = item.kind === 'bool' ? flagCounts[item.def.value] : item.tag.videoCount}
             <button
               type="button"
               class="w-full flex items-center gap-1 hover:bg-base-200 rounded text-left"
@@ -821,7 +872,7 @@
                     <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(56 189 248);">
                       <path d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 11a4 4 0 110-8 4 4 0 010 8zm0-6a2 2 0 100 4 2 2 0 000-4z" />
                     </svg>
-                  {:else if item.def.value === 'wontPlay'}
+                  {:else if item.def.value === 'playbackIssue'}
                     <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(249 115 22);">
                       <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.32 12.9L7.1 5.68A8 8 0 0112 4zM5.68 7.1l11.22 11.22A8 8 0 015.68 7.1z" />
                     </svg>
@@ -840,6 +891,15 @@
                 {/if}
               </span>
               <span class="flex-1 min-w-0 truncate py-1 font-medium {state !== 'nofilter' ? 'text-primary' : ''}">{itemLabel}</span>
+              <!-- Per-flag count badge — number of videos under
+                   enabled VideoSets that currently have this flag
+                   set. Refreshes on initial load and after any
+                   sidebar-tag-counts refresh (which fires when the
+                   user saves changes that could flip a flag). -->
+              <span
+                class="shrink-0 text-xs tabular-nums opacity-50"
+                title="{itemCount} video{itemCount === 1 ? '' : 's'} with {itemLabel} set"
+              >{itemCount}</span>
               <!-- Tristate indicator. Distinct shape AND color per
                    state so the user can scan the column visually. -->
               <span class="shrink-0 w-5 h-5 flex items-center justify-center" aria-hidden="true">
@@ -1263,6 +1323,7 @@
                 onRequestNext={goNext}
                 onRequestPrev={goPrev}
                 onAfterSave={refreshSidebarTagCounts}
+                onVideoChanged={patchVideoInGrid}
               />
             </div>
           {/if}
