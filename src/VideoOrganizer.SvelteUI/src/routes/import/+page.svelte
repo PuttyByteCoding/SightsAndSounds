@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api';
   import type {
@@ -126,6 +126,39 @@
   // users settle into one of the two workflows.
   let importMore = $state(false);
 
+  // Paths whose import job is still running (server-side). Polled
+  // from /api/import/jobs so the tree can show a "this folder is
+  // currently being imported" spinner on any row whose fullPath
+  // matches an in-flight job — long-running visual feedback
+  // beyond the brief in-flight click flash that the `importing`
+  // flag tracks. Includes whatever the user just clicked Import on
+  // (selectedPath, while `importing` is true) for the moment between
+  // the click and the next poll picking the job up.
+  let activeImportPaths = $state<Set<string>>(new Set());
+  let importPollTimer: ReturnType<typeof setTimeout> | null = null;
+  async function pollActiveImports() {
+    try {
+      const jobs = await api.listImportJobs();
+      activeImportPaths = new Set(
+        jobs.filter(j => !j.isCompleted).map(j => j.directoryPath)
+      );
+    } catch {
+      // Non-fatal — keep the previous set so the spinners don't
+      // flicker off on a transient failure.
+    }
+    // Tighter cadence while there's anything running so the
+    // spinner clears promptly when the job finishes; relaxed when
+    // idle so we don't hammer the API on a quiet page.
+    const interval = activeImportPaths.size > 0 ? 3000 : 10000;
+    importPollTimer = setTimeout(pollActiveImports, interval);
+  }
+  // True for rows whose fullPath has an active job, OR for the row
+  // the user just clicked Import on (covers the gap between the
+  // click and the poll picking it up).
+  function isImportingPath(path: string): boolean {
+    return activeImportPaths.has(path) || (importing && selectedPath === path);
+  }
+
   // --- Lifecycle ------------------------------------------------------------
 
   onMount(async () => {
@@ -144,6 +177,16 @@
     }
 
     await loadTreeRoot();
+    // Kick off the active-import poll. Self-reschedules; cleared
+    // on destroy.
+    void pollActiveImports();
+  });
+
+  onDestroy(() => {
+    if (importPollTimer) {
+      clearTimeout(importPollTimer);
+      importPollTimer = null;
+    }
   });
 
   // Cheap on every flip; keeps localStorage in sync without a save
@@ -491,16 +534,34 @@
                     </div>
                   {/if}
                 </button>
-                {#if row.dir.videoCount > 0}
+                {#if isImportingPath(row.dir.fullPath)}
+                  <!-- Long-running import in flight on this folder.
+                       Replaces the count text so the user gets an
+                       unmistakable "this is being processed" cue;
+                       the count is stale during the import anyway. -->
                   <span
-                    class="badge badge-xs shrink-0 font-bold tabular-nums {isFullyImported
-                      ? 'bg-success/25 text-success border-success/30'
-                      : row.dir.importedCount > 0
-                        ? 'badge-warning'
-                        : 'badge-ghost'}"
-                    title="{row.dir.importedCount} of {row.dir.videoCount} imported"
+                    class="text-xs shrink-0 flex items-center gap-1.5 text-info italic"
+                    title="Importing — track progress on Background Tasks"
                   >
-                    {row.dir.importedCount}/{row.dir.videoCount}
+                    <span class="loading loading-spinner loading-xs"></span>
+                    Importing
+                  </span>
+                {:else if row.dir.videoCount > 0}
+                  <!-- "5 / 10 imported" — compact slash form (eye
+                       lands on the imported count first, then the
+                       total) plus the verb so the meaning is
+                       unambiguous without a tooltip. Color-tinted
+                       by progress: success green when fully in the
+                       library, warning orange while partial, muted
+                       otherwise. -->
+                  <span
+                    class="text-xs shrink-0 tabular-nums {isFullyImported
+                      ? 'text-success'
+                      : row.dir.importedCount > 0
+                        ? 'text-warning'
+                        : 'text-base-content/55'}"
+                  >
+                    {row.dir.importedCount} / {row.dir.videoCount} imported
                   </span>
                 {/if}
               </div>
@@ -761,7 +822,15 @@
 
               <label class="form-control">
                 <span class="label-text font-medium">Notes</span>
-                <textarea class="textarea textarea-bordered" rows="2" bind:value={importNotes}></textarea>
+                <!-- Single-line input (was a 2-row textarea). Multi-line
+                     notes via paste still flow through; the field just
+                     scrolls horizontally to match the height of every
+                     other one-line input in this form. -->
+                <input
+                  type="text"
+                  class="input input-bordered input-sm w-full"
+                  bind:value={importNotes}
+                />
               </label>
             </div>
           {/if}
