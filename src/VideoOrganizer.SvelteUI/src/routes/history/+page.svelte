@@ -66,7 +66,7 @@
     return [
       v.isClip ? 'C' : 'c',
       v.needsReview ? 'R' : 'r',
-      v.wontPlay ? 'W' : 'w',
+      v.playbackIssue ? 'P' : 'p',
       v.markedForDeletion ? 'D' : 'd',
     ].join('');
   }

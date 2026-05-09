@@ -62,15 +62,20 @@ public class Video
     //   NeedsReview        — auto-set true on import; cleared by the user
     //                        once they've reviewed. Re-set by Md5BackfillService
     //                        when an Md5 duplicate is detected.
-    //   WontPlay           — set when the user marks a file unplayable.
-    //                        Triggers a move into `<set>/_WontPlay/...`.
+    //   PlaybackIssue      — set when the user marks a file as not playing
+    //                        cleanly in the browser (could be codec, encoding,
+    //                        container, or genuine corruption — name avoids
+    //                        claiming a cause). Triggers a move into
+    //                        `<set>/_PlaybackIssue/...`. Was previously named
+    //                        WontPlay; renamed to read more honestly given
+    //                        many such files do play in external players.
     //   MarkedForDeletion  — set when the user marks for deletion. Triggers
     //                        a move into `<set>/_ToDelete/...`. The purge
     //                        endpoints key off this field.
     //   IsFavorite         — user-set "starred" flag. Plain boolean (no file
     //                        move side effect); rendered as ★ everywhere.
     public bool NeedsReview { get; set; } = true;
-    public bool WontPlay { get; set; }
+    public bool PlaybackIssue { get; set; }
     public bool MarkedForDeletion { get; set; }
     public bool IsFavorite { get; set; }
 

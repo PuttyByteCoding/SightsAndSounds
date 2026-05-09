@@ -412,7 +412,7 @@
           <tr>
             <td><kbd class="kbd kbd-sm">W</kbd></td>
             <td>
-              Toggle the <span class="font-semibold">Won't Play</span> tag and advance to the next video.
+              Toggle the <span class="font-semibold">Playback Issue</span> tag and advance to the next video.
             </td>
           </tr>
           <tr>

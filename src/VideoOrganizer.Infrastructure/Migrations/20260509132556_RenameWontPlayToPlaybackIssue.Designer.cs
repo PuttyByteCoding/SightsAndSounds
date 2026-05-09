@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using VideoOrganizer.Infrastructure.Data;
@@ -11,9 +12,11 @@ using VideoOrganizer.Infrastructure.Data;
 namespace VideoOrganizer.Infrastructure.Migrations
 {
     [DbContext(typeof(VideoOrganizerDbContext))]
-    partial class VideoOrganizerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260509132556_RenameWontPlayToPlaybackIssue")]
+    partial class RenameWontPlayToPlaybackIssue
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

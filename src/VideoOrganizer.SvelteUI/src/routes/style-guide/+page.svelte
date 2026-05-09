@@ -216,8 +216,8 @@
         <code class="text-xs text-base-content/60">stone — rgb(168 162 158)</code>
       </div>
       <div class="grid grid-cols-[200px_1fr_auto] items-center gap-3 py-2 border-b border-base-300">
-        <div class="text-sm font-medium">Status: Won't Play</div>
-        <div><span class="inline-block px-2 py-0.5 rounded-full text-xs border" style={chipStyle('249 115 22')}>Won't Play</span></div>
+        <div class="text-sm font-medium">Status: Playback Issue</div>
+        <div><span class="inline-block px-2 py-0.5 rounded-full text-xs border" style={chipStyle('249 115 22')}>Playback Issue</span></div>
         <code class="text-xs text-base-content/60">orange — rgb(249 115 22)</code>
       </div>
       <div class="grid grid-cols-[200px_1fr_auto] items-center gap-3 py-2">

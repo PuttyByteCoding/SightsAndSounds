@@ -10,7 +10,7 @@ public enum FilterRefType
     Folder,        // Value = absolute folder path
     Missing,       // Value = "tagGroup:<groupId>"
     // System-managed structural bools. Value is one of:
-    //   "needsReview" | "wontPlay" | "markedForDeletion"
+    //   "needsReview" | "playbackIssue" | "markedForDeletion"
     // These three live as direct columns on Video and aren't tags.
     Status
 }

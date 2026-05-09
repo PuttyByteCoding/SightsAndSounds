@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
+using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using VideoOrganizer.Domain.Models;
@@ -58,7 +60,7 @@ public static class ApiEndpoints
             (Shared.Dto.CameraTypes)(int)v.CameraType,
             (Shared.Dto.VideoQuality)(int)v.VideoQuality,
             v.WatchCount, v.Notes,
-            v.NeedsReview, v.WontPlay, v.MarkedForDeletion,
+            v.NeedsReview, v.PlaybackIssue, v.MarkedForDeletion,
             v.ParentVideoId, v.ClipStartSeconds, v.ClipEndSeconds,
             v.ParentVideoId.HasValue,
             v.ChapterMarkers.Select(c => new ChapterMarkerDto(c.Offset, c.Comment)).ToList(),
@@ -70,6 +72,37 @@ public static class ApiEndpoints
     private static IQueryable<Video> IncludeForVideoDto(IQueryable<Video> q) =>
         q.Include(v => v.VideoTags).ThenInclude(vt => vt.Tag).ThenInclude(t => t!.TagGroup)
          .Include(v => v.PropertyValues).ThenInclude(pv => pv.PropertyDefinition);
+
+    // True when the inbound HTTP request came from the loopback adapter
+    // (127.0.0.1, ::1) — i.e. the browser is running on the same box as
+    // the API. Endpoints that fork off external processes (reveal in
+    // file manager, ffprobe diagnostics, …) gate on this so a remotely
+    // exposed port can't trigger arbitrary local launches; the frontend
+    // also reads this via /api/runtime-info to decide whether to show
+    // a "must be on the host machine" banner and whether to render the
+    // local-only buttons at all.
+    private static bool IsLocalRequest(HttpContext http)
+    {
+        var ip = http.Connection.RemoteIpAddress;
+        return ip != null && IPAddress.IsLoopback(ip);
+    }
+
+    // Reload a Video from the DB with all DTO-shaped navigation
+    // properties, then project to VideoDto. Used by the mark/unmark
+    // endpoints (mark-for-deletion, mark-playback-issue, …) so they can
+    // return the same wire shape as /videos/{id} — the frontend's
+    // `Video` type expects tags / properties / chapterMarkers /
+    // videoBlocks to all be present, and crashes (e.g.
+    // `video.tags.map(...)` on undefined) when they're missing.
+    // AsNoTracking sidesteps any leftover state on the in-context
+    // tracked entity that just had its FilePath / flag mutated.
+    private static async Task<IResult> ReturnFreshDtoAsync(
+        VideoOrganizerDbContext db, Guid id, CancellationToken ct)
+    {
+        var loaded = await IncludeForVideoDto(db.Videos.AsNoTracking())
+            .FirstOrDefaultAsync(v => v.Id == id, ct);
+        return loaded is null ? Results.NotFound() : Results.Ok(ToDto(loaded));
+    }
 
     // --- Helpers (file paths, mark/move, dirs) ------------------------------
 
@@ -103,7 +136,7 @@ public static class ApiEndpoints
     }
 
     // Moves the file at video.FilePath into <setRoot>/<specialFolderName>/<rel>,
-    // updates the row, and runs setFlag. Used by mark-for-deletion / mark-wont-play.
+    // updates the row, and runs setFlag. Used by mark-for-deletion / mark-playback-issue.
     // Skips file move on clip rows (they share the parent's file).
     private static async Task<IResult> MarkAndMoveAsync(
         Guid id,
@@ -120,7 +153,7 @@ public static class ApiEndpoints
         {
             setFlag(video);
             await db.SaveChangesAsync(ct);
-            return Results.Ok(video);
+            return await ReturnFreshDtoAsync(db, video.Id, ct);
         }
 
         var sets = await db.VideoSets.Where(s => s.Enabled).ToListAsync(ct);
@@ -143,7 +176,7 @@ public static class ApiEndpoints
         {
             setFlag(video);
             await db.SaveChangesAsync(ct);
-            return Results.Ok(video);
+            return await ReturnFreshDtoAsync(db, video.Id, ct);
         }
 
         var targetPath = Path.Combine(setRoot, specialFolderName, relative);
@@ -159,12 +192,44 @@ public static class ApiEndpoints
                 targetPath = $"{stem}-{DateTime.UtcNow:yyyyMMddHHmmss}{ext}";
             }
 
+            // `moved` distinguishes "did File.Move actually succeed" from
+            // "we found the source missing and want to set the flag
+            // anyway". The latter is the same outcome as falling into the
+            // outer `else` branch below — the file's gone, just flag the
+            // row — but reached via the move loop's catch instead of the
+            // up-front File.Exists probe (which can race). Without this
+            // distinction a missing source produced a 500 after six
+            // pointless retries (FileNotFoundException inherits IOException
+            // so it slid into the retry catch).
+            bool moved = false;
             const int maxAttempts = 6;
             for (int attempt = 1; ; attempt++)
             {
                 try
                 {
                     File.Move(video.FilePath, targetPath);
+                    moved = true;
+                    break;
+                }
+                catch (FileNotFoundException ex)
+                {
+                    // Source vanished between the probe and the move:
+                    // a prior mark action moved it, the user deleted
+                    // it on disk, a flaky network share dropped it.
+                    // Treat as "file is gone" — set the flag, no 500.
+                    logger.LogWarning(ex,
+                        "Source file gone for video {VideoId} at {Path}; setting flag without move",
+                        video.Id, video.FilePath);
+                    break;
+                }
+                catch (DirectoryNotFoundException ex)
+                {
+                    // Same reasoning as FileNotFoundException — the
+                    // containing directory no longer exists, so there's
+                    // nothing to move. Don't 500 the user; flag and move on.
+                    logger.LogWarning(ex,
+                        "Source directory gone for video {VideoId} at {Path}; setting flag without move",
+                        video.Id, video.FilePath);
                     break;
                 }
                 catch (IOException ex) when (attempt < maxAttempts)
@@ -180,7 +245,7 @@ public static class ApiEndpoints
                     return Results.Problem(detail: $"Could not move file: {ex.Message}", statusCode: 500);
                 }
             }
-            video.FilePath = PathNormalizer.Normalize(targetPath);
+            if (moved) video.FilePath = PathNormalizer.Normalize(targetPath);
         }
         else
         {
@@ -190,7 +255,7 @@ public static class ApiEndpoints
 
         setFlag(video);
         await db.SaveChangesAsync(ct);
-        return Results.Ok(video);
+        return await ReturnFreshDtoAsync(db, video.Id, ct);
     }
 
     private static async Task<IResult> UnmarkAndRestoreAsync(
@@ -208,7 +273,7 @@ public static class ApiEndpoints
         {
             clearFlag(video);
             await db.SaveChangesAsync(ct);
-            return Results.Ok(video);
+            return await ReturnFreshDtoAsync(db, video.Id, ct);
         }
 
         var sets = await db.VideoSets.Where(s => s.Enabled).ToListAsync(ct);
@@ -218,7 +283,7 @@ public static class ApiEndpoints
         {
             clearFlag(video);
             await db.SaveChangesAsync(ct);
-            return Results.Ok(video);
+            return await ReturnFreshDtoAsync(db, video.Id, ct);
         }
 
         var setRoot = set.Path.TrimEnd('/', '\\');
@@ -232,7 +297,7 @@ public static class ApiEndpoints
         {
             clearFlag(video);
             await db.SaveChangesAsync(ct);
-            return Results.Ok(video);
+            return await ReturnFreshDtoAsync(db, video.Id, ct);
         }
 
         var originalRelative = normalizedRel.Substring(prefixAtStart.Length);
@@ -249,12 +314,32 @@ public static class ApiEndpoints
             var targetDir = Path.GetDirectoryName(originalPath);
             if (!string.IsNullOrEmpty(targetDir)) Directory.CreateDirectory(targetDir);
 
+            // See MarkAndMoveAsync for the rationale on `moved` and the
+            // FileNotFoundException / DirectoryNotFoundException catches:
+            // a missing source means "file's gone, clear the flag and
+            // stop pretending we have an on-disk artifact" — not a 500.
+            bool moved = false;
             const int maxAttempts = 6;
             for (int attempt = 1; ; attempt++)
             {
                 try
                 {
                     File.Move(video.FilePath, originalPath);
+                    moved = true;
+                    break;
+                }
+                catch (FileNotFoundException ex)
+                {
+                    logger.LogWarning(ex,
+                        "Source file gone for video {VideoId} at {Path}; clearing flag without restore",
+                        video.Id, video.FilePath);
+                    break;
+                }
+                catch (DirectoryNotFoundException ex)
+                {
+                    logger.LogWarning(ex,
+                        "Source directory gone for video {VideoId} at {Path}; clearing flag without restore",
+                        video.Id, video.FilePath);
                     break;
                 }
                 catch (IOException ex) when (attempt < maxAttempts)
@@ -270,7 +355,7 @@ public static class ApiEndpoints
                     return Results.Problem(detail: $"Could not move file: {ex.Message}", statusCode: 500);
                 }
             }
-            video.FilePath = PathNormalizer.Normalize(originalPath);
+            if (moved) video.FilePath = PathNormalizer.Normalize(originalPath);
         }
         else
         {
@@ -280,7 +365,7 @@ public static class ApiEndpoints
 
         clearFlag(video);
         await db.SaveChangesAsync(ct);
-        return Results.Ok(video);
+        return await ReturnFreshDtoAsync(db, video.Id, ct);
     }
 
     private static bool TryDirectoryExists(string path, ILogger? logger = null)
@@ -398,7 +483,7 @@ public static class ApiEndpoints
                 return f.Value switch
                 {
                     "needsReview" => v.NeedsReview,
-                    "wontPlay" => v.WontPlay,
+                    "playbackIssue" => v.PlaybackIssue,
                     "markedForDeletion" => v.MarkedForDeletion,
                     "favorite" => v.IsFavorite,
                     _ => false
@@ -415,6 +500,24 @@ public static class ApiEndpoints
         var api = endpoints.MapGroup("/api");
 
         api.MapGet("/logs", (LogBuffer buf) => Results.Ok(buf.Snapshot())).WithName("GetLogs");
+
+        // === Runtime info ===================================================
+        // Tells the frontend whether the request came in over the loopback
+        // adapter (i.e. browser is on the host machine) and what OS the
+        // server is on. Drives:
+        //   · the "must be on the SightsAndSounds host" banner in the
+        //     layout when the user is on a different machine, and
+        //   · whether to render the local-only buttons (reveal in file
+        //     manager, ffprobe diagnostics) at all — those endpoints
+        //     themselves also gate on IsLocalRequest server-side.
+        api.MapGet("/runtime-info", (HttpContext http) =>
+        {
+            var os = OperatingSystem.IsWindows() ? "windows"
+                   : OperatingSystem.IsMacOS()   ? "macos"
+                   : OperatingSystem.IsLinux()   ? "linux"
+                   : "other";
+            return Results.Ok(new RuntimeInfoDto(IsLocalRequest(http), os));
+        }).WithName("GetRuntimeInfo");
 
         // === Thumbnails worker ==============================================
 
@@ -812,6 +915,31 @@ public static class ApiEndpoints
             return Results.Ok(count);
         }).WithName("GetVideoCount");
 
+        // Aggregate counts of videos with each boolean flag set.
+        // Powers the per-flag count badges on the browse sidebar's
+        // Flags tree so the user can see how many rows would match
+        // before applying the filter. Same enabled-roots scoping as
+        // /videos/count so a video that's no longer under any
+        // enabled set doesn't get counted.
+        api.MapGet("/videos/flag-counts", async (VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+            if (enabledRoots.Count == 0)
+                return Results.Ok(new FlagCountsDto(0, 0, 0, 0));
+            var scoped = db.Videos.AsNoTracking()
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+            // Four small COUNT queries against indexed boolean
+            // columns — Postgres handles this in milliseconds. Doing
+            // them sequentially (rather than as a single grouped
+            // aggregate) keeps the EF translation stable.
+            var favorite = await scoped.CountAsync(v => v.IsFavorite, ct);
+            var needsReview = await scoped.CountAsync(v => v.NeedsReview, ct);
+            var playbackIssue = await scoped.CountAsync(v => v.PlaybackIssue, ct);
+            var markedForDeletion = await scoped.CountAsync(v => v.MarkedForDeletion, ct);
+            return Results.Ok(new FlagCountsDto(
+                favorite, needsReview, playbackIssue, markedForDeletion));
+        }).WithName("GetFlagCounts");
+
         // GET /api/videos — simple AND-of-tags filter. Repeatable ?tagId=
         // narrows by every passed tag. For richer filtering, use POST
         // /api/videos/filter.
@@ -1053,12 +1181,12 @@ public static class ApiEndpoints
                 v => v.MarkedForDeletion = false, db, logger, ct);
         }).WithName("UnmarkVideoForDeletion");
 
-        api.MapPost("/videos/{id:guid}/mark-wont-play", async (
+        api.MapPost("/videos/{id:guid}/mark-playback-issue", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
-            return await MarkAndMoveAsync(id, "_WontPlay",
-                v => v.WontPlay = true, db, logger, ct);
-        }).WithName("MarkVideoWontPlay");
+            return await MarkAndMoveAsync(id, "_PlaybackIssue",
+                v => v.PlaybackIssue = true, db, logger, ct);
+        }).WithName("MarkVideoPlaybackIssue");
 
         // NeedsReview is structural but has no file-system side effect — just a
         // bool flip. Setting NeedsReview = false ("mark reviewed") is the
@@ -1083,12 +1211,12 @@ public static class ApiEndpoints
             return Results.NoContent();
         }).WithName("UnmarkVideoReviewed");
 
-        api.MapPost("/videos/{id:guid}/unmark-wont-play", async (
+        api.MapPost("/videos/{id:guid}/unmark-playback-issue", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
-            return await UnmarkAndRestoreAsync(id, "_WontPlay",
-                v => v.WontPlay = false, db, logger, ct);
-        }).WithName("UnmarkVideoWontPlay");
+            return await UnmarkAndRestoreAsync(id, "_PlaybackIssue",
+                v => v.PlaybackIssue = false, db, logger, ct);
+        }).WithName("UnmarkVideoPlaybackIssue");
 
         // Favorite is a plain boolean — no file-system side effect, just a
         // user-set flag rendered as ★ throughout the UI.
@@ -1209,17 +1337,168 @@ public static class ApiEndpoints
             return Results.Ok(videos.Select(ToDto).ToList());
         }).WithName("GetMarkedForDeletionVideos");
 
+        // List of videos flagged with PlaybackIssue. Mirrors the
+        // marked-for-deletion list and powers the /playback-issues
+        // triage page (which mirrors /purge).
+        api.MapGet("/videos/playback-issues", async (
+            VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var videos = await IncludeForVideoDto(db.Videos)
+                .AsNoTracking()
+                .Where(v => v.PlaybackIssue)
+                .OrderBy(v => v.FilePath)
+                .ToListAsync(ct);
+            return Results.Ok(videos.Select(ToDto).ToList());
+        }).WithName("GetPlaybackIssueVideos");
+
+        // Reveal the file in the host OS's file manager (Explorer /
+        // Finder / xdg-open). Loopback-gated: launching processes for a
+        // remote caller would either be useless (UI on the wrong
+        // machine) or actively dangerous (RCE on the host). Path is
+        // also re-validated against enabled VideoSets so that even a
+        // local caller can't ask us to launch into an arbitrary path.
+        api.MapPost("/videos/{id:guid}/reveal", async (
+            Guid id, VideoOrganizerDbContext db, HttpContext http,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            if (!IsLocalRequest(http)) return Results.Forbid();
+
+            var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (string.IsNullOrEmpty(video.FilePath) || !File.Exists(video.FilePath))
+                return Results.NotFound();
+
+            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+            var fullPath = Path.GetFullPath(video.FilePath);
+            if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
+                return Results.Forbid();
+
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    // /select reveals the file inside its parent folder
+                    // with the file pre-selected, instead of opening the
+                    // file with its default app.
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "explorer.exe",
+                        Arguments = $"/select,\"{fullPath}\"",
+                        UseShellExecute = true
+                    });
+                }
+                else if (OperatingSystem.IsMacOS())
+                {
+                    // -R reveals in Finder.
+                    Process.Start("open", new[] { "-R", fullPath });
+                }
+                else
+                {
+                    // xdg-open accepts a directory path; most desktops
+                    // open it in the user's preferred file manager.
+                    var dir = Path.GetDirectoryName(fullPath) ?? fullPath;
+                    Process.Start("xdg-open", new[] { dir });
+                }
+                logger.LogInformation(
+                    "Revealed video {VideoId} ({FileName}) in file manager",
+                    video.Id, video.FileName);
+                return Results.NoContent();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex,
+                    "Failed to reveal video {VideoId} at {Path}", video.Id, fullPath);
+                return Results.Problem($"Failed to open file manager: {ex.Message}");
+            }
+        }).WithName("RevealVideoInFileManager");
+
+        // Run ffprobe on the file and return stdout/stderr/exitCode so
+        // the frontend can show a diagnostic modal. Same loopback +
+        // VideoSet path guards as /reveal — running a process is the
+        // privileged action; the JSON output is just plumbing. ffprobe
+        // is taken from FFmpeg.ExecutablesPath which the API pins on
+        // startup (Program.cs); falls back to PATH if for some reason
+        // that's not set.
+        api.MapGet("/videos/{id:guid}/ffprobe", async (
+            Guid id, VideoOrganizerDbContext db, HttpContext http,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            if (!IsLocalRequest(http)) return Results.Forbid();
+
+            var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (string.IsNullOrEmpty(video.FilePath) || !File.Exists(video.FilePath))
+                return Results.NotFound();
+
+            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+            var fullPath = Path.GetFullPath(video.FilePath);
+            if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
+                return Results.Forbid();
+
+            try
+            {
+                var ffprobeName = OperatingSystem.IsWindows() ? "ffprobe.exe" : "ffprobe";
+                var ffprobePath = !string.IsNullOrEmpty(FFmpeg.ExecutablesPath)
+                    ? Path.Combine(FFmpeg.ExecutablesPath, ffprobeName)
+                    : ffprobeName;
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = ffprobePath,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("-v"); psi.ArgumentList.Add("error");
+                psi.ArgumentList.Add("-show_format");
+                psi.ArgumentList.Add("-show_streams");
+                psi.ArgumentList.Add("-of"); psi.ArgumentList.Add("json");
+                psi.ArgumentList.Add(fullPath);
+
+                using var proc = Process.Start(psi);
+                if (proc is null)
+                    return Results.Problem("Failed to start ffprobe process");
+
+                var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+                var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+                await proc.WaitForExitAsync(ct);
+                var stdout = await stdoutTask;
+                var stderr = await stderrTask;
+                logger.LogInformation(
+                    "ffprobe {FileName}: exit={ExitCode}, stdout={StdoutLen}b, stderr={StderrLen}b",
+                    video.FileName, proc.ExitCode, stdout.Length, stderr.Length);
+                return Results.Ok(new FfprobeResultDto(
+                    Stdout: stdout,
+                    Stderr: stderr,
+                    ExitCode: proc.ExitCode,
+                    FilePath: fullPath));
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex,
+                    "ffprobe failed for video {VideoId} at {Path}", video.Id, fullPath);
+                return Results.Problem($"ffprobe failed: {ex.Message}");
+            }
+        }).WithName("RunFfprobeOnVideo");
+
         api.MapPost("/videos/{id:guid}/purge", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
             var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
-            if (!video.MarkedForDeletion)
+            // Accept rows that are either marked-for-deletion or
+            // flagged with a playback issue. The /purge page calls
+            // this with the former; the /playback-issues page calls
+            // it with the latter (Purge All button bypasses the
+            // staging step). Anything else is a misuse — the user
+            // hasn't explicitly opted into destruction yet.
+            if (!video.MarkedForDeletion && !video.PlaybackIssue)
             {
                 logger.LogWarning(
-                    "Purge rejected for video {VideoId} ({FileName}) — video is not marked for deletion (state: deleted={IsDeleted}, wontPlay={WontPlay})",
-                    video.Id, video.FileName, video.MarkedForDeletion, video.WontPlay);
-                return Results.BadRequest(new { error = "Video is not marked for deletion." });
+                    "Purge rejected for video {VideoId} ({FileName}) — neither MarkedForDeletion nor PlaybackIssue is set (state: deleted={IsDeleted}, playbackIssue={PlaybackIssue})",
+                    video.Id, video.FileName, video.MarkedForDeletion, video.PlaybackIssue);
+                return Results.BadRequest(new { error = "Video is not flagged for purge." });
             }
 
             // Clip rows share the file with the parent — drop the row only.
@@ -1291,6 +1570,53 @@ public static class ApiEndpoints
             return Results.Ok(new { purged, failed });
         }).WithName("PurgeAllMarkedForDeletion");
 
+        // Bulk-purge every row currently flagged with PlaybackIssue.
+        // Same destructive contract as /videos/purge-all but keyed
+        // off the PlaybackIssue flag instead of MarkedForDeletion —
+        // skips the two-step "queue then purge" flow when the user
+        // has decided everything in this triage list is junk.
+        // Same parent-before-clip ordering, same per-row try/catch,
+        // same { purged, failed[] } response shape so the existing
+        // bulk-progress modal on the frontend can consume it.
+        api.MapPost("/videos/purge-all-playback-issues", async (
+            VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var videos = await db.Videos.Where(v => v.PlaybackIssue).ToListAsync(ct);
+            logger.LogInformation(
+                "Purge-all-playback-issues starting — {TotalCandidates} videos flagged",
+                videos.Count);
+
+            var purged = 0;
+            var failed = new List<object>();
+            var ordered = videos.OrderBy(v => v.ParentVideoId.HasValue ? 1 : 0).ToList();
+            foreach (var video in ordered)
+            {
+                try
+                {
+                    if (!video.ParentVideoId.HasValue
+                        && !string.IsNullOrEmpty(video.FilePath)
+                        && File.Exists(video.FilePath))
+                    {
+                        File.Delete(video.FilePath);
+                    }
+                    db.Videos.Remove(video);
+                    purged++;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex,
+                        "Purge-all-playback-issues: failed on {VideoId} ({FileName}) at {Path}",
+                        video.Id, video.FileName, video.FilePath);
+                    failed.Add(new { id = video.Id, fileName = video.FileName, error = ex.Message });
+                }
+            }
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Purge-all-playback-issues complete — {Purged} purged, {Failed} failed of {Total} candidates",
+                purged, failed.Count, videos.Count);
+            return Results.Ok(new { purged, failed });
+        }).WithName("PurgeAllPlaybackIssues");
+
         api.MapGet("/videos/{id:guid}/stream", async (
             VideoOrganizerDbContext dbContext, Guid id, ILogger<Program> logger, CancellationToken ct) =>
         {
@@ -1316,8 +1642,8 @@ public static class ApiEndpoints
             };
             logger.LogInformation("Serving video: {Path}", fullPath);
             // Open with FileShare.Read|Delete so a concurrent File.Move
-            // (e.g. user presses W to mark Won't Play, which moves the
-            // file into _WontPlay/) doesn't fail with "file in use".
+            // (e.g. user presses W to mark Playback Issue, which moves
+            // the file into _PlaybackIssue/) doesn't fail with "file in use".
             // Default Results.File(path, ...) opens with FileShare.Read
             // only on Windows, which locks the inode against renames.
             // Results.File takes ownership of the FileStream and
