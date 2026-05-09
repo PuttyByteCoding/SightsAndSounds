@@ -5,13 +5,22 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { api } from '$lib/api';
-  import type { Video, VideoSet, Tag, TagGroup, FilterRef } from '$lib/types';
+  import type {
+    Video,
+    VideoSet,
+    Tag,
+    TagGroup,
+    FilterRef,
+    ImportBrowseDirectory,
+    VideoTagSummary
+  } from '$lib/types';
   import VideoCard from '$lib/components/VideoCard.svelte';
   import VideoPlayer from '$lib/components/VideoPlayer.svelte';
   import EditTagsPanel from '$lib/components/EditTagsPanel.svelte';
   import FileInfoPanel from '$lib/components/FileInfoPanel.svelte';
   import FilterDialog from '$lib/components/FilterDialog.svelte';
   import TagEditModal from '$lib/components/TagEditModal.svelte';
+  import FolderTreeNode from '$lib/components/FolderTreeNode.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { pillClass, filterSlot, filterSlotClass } from '$lib/tagColors';
 
@@ -24,6 +33,25 @@
   let expandedGroups = $state<Set<string>>(new Set());
 
   let sets = $state<VideoSet[]>([]);
+  // Annotated source roots used to seed the Folders tree. Comes from
+  // /api/import/browse with no path — same recursive video-count and
+  // imported-count numbers each subfolder gets on expand. Falls back
+  // to a sets-derived stub if the call fails so the tree still works
+  // (just without count badges at the root level).
+  let folderRoots = $state<ImportBrowseDirectory[]>([]);
+  // True when folderRoots came from a real browseImport response;
+  // false in the fallback. Gates the "only folders with imports"
+  // filter — applying it to fallback stubs (importedCount=0 for
+  // every root) would hide the whole tree.
+  let folderRootsAnnotated = $state(false);
+  // Tree shows only folders that contain at least one imported
+  // video. importedCount is recursive server-side, so dropping a
+  // zero-import root prunes the whole subtree safely.
+  const visibleFolderRoots = $derived(
+    folderRootsAnnotated
+      ? folderRoots.filter(r => r.importedCount > 0)
+      : folderRoots
+  );
 
   let playingVideo = $state<Video | null>(null);
   let showEditTagsPanel = $state(false);
@@ -88,6 +116,28 @@
   const THUMB_WIDTH_DEFAULT = 200;
   let thumbWidth = $state(THUMB_WIDTH_DEFAULT);
 
+  // --- Section-level collapse ------------------------------------------
+  // Each tree-style section in the sidebar (Flags, Favorite Tags,
+  // Folders, Tag Groups) carries a chevron next to its title so the
+  // user can collapse it. The body hides; the chevron rotates; the
+  // heading stays so the user can re-open it. Persisted per section
+  // to localStorage.
+  type SectionKey = 'flags' | 'favorites' | 'related' | 'folders' | 'tagGroups';
+  const SECTION_KEYS: readonly SectionKey[] = ['flags', 'favorites', 'related', 'folders', 'tagGroups'];
+  let sectionCollapsed = $state<Record<SectionKey, boolean>>({
+    flags: false,
+    favorites: false,
+    related: false,
+    folders: false,
+    tagGroups: false
+  });
+  function toggleSection(k: SectionKey) {
+    sectionCollapsed[k] = !sectionCollapsed[k];
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(`browseSection_${k}_collapsed`, sectionCollapsed[k] ? '1' : '0');
+    }
+  }
+
   onMount(() => {
     const stored = Number(localStorage.getItem('browsePlayerHeight'));
     if (Number.isFinite(stored) && stored >= PLAYER_HEIGHT_MIN) {
@@ -98,6 +148,9 @@
       thumbWidth = storedThumb;
     }
     sidebarCollapsed = localStorage.getItem('browseSidebarCollapsed') === '1';
+    for (const k of SECTION_KEYS) {
+      sectionCollapsed[k] = localStorage.getItem(`browseSection_${k}_collapsed`) === '1';
+    }
   });
 
   // Save on each change. Cheap (a few writes per drag) and keeps the
@@ -243,6 +296,31 @@
       }
       groups = await api.listTagGroups();
       await loadFavorites();
+      // Fetch annotated source roots so the Folders tree shows
+      // import-progress badges at the root level (and we get the
+      // real `hasSubdirectories` flag rather than an always-on
+      // chevron). Failures here are non-fatal — the user can still
+      // browse the tree, just without count badges on the roots.
+      try {
+        const browse = await api.browseImport();
+        folderRoots = browse.directories;
+        folderRootsAnnotated = true;
+      } catch (e: any) {
+        // Stub out roots from `sets` so the tree still renders.
+        // videoCount=0 suppresses the badge; chevron defaults true
+        // to preserve the affordance — the per-folder browseImport
+        // call on expand will surface real children if any exist.
+        // folderRootsAnnotated stays false so the imports-only
+        // filter doesn't accidentally hide every root.
+        folderRoots = sets.map(s => ({
+          name: s.name,
+          fullPath: s.path,
+          hasSubdirectories: true,
+          videoCount: 0,
+          importedCount: 0
+        }));
+        folderRootsAnnotated = false;
+      }
     } catch (e: any) {
       loadError = e?.message ?? 'Failed to load sidebar';
     }
@@ -371,11 +449,177 @@
   }
 
   function pickStatus(status: 'needsReview' | 'wontPlay' | 'markedForDeletion' | 'favorite', label: string) {
+    // Status hits from the search box still go through the picker
+    // dialog (Required / Optional / Excluded). The Flags tree skips
+    // the dialog and uses applyFlag below; both call paths can
+    // coexist because they end up writing to the same filterStore
+    // keys (`status::<value>`).
     filterStore.requestAdd({ type: 'status', value: status, label });
   }
 
-  function pickFolder(s: VideoSet) {
-    filterStore.requestAdd({ type: 'folder', value: s.path, label: s.name });
+  // --- Flags tree -----------------------------------------------------
+  // The Flags tree mixes two kinds of items:
+  //   • Built-in boolean flags on the Video entity (Favorite,
+  //     Needs Review, Won't Play, To Delete) — these write `status`
+  //     filters.
+  //   • Tags that live in a tag group named "Flags" (case-insensitive)
+  //     — these write `tag` filters but use the same three-option UI
+  //     so the user has one place for everything that's True/False.
+  // Both kinds expand to three leaf options:
+  //   No Filter → remove from every bucket
+  //   True      → put in Required (video must have it set)
+  //   False     → put in Excluded (video must NOT have it set)
+  // We skip the picker dialog entirely; filterStore.apply() routes
+  // straight into the chosen bucket, idempotently replacing whatever
+  // bucket the same item was in before.
+  type FlagValue = 'favorite' | 'needsReview' | 'wontPlay' | 'markedForDeletion';
+  interface FlagDef { value: FlagValue; label: string; }
+  const FLAG_DEFS: FlagDef[] = [
+    { value: 'favorite',          label: 'Favorite' },
+    { value: 'needsReview',       label: 'Needs Review' },
+    { value: 'wontPlay',          label: "Won't Play" },
+    { value: 'markedForDeletion', label: 'To Delete' }
+  ];
+
+  type FlagItem =
+    | { kind: 'bool'; def: FlagDef }
+    | { kind: 'tag'; tag: Tag };
+
+  // Stable identifier per flag item — used both for expansion state
+  // and for keyed `{#each}` rendering. Built-in flags are namespaced
+  // separately from tag flags so the two can never collide.
+  function flagItemKey(item: FlagItem): string {
+    return item.kind === 'bool' ? `bool:${item.def.value}` : `tag:${item.tag.id}`;
+  }
+  function flagItemLabel(item: FlagItem): string {
+    return item.kind === 'bool' ? item.def.label : item.tag.name;
+  }
+
+  // Reads filterStore to determine which of the three options is
+  // currently active for a flag item, used both for the inline state
+  // indicator on each row and as the input to cycleFlag below.
+  // Returns 'true' / 'false' / 'nofilter'.
+  function flagState(item: FlagItem): 'true' | 'false' | 'nofilter' {
+    if (item.kind === 'bool') {
+      const v = item.def.value;
+      if (filterStore.required.some(t => t.type === 'status' && t.value === v)) return 'true';
+      if (filterStore.excluded.some(t => t.type === 'status' && t.value === v)) return 'false';
+    } else {
+      const id = item.tag.id;
+      if (filterStore.required.some(t => t.type === 'tag' && t.value === id)) return 'true';
+      if (filterStore.excluded.some(t => t.type === 'tag' && t.value === id)) return 'false';
+    }
+    return 'nofilter';
+  }
+
+  function applyFlag(item: FlagItem, opt: 'nofilter' | 'true' | 'false') {
+    const tag = item.kind === 'bool'
+      ? { type: 'status' as const, value: item.def.value, label: item.def.label }
+      : {
+          type: 'tag' as const,
+          value: item.tag.id,
+          label: item.tag.name,
+          tagGroupName: item.tag.tagGroupName
+        };
+    if (opt === 'nofilter') filterStore.remove(tag);
+    else if (opt === 'true') filterStore.apply(tag, 'required');
+    else filterStore.apply(tag, 'excluded');
+  }
+
+  // Tristate-cycle handler. Each flag row in the Flags tree is a
+  // single button that advances the filter state on every click —
+  // Any → True → False → Any. Compact one-row-per-flag UI (Option A
+  // from the patterns review) instead of expand-then-pick.
+  function cycleFlag(item: FlagItem) {
+    const cur = flagState(item);
+    const next = cur === 'nofilter' ? 'true' : cur === 'true' ? 'false' : 'nofilter';
+    applyFlag(item, next);
+  }
+  function flagStateLabel(s: 'true' | 'false' | 'nofilter'): string {
+    return s === 'true' ? 'True' : s === 'false' ? 'False' : 'Any';
+  }
+
+  // The "Flags" tag group, if the user has defined one (case-
+  // insensitive name match). Its tags are surfaced inline in the
+  // Flags tree and hidden from the regular Tag Groups tree so
+  // boolean-style attributes live in one place.
+  const flagsGroup = $derived(
+    groups.find(g => g.name.trim().toLowerCase() === 'flags') ?? null
+  );
+  // Tags that belong to the Flags group, sorted by name. Pulled from
+  // the cached `allTags` list (loadFavorites loads everything once)
+  // so no extra round-trip is needed.
+  const flagsGroupTags = $derived(
+    flagsGroup
+      ? allTags
+          .filter(t => t.tagGroupId === flagsGroup.id)
+          .slice()
+          .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+      : []
+  );
+  // FlagItem list used by the Flags tree template. Built-in boolean
+  // flags first, tag-flags second.
+  const flagItems = $derived<FlagItem[]>([
+    ...FLAG_DEFS.map(def => ({ kind: 'bool' as const, def })),
+    ...flagsGroupTags.map(tag => ({ kind: 'tag' as const, tag }))
+  ]);
+  // Tag Groups tree skips the Flags group since its tags already
+  // appear in the Flags tree above.
+  const nonFlagsGroups = $derived(
+    flagsGroup ? groups.filter(g => g.id !== flagsGroup.id) : groups
+  );
+
+  // --- Related Tags ---------------------------------------------------
+  // Aggregates every tag that appears on at least one video in the
+  // currently filtered grid, grouped by TagGroup. Each entry carries
+  // a count = number of videos in the filtered set that have it.
+  // Useful for refinement: "Bob Marley shows up in 50 videos; what
+  // other Albums / Years / Performers are co-tagged with him?"
+  // Computed client-side from the existing `videos` state — no extra
+  // round-trip — and re-derives whenever the filtered list changes.
+  // The Flags group is excluded since its tags already live in the
+  // Flags tree.
+  interface RelatedTagEntry { tag: VideoTagSummary; count: number; }
+  interface RelatedTagGroup { groupId: string; groupName: string; tags: RelatedTagEntry[]; total: number; }
+  const relatedTagsByGroup = $derived.by<RelatedTagGroup[]>(() => {
+    const flagsGroupId = flagsGroup?.id;
+    const buckets = new Map<string, { groupName: string; tags: Map<string, RelatedTagEntry> }>();
+    for (const v of videos) {
+      for (const t of v.tags) {
+        if (t.tagGroupId === flagsGroupId) continue;
+        let bucket = buckets.get(t.tagGroupId);
+        if (!bucket) {
+          bucket = { groupName: t.tagGroupName, tags: new Map() };
+          buckets.set(t.tagGroupId, bucket);
+        }
+        const existing = bucket.tags.get(t.id);
+        if (existing) existing.count++;
+        else bucket.tags.set(t.id, { tag: t, count: 1 });
+      }
+    }
+    return Array.from(buckets.entries())
+      .map(([groupId, b]) => {
+        // Sort tags by count desc, then alphabetic — high-frequency
+        // co-tags surface first so the user spots the strongest
+        // relationships at a glance.
+        const tags = Array.from(b.tags.values())
+          .sort((a, b) => b.count - a.count || a.tag.name.localeCompare(b.tag.name));
+        const total = tags.reduce((s, e) => s + e.count, 0);
+        return { groupId, groupName: b.groupName, tags, total };
+      })
+      .sort((a, b) => a.groupName.localeCompare(b.groupName));
+  });
+
+  // Per-group expand state for the Related Tags tree. Independent
+  // from `expandedGroups` (Tag Groups tree) so a user expanding a
+  // group in one place doesn't auto-expand the same name in the
+  // other.
+  let expandedRelatedGroups = $state<Set<string>>(new Set());
+  function toggleRelatedGroup(groupId: string) {
+    const next = new Set(expandedRelatedGroups);
+    if (next.has(groupId)) next.delete(groupId);
+    else next.add(groupId);
+    expandedRelatedGroups = next;
   }
 
   function pickMissing(g: TagGroup) {
@@ -521,88 +765,128 @@
         {/if}
       </div>
 
-      <div>
-        <div class="flex items-center justify-between mb-1">
-          <h2 class="font-semibold text-sm">Filter</h2>
-          {#if !filterStore.isEmpty()}
-            <button class="btn btn-xs" onclick={() => filterStore.clear()}>Clear</button>
-          {/if}
-        </div>
-        {#if filterStore.required.length > 0}
-          <div class="text-xs text-base-content/60 mt-1">Required</div>
-          <div class="flex flex-wrap gap-1 mb-1">
-            {#each filterStore.required as t (`req-${t.type}-${t.value}`)}
-              <span class="badge {filterSlotClass('required')} gap-1">
-                {t.label}
-                <button onclick={() => filterStore.remove(t)}>×</button>
-              </span>
-            {/each}
-          </div>
-        {/if}
-        {#if filterStore.optional.length > 0}
-          <div class="text-xs text-base-content/60 mt-1">Optional</div>
-          <div class="flex flex-wrap gap-1 mb-1">
-            {#each filterStore.optional as t (`opt-${t.type}-${t.value}`)}
-              <span class="badge {filterSlotClass('optional')} gap-1">
-                {t.label}
-                <button onclick={() => filterStore.remove(t)}>×</button>
-              </span>
-            {/each}
-          </div>
-        {/if}
-        {#if filterStore.excluded.length > 0}
-          <div class="text-xs text-base-content/60 mt-1">Excluded</div>
-          <div class="flex flex-wrap gap-1 mb-1">
-            {#each filterStore.excluded as t (`exc-${t.type}-${t.value}`)}
-              <span class="badge {filterSlotClass('excluded')} gap-1">
-                {t.label}
-                <button onclick={() => filterStore.remove(t)}>×</button>
-              </span>
-            {/each}
-          </div>
-        {/if}
-      </div>
 
       <div>
-        <h3 class="font-semibold text-sm mb-1">Status</h3>
-        <div class="flex flex-wrap gap-1 bg-base-100 rounded-box p-2">
-          <button
-            type="button"
-            class="inline-block px-2 py-0.5 rounded-full text-xs border cursor-pointer"
-            style="background-color: rgb(168 162 158 / 0.20); border-color: rgb(168 162 158 / 0.45); color: rgb(253 224 71);"
-            onclick={() => pickStatus('favorite', 'Favorite')}
-          >★ Favorite</button>
-          <button
-            type="button"
-            class="inline-block px-2 py-0.5 rounded-full text-xs border cursor-pointer"
-            style="background-color: rgb(168 162 158 / 0.20); border-color: rgb(168 162 158 / 0.45); color: rgb(214 211 209);"
-            onclick={() => pickStatus('needsReview', 'Needs Review')}
-          >Needs Review</button>
-          <button
-            type="button"
-            class="inline-block px-2 py-0.5 rounded-full text-xs border cursor-pointer"
-            style="background-color: rgb(249 115 22 / 0.20); border-color: rgb(249 115 22 / 0.45); color: rgb(253 186 116);"
-            onclick={() => pickStatus('wontPlay', "Won't Play")}
-          >Won't Play</button>
-          <button
-            type="button"
-            class="inline-block px-2 py-0.5 rounded-full text-xs border cursor-pointer"
-            style="background-color: rgb(239 68 68 / 0.20); border-color: rgb(239 68 68 / 0.45); color: rgb(252 165 165);"
-            onclick={() => pickStatus('markedForDeletion', 'To Delete')}
-          >To Delete</button>
+        <button
+          type="button"
+          class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
+          onclick={() => toggleSection('flags')}
+          aria-expanded={!sectionCollapsed.flags}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            class="h-3 w-3 fill-current transition-transform {sectionCollapsed.flags ? '' : 'rotate-90'}"
+          >
+            <path d="M9 6l6 6-6 6V6z" />
+          </svg>
+          <h3 class="font-semibold text-sm">Flags</h3>
+        </button>
+        {#if !sectionCollapsed.flags}
+        <!-- Flags tree (Option A — tristate cycle button). Each flag
+             is a single clickable row that advances state on every
+             click: Any → True → False → Any. The right-side state
+             indicator shows the current state at a glance:
+                ○  hollow circle, muted   → Any (not in filter)
+                ✓  green check            → True  (Required bucket)
+                ✗  red cross              → False (Excluded bucket)
+             No expansion, no nested options — minimum cost per change
+             and current state always visible. Boolean flags from the
+             Video entity render first, then any tags from a tag
+             group named "Flags" so the user gets one unified list. -->
+        <div class="bg-base-100 rounded-box p-1 text-sm">
+          {#each flagItems as item (flagItemKey(item))}
+            {@const itemLabel = flagItemLabel(item)}
+            {@const state = flagState(item)}
+            <button
+              type="button"
+              class="w-full flex items-center gap-1 hover:bg-base-200 rounded text-left"
+              onclick={() => cycleFlag(item)}
+              title="{itemLabel}: {flagStateLabel(state)} — click to cycle"
+              aria-label="{itemLabel}, currently {flagStateLabel(state)}, click to cycle"
+            >
+              <!-- Empty chevron-slot keeps the indent rhythm aligned
+                   with other tree sections (which put a chevron here
+                   on expandable rows). -->
+              <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+              <span class="shrink-0 w-4 h-4 flex items-center justify-center" aria-hidden="true">
+                {#if item.kind === 'bool'}
+                  {#if item.def.value === 'favorite'}
+                    <svg viewBox="0 0 24 24" class="h-3 w-3"
+                      fill="rgb(234 179 8)"
+                      stroke="rgb(255 255 255 / 0.85)" stroke-width="1.25" stroke-linejoin="round">
+                      <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
+                    </svg>
+                  {:else if item.def.value === 'needsReview'}
+                    <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(56 189 248);">
+                      <path d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 11a4 4 0 110-8 4 4 0 010 8zm0-6a2 2 0 100 4 2 2 0 000-4z" />
+                    </svg>
+                  {:else if item.def.value === 'wontPlay'}
+                    <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(249 115 22);">
+                      <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.32 12.9L7.1 5.68A8 8 0 0112 4zM5.68 7.1l11.22 11.22A8 8 0 015.68 7.1z" />
+                    </svg>
+                  {:else}
+                    <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(239 68 68);">
+                      <path d="M9 3a1 1 0 00-1 1v1H5a1 1 0 100 2h14a1 1 0 100-2h-3V4a1 1 0 00-1-1H9zm-2 6v11a2 2 0 002 2h6a2 2 0 002-2V9H7zm2 2h2v8H9v-8zm4 0h2v8h-2v-8z" />
+                    </svg>
+                  {/if}
+                {:else}
+                  <!-- Tag-flag: small generic flag icon so the row
+                       visually slots in next to the colored boolean
+                       flags. -->
+                  <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current text-base-content/60">
+                    <path d="M5 3a1 1 0 011-1h11l-2 4 2 4H6v9H4V3a1 1 0 011-1z"/>
+                  </svg>
+                {/if}
+              </span>
+              <span class="flex-1 min-w-0 truncate py-1 font-medium {state !== 'nofilter' ? 'text-primary' : ''}">{itemLabel}</span>
+              <!-- Tristate indicator. Distinct shape AND color per
+                   state so the user can scan the column visually. -->
+              <span class="shrink-0 w-5 h-5 flex items-center justify-center" aria-hidden="true">
+                {#if state === 'true'}
+                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current text-success">
+                    <path d="M9 16.2l-3.5-3.5L4 14.2l5 5L20 8.2l-1.5-1.5z"/>
+                  </svg>
+                {:else if state === 'false'}
+                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current text-error">
+                    <path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/>
+                  </svg>
+                {:else}
+                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-base-content/35"
+                    fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="8"/>
+                  </svg>
+                {/if}
+              </span>
+            </button>
+          {/each}
         </div>
+        {/if}
       </div>
 
       {#if favoriteTags.length > 0}
         <div>
-          <h3 class="font-semibold text-sm mb-1 flex items-center gap-1">
+          <button
+            type="button"
+            class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
+            onclick={() => toggleSection('favorites')}
+            aria-expanded={!sectionCollapsed.favorites}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              class="h-3 w-3 fill-current transition-transform {sectionCollapsed.favorites ? '' : 'rotate-90'}"
+            >
+              <path d="M9 6l6 6-6 6V6z" />
+            </svg>
             <svg viewBox="0 0 24 24" class="h-4 w-4"
               fill="rgb(234 179 8)"
               stroke="rgb(255 255 255 / 0.85)" stroke-width="1.25" stroke-linejoin="round">
               <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
             </svg>
-            Favorite Tags
-          </h3>
+            <h3 class="font-semibold text-sm">Favorite Tags</h3>
+          </button>
+          {#if !sectionCollapsed.favorites}
           <div class="flex flex-wrap gap-1 bg-base-100 rounded-box p-2">
             {#each favoriteTags as t (t.id)}
               {@const slot = filterSlot(t.id)}
@@ -626,79 +910,260 @@
               </span>
             {/each}
           </div>
+          {/if}
         </div>
       {/if}
 
-      {#if groups.length > 0}
+      {#if relatedTagsByGroup.length > 0}
         <div>
-          <h3 class="font-semibold text-sm mb-1">Missing tags from…</h3>
-          <div class="flex flex-wrap gap-1 bg-base-100 rounded-box p-2">
-            {#each groups as g (g.id)}
-              <button
-                type="button"
-                class="badge badge-tag-missing cursor-pointer"
-                onclick={() => pickMissing(g)}
-                title="Show videos with no tag in {g.name}"
-              >{g.name}</button>
+          <button
+            type="button"
+            class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
+            onclick={() => toggleSection('related')}
+            aria-expanded={!sectionCollapsed.related}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              class="h-3 w-3 fill-current transition-transform {sectionCollapsed.related ? '' : 'rotate-90'}"
+            >
+              <path d="M9 6l6 6-6 6V6z" />
+            </svg>
+            <h3 class="font-semibold text-sm">Related Tags</h3>
+          </button>
+          {#if !sectionCollapsed.related}
+          <!-- Related Tags tree. For every tag found on at least one
+               video in the current filtered grid, surfaces it under
+               its tag group with a count = number of those videos
+               carrying it. Live re-derives whenever the grid changes,
+               so as the user narrows the filter the suggestions stay
+               relevant. Click a tag to add it to the filter. -->
+          <div class="bg-base-100 rounded-box p-1 text-sm">
+            {#each relatedTagsByGroup as g (g.groupId)}
+              {@const isExpanded = expandedRelatedGroups.has(g.groupId)}
+              <div>
+                <div class="flex items-center gap-1 hover:bg-base-200 rounded">
+                  <button
+                    type="button"
+                    class="shrink-0 w-5 h-5 flex items-center justify-center text-base-content/70 hover:text-base-content"
+                    aria-label={isExpanded ? `Collapse ${g.groupName}` : `Expand ${g.groupName}`}
+                    title={isExpanded ? 'Collapse' : 'Expand'}
+                    onclick={() => toggleRelatedGroup(g.groupId)}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      class="h-3 w-3 fill-current transition-transform {isExpanded ? 'rotate-90' : ''}"
+                    >
+                      <path d="M9 6l6 6-6 6V6z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="flex-1 min-w-0 text-left truncate py-1 font-medium hover:underline"
+                    onclick={() => toggleRelatedGroup(g.groupId)}
+                    title={isExpanded ? `Collapse ${g.groupName}` : `Expand ${g.groupName}`}
+                  >{g.groupName}</button>
+                  <span
+                    class="shrink-0 text-xs tabular-nums opacity-50"
+                    title="{g.tags.length} distinct tag{g.tags.length === 1 ? '' : 's'} across {g.total} video{g.total === 1 ? '' : 's'}"
+                  >{g.tags.length}</span>
+                </div>
+                {#if isExpanded}
+                  {#each g.tags as rt (rt.tag.id)}
+                    {@const slot = filterSlot(rt.tag.id)}
+                    <div
+                      class="flex items-center gap-1 hover:bg-base-200 rounded"
+                      style="padding-left: 0.75rem"
+                    >
+                      <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+                      <button
+                        type="button"
+                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
+                        onclick={() => pickTag({
+                          id: rt.tag.id,
+                          tagGroupId: rt.tag.tagGroupId,
+                          tagGroupName: rt.tag.tagGroupName,
+                          name: rt.tag.name,
+                          aliases: [],
+                          isFavorite: false,
+                          sortOrder: 0,
+                          notes: '',
+                          videoCount: rt.count
+                        })}
+                        title={slot ? `In filter: ${slot}` : `Filter by ${g.groupName}: ${rt.tag.name}`}
+                      >{rt.tag.name}</button>
+                      <span class="shrink-0 text-xs tabular-nums opacity-50">{rt.count}</span>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
             {/each}
           </div>
+          {/if}
         </div>
       {/if}
 
-      {#if sets.length > 0}
+      {#if visibleFolderRoots.length > 0}
         <div>
-          <h3 class="font-semibold text-sm mb-1">Folders</h3>
-          <ul class="menu menu-sm bg-base-100 rounded-box">
-            {#each sets as s (s.id)}
-              <li><button onclick={() => pickFolder(s)}>{s.name}</button></li>
+          <button
+            type="button"
+            class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
+            onclick={() => toggleSection('folders')}
+            aria-expanded={!sectionCollapsed.folders}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              class="h-3 w-3 fill-current transition-transform {sectionCollapsed.folders ? '' : 'rotate-90'}"
+            >
+              <path d="M9 6l6 6-6 6V6z" />
+            </svg>
+            <h3 class="font-semibold text-sm">Folders</h3>
+          </button>
+          {#if !sectionCollapsed.folders}
+          <!-- Tree view that mirrors the on-disk layout under each
+               configured source root. Chevron expands a node, lazy-
+               loading immediate children from /api/import/browse on
+               first open. Clicking the label adds a folder filter
+               keyed on the absolute path; the API matcher already
+               accepts any path under an enabled VideoSet. Each row
+               carries import-progress counts: muted "X" when fully
+               imported, warning-tinted "X/Y" when partial. Only
+               folders containing at least one imported video appear
+               — the rest (and their subtrees) are pruned out. -->
+          <div class="bg-base-100 rounded-box p-1">
+            {#each visibleFolderRoots as root (root.fullPath)}
+              <FolderTreeNode
+                name={root.name}
+                fullPath={root.fullPath}
+                hasSubdirectories={root.hasSubdirectories}
+                depth={0}
+                videoCount={root.videoCount}
+                importedCount={root.importedCount}
+                onPickFolder={(path, label) =>
+                  filterStore.requestAdd({ type: 'folder', value: path, label })}
+              />
             {/each}
-          </ul>
+          </div>
+          {/if}
         </div>
       {/if}
 
       <div>
-        <h3 class="font-semibold text-sm mb-1">Tag Groups</h3>
-        <div class="bg-base-100 rounded-box divide-y divide-base-300">
-          {#each groups as g (g.id)}
-            <details open={expandedGroups.has(g.id)} class="px-2 py-1">
-              <summary
-                class="cursor-pointer flex items-center justify-between text-sm font-medium py-1"
-                onclick={(e) => { e.preventDefault(); toggleGroup(g); }}
-              >
-                <span>{g.name}</span>
-                <span class="badge badge-sm">{g.tagCount}</span>
-              </summary>
-              {#if expandedGroups.has(g.id)}
-                <div class="flex flex-wrap gap-1 mt-1">
-                  {#each tagsByGroup[g.id] ?? [] as t (t.id)}
-                    {@const slot = filterSlot(t.id)}
+        <button
+          type="button"
+          class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
+          onclick={() => toggleSection('tagGroups')}
+          aria-expanded={!sectionCollapsed.tagGroups}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            class="h-3 w-3 fill-current transition-transform {sectionCollapsed.tagGroups ? '' : 'rotate-90'}"
+          >
+            <path d="M9 6l6 6-6 6V6z" />
+          </svg>
+          <h3 class="font-semibold text-sm">Tag Groups</h3>
+        </button>
+        {#if !sectionCollapsed.tagGroups}
+        <!-- Tag Groups tree. Each group is a parent row with a chevron
+             that lazy-loads its tags on first expand (toggleGroup). The
+             tags themselves render as indented leaf rows — same chrome
+             as Folders / Status / Missing — instead of the old colored
+             pills, so the whole sidebar reads as one consistent tree.
+             Each tag row keeps its videoCount badge and pencil-edit
+             button on the right; the title attribute still calls out
+             current filter slot membership. -->
+        <div class="bg-base-100 rounded-box p-1 text-sm">
+          {#each nonFlagsGroups as g (g.id)}
+            {@const isExpanded = expandedGroups.has(g.id)}
+            <div>
+              <div class="flex items-center gap-1 hover:bg-base-200 rounded">
+                <button
+                  type="button"
+                  class="shrink-0 w-5 h-5 flex items-center justify-center text-base-content/70 hover:text-base-content"
+                  aria-label={isExpanded ? 'Collapse {g.name}' : 'Expand {g.name}'}
+                  title={isExpanded ? 'Collapse' : 'Expand'}
+                  onclick={() => toggleGroup(g)}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    class="h-3 w-3 fill-current transition-transform {isExpanded ? 'rotate-90' : ''}"
+                  >
+                    <path d="M9 6l6 6-6 6V6z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="flex-1 min-w-0 text-left truncate py-1 font-medium hover:underline"
+                  onclick={() => toggleGroup(g)}
+                  title={isExpanded ? 'Collapse {g.name}' : 'Expand {g.name}'}
+                >{g.name}</button>
+                <span class="shrink-0 text-xs tabular-nums opacity-50">{g.tagCount}</span>
+              </div>
+              {#if isExpanded}
+                <!-- "Missing / None" leaf — first child of every
+                     group. Clicking adds a `Missing <group>` filter,
+                     surfacing videos that have no tag from this
+                     group. Lives inside the group instead of in a
+                     separate Missing section so the user discovers
+                     it next to the group's actual tags. The badge
+                     shows how many videos currently have no tag in
+                     this group; suppressed when zero. -->
+                <div
+                  class="flex items-center gap-1 hover:bg-base-200 rounded"
+                  style="padding-left: 0.75rem"
+                >
+                  <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+                  <button
+                    type="button"
+                    class="flex-1 min-w-0 text-left truncate py-1 italic text-base-content/70 hover:underline"
+                    onclick={() => pickMissing(g)}
+                    title="Show videos with no tag in {g.name}"
+                  >Missing / None</button>
+                  {#if g.videosMissingCount > 0}
                     <span
-                      class="badge {pillClass(t.id, g.name)} gap-1"
-                      title={slot ? `In filter: ${slot}` : `Filter by ${g.name}: ${t.name}`}
-                    >
-                      <button
-                        type="button"
-                        class="cursor-pointer"
-                        onclick={() => pickTag(t)}
-                      >{t.name}</button>
-                      <span class="opacity-60 text-xs tabular-nums">{t.videoCount}</span>
-                      <button
-                        type="button"
-                        class="opacity-70 hover:opacity-100"
-                        onclick={(e) => openTagEdit(t, e)}
-                        title="Edit tag"
-                        aria-label="Edit {t.name}"
-                      >✎</button>
-                    </span>
-                  {/each}
-                  {#if (tagsByGroup[g.id] ?? []).length === 0}
-                    <span class="text-xs text-base-content/50">No tags yet.</span>
+                      class="shrink-0 text-xs tabular-nums opacity-50"
+                      title="{g.videosMissingCount} video{g.videosMissingCount === 1 ? '' : 's'} with no {g.name} tag"
+                    >{g.videosMissingCount}</span>
                   {/if}
                 </div>
+                {#each tagsByGroup[g.id] ?? [] as t (t.id)}
+                  {@const slot = filterSlot(t.id)}
+                  <div
+                    class="flex items-center gap-1 hover:bg-base-200 rounded"
+                    style="padding-left: 0.75rem"
+                  >
+                    <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+                    <button
+                      type="button"
+                      class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
+                      onclick={() => pickTag(t)}
+                      title={slot ? `In filter: ${slot}` : `Filter by ${g.name}: ${t.name}`}
+                    >{t.name}</button>
+                    <span class="shrink-0 text-xs tabular-nums opacity-50">{t.videoCount}</span>
+                    <button
+                      type="button"
+                      class="shrink-0 px-1 opacity-70 hover:opacity-100"
+                      onclick={(e) => openTagEdit(t, e)}
+                      title="Edit tag"
+                      aria-label="Edit {t.name}"
+                    >✎</button>
+                  </div>
+                {/each}
+                {#if (tagsByGroup[g.id] ?? []).length === 0}
+                  <div
+                    class="text-xs text-base-content/50 italic py-1"
+                    style="padding-left: 2rem"
+                  >No tags yet.</div>
+                {/if}
               {/if}
-            </details>
+            </div>
           {/each}
         </div>
+        {/if}
       </div>
       {/if}
     </aside>
@@ -716,34 +1181,95 @@
            expands; without it flex children refuse to shrink below
            their content's natural size. -->
       <div class="flex-1 min-w-0 flex flex-col">
-      {#if playingVideo}
-        <!-- Player area — wrapper sticks to the page top so it doesn't
-             scroll away while the user browses thumbs. `min-height`
-             tracks the divider so dragging down enlarges the wrapper
-             (and lets the video grow into the new room). The video's
-             own `max-height` is wired to the same divider value via
-             `maxVideoHeightPx` below — that's what makes dragging UP
-             actually shrink the picture. Without that wiring the video
-             holds at its 70vh default no matter how high you drag.
-             Subtract ~72px of wrapper chrome (p-3 + button row + gap)
-             so the picture fits cleanly inside the wrapper. -->
-        <div
-          class="card bg-base-200 p-3 sticky top-0 z-10"
-          style="min-height: {playerHeight}px;"
-        >
-          <VideoPlayer
-            bind:video={playingVideo}
-            shortcutsEnabled={true}
-            maxVideoHeightPx={Math.max(100, playerHeight - 72)}
-            tagsPanelOpen={showEditTagsPanel}
-            onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
-            onToggleFileInfo={() => (showFileInfo = !showFileInfo)}
-            onRequestNext={goNext}
-            onRequestPrev={goPrev}
-            onAfterSave={refreshSidebarTagCounts}
-          />
-        </div>
+      <!-- Sticky pinned column-top: filter chips + player card live in
+           one wrapper so they stick to the viewport top together.
+           Moving the chips out of the sidebar fixed the trees-jumping
+           problem; placing them inside the same sticky wrapper as the
+           player keeps them visible while the user scrolls thumbs.
+           Wrapper is rendered whenever either piece is present so the
+           chips still appear if no video is selected (e.g. empty
+           filter result). -->
+      {#if !filterStore.isEmpty() || playingVideo}
+        <div class="sticky top-0 z-10 flex flex-col">
+          {#if !filterStore.isEmpty()}
+            <!-- Chips bar. Horizontal flow with flex-wrap so longer
+                 filter sets break onto multiple lines without pushing
+                 sibling chrome around. Solid bg-base-100 so scrolling
+                 thumbnails don't bleed through. Each bucket
+                 (Required / Optional / Excluded) is grouped under its
+                 own label so the user can see at a glance what's
+                 ANDed vs ORed vs negated. -->
+            <div class="bg-base-100 border border-base-300 rounded-box px-3 py-2 mb-2 flex items-center gap-3 flex-wrap">
+              <h2 class="font-semibold text-sm shrink-0">Filter:</h2>
+              {#if filterStore.required.length > 0}
+                <div class="flex items-center gap-1 flex-wrap">
+                  <span class="text-xs text-base-content/60">Required</span>
+                  {#each filterStore.required as t (`req-${t.type}-${t.value}`)}
+                    <span class="badge {filterSlotClass('required')} gap-1">
+                      {t.label}
+                      <button onclick={() => filterStore.remove(t)}>×</button>
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+              {#if filterStore.optional.length > 0}
+                <div class="flex items-center gap-1 flex-wrap">
+                  <span class="text-xs text-base-content/60">Optional</span>
+                  {#each filterStore.optional as t (`opt-${t.type}-${t.value}`)}
+                    <span class="badge {filterSlotClass('optional')} gap-1">
+                      {t.label}
+                      <button onclick={() => filterStore.remove(t)}>×</button>
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+              {#if filterStore.excluded.length > 0}
+                <div class="flex items-center gap-1 flex-wrap">
+                  <span class="text-xs text-base-content/60">Excluded</span>
+                  {#each filterStore.excluded as t (`exc-${t.type}-${t.value}`)}
+                    <span class="badge {filterSlotClass('excluded')} gap-1">
+                      {t.label}
+                      <button onclick={() => filterStore.remove(t)}>×</button>
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+              <button class="btn btn-xs ml-auto shrink-0" onclick={() => filterStore.clear()}>Clear</button>
+            </div>
+          {/if}
 
+          {#if playingVideo}
+            <!-- Player area — `min-height` tracks the divider so
+                 dragging down enlarges the card (and lets the video
+                 grow into the new room). The video's own `max-height`
+                 is wired to the same divider value via
+                 `maxVideoHeightPx` below — that's what makes dragging
+                 UP actually shrink the picture. Without that wiring
+                 the video holds at its 70vh default no matter how
+                 high you drag. Subtract ~72px of wrapper chrome
+                 (p-3 + button row + gap) so the picture fits cleanly
+                 inside the wrapper. -->
+            <div
+              class="card bg-base-200 p-3"
+              style="min-height: {playerHeight}px;"
+            >
+              <VideoPlayer
+                bind:video={playingVideo}
+                shortcutsEnabled={true}
+                maxVideoHeightPx={Math.max(100, playerHeight - 72)}
+                tagsPanelOpen={showEditTagsPanel}
+                onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
+                onToggleFileInfo={() => (showFileInfo = !showFileInfo)}
+                onRequestNext={goNext}
+                onRequestPrev={goPrev}
+                onAfterSave={refreshSidebarTagCounts}
+              />
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      {#if playingVideo}
         <!-- Drag handle: 12px hit area, visible 4px bar with three grip
              dots. Pointer-event-based drag with setPointerCapture so the
              cursor can leave the handle mid-drag. Double-click resets to

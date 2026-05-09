@@ -1,8 +1,10 @@
 namespace VideoOrganizer.Shared.Dto;
 
-// Wire shape for a TagGroup. TagCount is annotated when the endpoint loads
-// counts (e.g. /tag-groups list); zero by default for callers that don't
-// care.
+// Wire shape for a TagGroup. TagCount and VideosMissingCount are
+// annotated when the endpoint loads counts (e.g. /tag-groups list);
+// zero by default for callers that don't care. VideosMissingCount is
+// the number of videos that have no tag from this group — used to
+// drive the "Missing / None" leaf badge in the browse sidebar.
 public record TagGroupDto(
     Guid Id,
     string Name,
@@ -10,7 +12,8 @@ public record TagGroupDto(
     bool DisplayAsCheckboxes,
     int SortOrder,
     string Notes,
-    int TagCount = 0);
+    int TagCount = 0,
+    int VideosMissingCount = 0);
 
 public record CreateTagGroupRequest(
     string Name,

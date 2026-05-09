@@ -1473,6 +1473,22 @@ public static class ApiEndpoints
                 .Select(g => new { TagGroupId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(x => x.TagGroupId, x => x.Count, ct);
 
+            // For each group, count distinct videos that have at least
+            // one tag from that group. Subtracting from the total
+            // video count gives the "Missing / None" badge value the
+            // browse sidebar shows next to the missing-leaf for each
+            // group. Distinct over (TagGroupId, VideoId) avoids
+            // counting a video twice if it has multiple tags in the
+            // same group.
+            var totalVideos = await db.Videos.CountAsync(ct);
+            var videosWithTagInGroup = await db.VideoTags.AsNoTracking()
+                .Where(vt => vt.Tag != null)
+                .Select(vt => new { vt.Tag!.TagGroupId, vt.VideoId })
+                .Distinct()
+                .GroupBy(x => x.TagGroupId)
+                .Select(g => new { TagGroupId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.TagGroupId, x => x.Count, ct);
+
             var groups = await db.TagGroups.AsNoTracking()
                 .OrderBy(g => g.SortOrder).ThenBy(g => g.Name)
                 .Select(g => new { g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes })
@@ -1480,7 +1496,8 @@ public static class ApiEndpoints
 
             var rows = groups.Select(g => new TagGroupDto(
                 g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes,
-                counts.GetValueOrDefault(g.Id, 0))).ToList();
+                counts.GetValueOrDefault(g.Id, 0),
+                Math.Max(0, totalVideos - videosWithTagInGroup.GetValueOrDefault(g.Id, 0)))).ToList();
             return Results.Ok(rows);
         }).WithName("ListTagGroups");
 

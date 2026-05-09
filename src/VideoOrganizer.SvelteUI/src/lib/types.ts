@@ -51,6 +51,9 @@ export interface TagGroup {
   sortOrder: number;
   notes: string;
   tagCount: number;
+  // Number of videos with no tag from this group. Used for the
+  // "Missing / None" badge under each group in the browse sidebar.
+  videosMissingCount: number;
 }
 
 export interface Tag {
