@@ -1235,7 +1235,16 @@
          floating over the picture. The content column is its own flex
          column with the sticky player at top, drag-resize divider,
          header row, and thumbnail grid in document flow. -->
-    <section class="relative flex flex-row">
+    <!-- min-w-0 overrides the implicit min-width: min-content that
+         CSS grid items default to. Without it, this section stretches
+         past its 1fr allotment to fit the player + panels + thumbs at
+         their natural sizes — which pushes the side panels (Tags /
+         File Info) off the right edge of the viewport when the user
+         toggles them on. With min-w-0, the section honours 1fr; the
+         flex-1 content column inside then shrinks to make room for
+         the panels, and the cascading max-w-full chain on the player
+         wrappers shrinks the video to fit. -->
+    <section class="relative flex flex-row min-w-0">
       <!-- Content column: holds player + handle + header + thumbs.
            min-w-0 lets it shrink past its content width when the strip
            expands; without it flex children refuse to shrink below
@@ -1449,7 +1458,7 @@
            self-scroll when content is tall. -->
       {#if showFileInfo && playingVideo}
         <div
-          class="sticky top-0 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
+          class="sticky top-0 z-10 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
         >
           <FileInfoPanel
             bind:show={showFileInfo}
@@ -1459,7 +1468,7 @@
       {/if}
       {#if showEditTagsPanel && playingVideo}
         <div
-          class="sticky top-0 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
+          class="sticky top-0 z-10 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
         >
           <EditTagsPanel
             bind:video={playingVideo}

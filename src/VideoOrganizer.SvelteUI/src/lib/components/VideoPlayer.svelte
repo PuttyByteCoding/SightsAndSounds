@@ -122,8 +122,15 @@
     }
   }
 
-  // Toggle the Nth flag tag (1-based) on the current video. Saves immediately
-  // via api.setVideoTags and updates video.tags locally so badges reflect it.
+  // Toggle the Nth flag tag (1-based) on the current video.
+  //
+  // Optimistic UI: video.tags is updated locally first so the badge
+  // flips at keypress time, THEN the API call runs in the background.
+  // The original implementation awaited setVideoTags + getVideo before
+  // touching state, which made the checkbox feel laggy on a slow
+  // network round-trip. On API failure we roll the local state back
+  // (only if the user is still on the same video — they may have
+  // navigated away during the round-trip).
   async function toggleFlagAt(oneBasedIdx: number) {
     if (!video) return;
     if (flagTags.length === 0) {
@@ -136,19 +143,45 @@
       errorMessage = `Alt+${oneBasedIdx}: only ${flagTags.length} flag tag(s) defined.`;
       return;
     }
+
+    const videoId = video.id;
     const has = video.tags.some(t => t.id === tag.id);
-    const nextTagIds = has
-      ? video.tags.filter(t => t.id !== tag.id).map(t => t.id)
-      : [...video.tags.map(t => t.id), tag.id];
+    const previousTags = video.tags;
+    const optimisticTags = has
+      ? video.tags.filter(t => t.id !== tag.id)
+      : [
+          ...video.tags,
+          {
+            id: tag.id,
+            tagGroupId: tag.tagGroupId,
+            tagGroupName: tag.tagGroupName,
+            name: tag.name
+          }
+        ];
+    const nextTagIds = optimisticTags.map(t => t.id);
+
+    // Reassign rather than mutate so every bindable consumer (inline
+    // pills, EditTagsPanel via bind:video, …) reacts immediately.
+    video = { ...video, tags: optimisticTags };
+
     try {
-      await api.setVideoTags(video.id, { tagIds: nextTagIds });
-      // Re-fetch and reassign rather than mutate. Reassigning the bindable
-      // prop is the most reliable way to force every consumer (the inline
-      // pills, EditTagsPanel via its bind:video, etc.) to react.
-      const fresh = await api.getVideo(video.id);
-      if (fresh) video = fresh;
-      loadedVideoSnapshot = JSON.stringify(video);
+      await api.setVideoTags(videoId, { tagIds: nextTagIds });
+      // Re-fetch to pick up the canonical tag ordering (server sorts
+      // by TagGroup.SortOrder → Tag.SortOrder → Name). Skip if the
+      // user has since navigated to a different video.
+      const fresh = await api.getVideo(videoId);
+      if (fresh && video?.id === videoId) {
+        video = fresh;
+        loadedVideoSnapshot = JSON.stringify(fresh);
+      }
     } catch (e) {
+      // Roll back so the badge reflects the actual server state. Only
+      // safe if the user is still viewing the same video; if they
+      // navigated away the rollback would clobber the next video's
+      // tag list.
+      if (video?.id === videoId) {
+        video = { ...video, tags: previousTags };
+      }
       errorMessage = `Failed to toggle flag: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
@@ -1429,7 +1462,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
     <div
       role="presentation"
-      class="relative group/player inline-block align-top"
+      class="relative group/player inline-block align-top max-w-full"
       onmouseenter={() => (playerHovered = true)}
       onmouseleave={() => (playerHovered = false)}
     >
@@ -1437,8 +1470,14 @@
          without it the absolute overlay would also cover the scrubber
          that sits outside this div in the parent. The wrapper takes
          on the same width controls as the <video> by being inline-
-         block so its layout box matches the video's. -->
-    <div class="relative inline-block align-top">
+         block so its layout box matches the video's. `max-w-full`
+         sits on every wrapper down to the video itself so when the
+         enclosing column shrinks (e.g. user opens a side panel),
+         the cascading max-width caps the inline-block layout boxes
+         at the column width — without it, inline-block sizes to
+         max-content (the video at its zoomed width) and overflows
+         into the panel area. -->
+    <div class="relative inline-block align-top max-w-full">
     <video
       bind:this={videoEl}
       autoplay
@@ -1453,8 +1492,20 @@
         // browser's intrinsic aspect-ratio handling sizes height to
         // exactly the cap and the picture fills its own box — same way
         // the zoom-in/zoom-out keys behave.
+        //
+        // `max-width: 100%` is on every branch so the video genuinely
+        // shrinks when the container does — e.g. when the user toggles
+        // a side panel (Tags / File Info) on, the content column gives
+        // up width via flex-1 + min-w-0 and the video has to follow
+        // along. Without the cap, an explicit zoom (zoomed video wider
+        // than the column) would overflow + sit on top of the panel
+        // (the player wrapper carries z-10 from the sticky chips
+        // container). The user's chosen zoom is treated as a target;
+        // if the column is narrower, the cap wins and the video
+        // re-zooms when there's room again (panel closes, divider
+        // dragged wider, viewport widens).
         videoWidthPx !== null
-          ? `width: ${videoWidthPx}px;`
+          ? `width: ${videoWidthPx}px; max-width: 100%;`
           : (fitMaxWidth !== null
               ? `width: ${fitMaxWidth}px; max-width: 100%;`
               // Pre-metadata or no host-provided cap: fall back to the
