@@ -626,8 +626,28 @@
               {/if}
 
               {#if composer[group.id]?.open && suggestionsFor(group).length > 0}
-                <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow-lg max-h-64 overflow-auto">
-                  <div class="px-3 py-1 text-xs uppercase tracking-wider text-base-content/60 border-b border-base-300">
+                <!-- Heavy-handed lift so the popover unmistakably
+                     reads as "above the page":
+                       bg-base-300        — a full step away from the
+                                            panel's bg-base-200, so the
+                                            shade contrast is one step
+                                            in the opposite direction
+                                            from the input field
+                                            (input sits on bg-base-100
+                                            inside this panel)
+                       border-2 +         — solid primary border at
+                       border-primary       full opacity (was /50)
+                       ring-4 +           — wide primary halo around
+                       ring-primary/30      the border so the popover
+                                            visibly glows away from
+                                            its surroundings
+                       shadow-2xl         — heavy drop shadow so the
+                                            popover lifts out of the
+                                            panel surface
+                     Together these produce a floating-card look
+                     close to a command-palette popover. -->
+                <div class="absolute z-20 mt-1 w-full bg-base-300 border-2 border-primary rounded-md shadow-2xl ring-4 ring-primary/30 max-h-64 overflow-auto">
+                  <div class="px-3 py-1 text-xs uppercase tracking-wider text-primary-content bg-primary border-b border-primary sticky top-0">
                     Existing {group.name}
                   </div>
                   {#each suggestionsFor(group) as t, i (t.id)}
@@ -635,17 +655,33 @@
                     {@const matchedAlias = q && !t.name.toLowerCase().includes(q)
                       ? t.aliases.find(a => a.toLowerCase().includes(q))
                       : undefined}
+                    {@const isActive = composer[group.id]?.highlighted === i}
+                    <!-- Mouse hover writes `highlighted = i` (see
+                         onmouseenter), so hover and keyboard-arrow
+                         selection share the same active style — there's
+                         no separate "hovered but not highlighted"
+                         state. Active row uses bg-primary +
+                         text-primary-content for unmistakable contrast
+                         (the previous bg-base-200 was identical to the
+                         old hover color and easy to miss while arrowing
+                         through a long list). -->
                     <button
                       type="button"
-                      class="w-full text-left px-3 py-2 hover:bg-base-200 {composer[group.id]?.highlighted === i ? 'bg-base-200' : ''}"
+                      class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
                       onmousedown={() => addTag(group, t)}
                       onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
                     >
                       {t.name}
                       {#if matchedAlias}
-                        <span class="text-xs text-base-content/50 ml-2">matched: {matchedAlias}</span>
+                        <!-- Use opacity-70 instead of an explicit
+                             muted color so the alias text inherits
+                             whichever foreground (default vs
+                             primary-content) the parent button is
+                             using. text-base-content/50 against
+                             bg-primary was nearly invisible. -->
+                        <span class="text-xs opacity-70 ml-2">matched: {matchedAlias}</span>
                       {:else if t.aliases.length > 0}
-                        <span class="text-xs text-base-content/50 ml-2">({t.aliases.join(', ')})</span>
+                        <span class="text-xs opacity-70 ml-2">({t.aliases.join(', ')})</span>
                       {/if}
                     </button>
                   {/each}
