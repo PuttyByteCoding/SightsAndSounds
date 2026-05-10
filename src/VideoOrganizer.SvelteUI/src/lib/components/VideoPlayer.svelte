@@ -11,11 +11,12 @@
 
   import { tick, onMount } from 'svelte';
   import { api } from '$lib/api';
-  import type { Tag, Video, FfprobeResult } from '$lib/types';
+  import type { Tag, Video, FfprobeResult, ClipSummary } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { pillClass } from '$lib/tagColors';
   import { runtimeStore } from '$lib/runtimeStore.svelte';
+  import { portal } from '$lib/portal';
   import TagEditModal from './TagEditModal.svelte';
   import FfprobeResultModal from './FfprobeResultModal.svelte';
 
@@ -34,9 +35,11 @@
     // overrides the default 70vh ceiling so a draggable split bar on the
     // page can resize the player.
     maxVideoHeightPx?: number | null;
-    // When true, plain ←/→ for prev/next is disabled — Shift is required.
-    // Host sets this while the Edit Tags panel is open so accidental arrows
-    // (e.g. while reaching for the keyboard) don't jump videos.
+    // Reserved (currently unused). Was previously used to require Shift
+    // for arrow navigation while the Edit Tags panel was open, but that
+    // turned out to be too aggressive — focus inside an INPUT already
+    // gates plain arrows via isTypingTarget(), and a merely-open panel
+    // shouldn't change the global navigation contract.
     tagsPanelOpen?: boolean;
     // Fired when the user presses T. Host owns the panel state.
     onToggleTags?: () => void;
@@ -147,6 +150,7 @@
     const videoId = video.id;
     const has = video.tags.some(t => t.id === tag.id);
     const previousTags = video.tags;
+    const previousNeedsReview = video.needsReview;
     const optimisticTags = has
       ? video.tags.filter(t => t.id !== tag.id)
       : [
@@ -159,13 +163,23 @@
           }
         ];
     const nextTagIds = optimisticTags.map(t => t.id);
+    // Applying any tag implies the user has reviewed the video, so
+    // clear "Needs Review" if it's set. Only fires on ADD (not on
+    // remove), and only when the flag was actually set — keeps the
+    // round-trip count down for the common Alt+digit toggle case.
+    const shouldClearReview = !has && previousNeedsReview;
 
     // Reassign rather than mutate so every bindable consumer (inline
     // pills, EditTagsPanel via bind:video, …) reacts immediately.
-    video = { ...video, tags: optimisticTags };
+    video = {
+      ...video,
+      tags: optimisticTags,
+      needsReview: shouldClearReview ? false : video.needsReview
+    };
 
     try {
       await api.setVideoTags(videoId, { tagIds: nextTagIds });
+      if (shouldClearReview) await api.markReviewed(videoId);
       // Re-fetch to pick up the canonical tag ordering (server sorts
       // by TagGroup.SortOrder → Tag.SortOrder → Name). Skip if the
       // user has since navigated to a different video.
@@ -173,6 +187,10 @@
       if (fresh && video?.id === videoId) {
         video = fresh;
         loadedVideoSnapshot = JSON.stringify(fresh);
+        // Propagate the (possible) needsReview flip up to the host
+        // so the sidebar Needs Review count stays in sync without a
+        // full sidebar refresh.
+        if (shouldClearReview) await onVideoChanged?.(fresh);
       }
     } catch (e) {
       // Roll back so the badge reflects the actual server state. Only
@@ -180,7 +198,7 @@
       // navigated away the rollback would clobber the next video's
       // tag list.
       if (video?.id === videoId) {
-        video = { ...video, tags: previousTags };
+        video = { ...video, tags: previousTags, needsReview: previousNeedsReview };
       }
       errorMessage = `Failed to toggle flag: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -202,6 +220,43 @@
   // while actively scrubbing via scrubHoverX), it's fully visible.
   let playerHovered = $state(false);
   const SCRUB_PREVIEW_W = 240;
+
+  // Parent's clips — populated when watching the parent video so the
+  // scrubber can paint a green band per existing clip range. Empty
+  // when the current video IS a clip (clips don't have children).
+  let parentClips = $state<ClipSummary[]>([]);
+
+  // Scrubber-scope helpers. Two modes:
+  //   - parent video      → scrub spans the entire file [0, duration]
+  //   - clip              → scrub spans only [clipStart, clipEnd]
+  // Every position calculation (progress fill, click-to-seek, hover
+  // tooltip, marker overlays) goes through these so the scrubber
+  // visually represents whichever scope is active.
+  const scrubStart = $derived.by(() => {
+    if (video?.isClip
+        && video.clipStartSeconds !== null
+        && video.clipStartSeconds !== undefined) {
+      return video.clipStartSeconds;
+    }
+    return 0;
+  });
+  const scrubEnd = $derived.by(() => {
+    if (video?.isClip
+        && video.clipEndSeconds !== null
+        && video.clipEndSeconds !== undefined) {
+      return video.clipEndSeconds;
+    }
+    return videoDuration;
+  });
+  const scrubSpan = $derived(Math.max(0, scrubEnd - scrubStart));
+  // 0..1 fraction of an absolute file time within the current scrubber
+  // window. Returns null when out of range (so the caller can decide
+  // whether to render a marker outside the visible band).
+  function scrubFrac(absoluteSeconds: number): number | null {
+    if (scrubSpan <= 0) return null;
+    if (absoluteSeconds < scrubStart || absoluteSeconds > scrubEnd) return null;
+    return (absoluteSeconds - scrubStart) / scrubSpan;
+  }
 
   // Dirty tracking — JSON snapshot at load so ArrowLeft/Right can decide
   // whether to POST before firing onRequestPrev/Next.
@@ -261,7 +316,21 @@
   let previewingClip = $state<Video | null>(null);
   let previewVideoEl: HTMLVideoElement | null = $state(null);
   let previewDiscarding = $state(false);
+  // True while the rename round-trip in keepPreviewClip is in flight
+  // — gates both buttons so a second Enter doesn't fire a duplicate
+  // updateVideo, and so a Reject during a Keep can't race the two
+  // calls against each other.
+  let previewKeeping = $state(false);
   let previewError = $state<string | null>(null);
+  // Editable name for the new clip — bound to the modal's name input.
+  // Starts empty so the placeholder ("Clip001") shows; if the user
+  // hits Enter without typing, the placeholder name is used. This is
+  // distinct from previewingClip.fileName, which is the API-assigned
+  // default we passed on createClip; we only rename via updateVideo
+  // if the user actually typed something different here.
+  let previewClipName = $state('');
+  let previewClipDefaultName = $state(''); // shown as input placeholder
+  let previewClipNameInputEl: HTMLInputElement | null = $state(null);
   // Custom scrubber state — native <video controls> would show the full
   // parent timeline, so we render our own bar scoped to the clip range.
   let previewPaused = $state(true);
@@ -366,6 +435,7 @@
       clipError = null;
       previewingClip = null;
       previewError = null;
+      parentClips = [];
       return;
     }
     if (video.id === initializedForId) return;
@@ -377,6 +447,7 @@
     videoLoading = true;
     loadedVideoSnapshot = JSON.stringify(video);
     loadScrubberFrames(video.id);
+    loadParentClips(video);
     // Reset watch-beacon accumulation for the new video.
     watchAccumMs = 0;
     watchLastTickMs = null;
@@ -442,15 +513,51 @@
     } catch { /* non-fatal */ }
   }
 
+  // Pull the list of clips that have this video as a parent. Only
+  // meaningful when the current video is itself a parent — clips
+  // never have children, so we skip the round-trip and reset to []
+  // in that case. The id check inside the .then() guards against the
+  // user navigating to a different video before the request lands.
+  async function loadParentClips(v: Video) {
+    if (v.isClip) {
+      parentClips = [];
+      return;
+    }
+    parentClips = [];
+    try {
+      const clips = await api.listClipsOfVideo(v.id);
+      if (video?.id === v.id) parentClips = clips;
+    } catch {
+      // Non-fatal — the scrubber just won't show clip overlays.
+    }
+  }
+
   function onScrubMove(e: MouseEvent) {
     if (!scrubBarEl || !videoEl) return;
     const rect = scrubBarEl.getBoundingClientRect();
     const rel = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     scrubHoverX = rel * rect.width;
-    scrubHoverTime = Number.isFinite(videoEl.duration) ? rel * videoEl.duration : null;
-    scrubHoverIdx = scrubFrames.length > 0
-      ? Math.max(0, Math.min(scrubFrames.length - 1, Math.floor(rel * scrubFrames.length)))
-      : null;
+    // Hover time is in absolute file coords — for clips, that means
+    // [clipStart, clipEnd] mapped across the bar; for parents, the
+    // full file timeline.
+    if (scrubSpan > 0) {
+      scrubHoverTime = scrubStart + rel * scrubSpan;
+    } else if (Number.isFinite(videoEl.duration)) {
+      scrubHoverTime = rel * videoEl.duration;
+    } else {
+      scrubHoverTime = null;
+    }
+    // Thumbnail sprite is keyed off the absolute timeline, so when
+    // viewing a clip we sample only the slice of frames that falls
+    // inside [clipStart, clipEnd]. Outside that slice the user can't
+    // see thumbnails because the scrubber doesn't extend there.
+    if (scrubFrames.length > 0 && scrubHoverTime !== null && videoDuration > 0) {
+      const frac = scrubHoverTime / videoDuration;
+      scrubHoverIdx = Math.max(0,
+        Math.min(scrubFrames.length - 1, Math.floor(frac * scrubFrames.length)));
+    } else {
+      scrubHoverIdx = null;
+    }
   }
 
   function onScrubLeave() {
@@ -463,8 +570,15 @@
     if (!scrubBarEl || !videoEl) return;
     const rect = scrubBarEl.getBoundingClientRect();
     const rel = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const d = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
-    if (d > 0) videoEl.currentTime = rel * d;
+    // Map back to absolute file time. For a clip, 0..1 spans only
+    // [clipStart, clipEnd] so a click on the right edge seeks to
+    // clipEnd, not the parent's tail.
+    if (scrubSpan > 0) {
+      videoEl.currentTime = scrubStart + rel * scrubSpan;
+    } else {
+      const d = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
+      if (d > 0) videoEl.currentTime = rel * d;
+    }
   }
 
   function onVideoTimeUpdate() {
@@ -472,7 +586,16 @@
     const d = Number.isFinite(videoEl.duration) && videoEl.duration > 0 ? videoEl.duration : 0;
     videoCurrentTime = videoEl.currentTime;
     videoDuration = d;
-    videoProgress = d === 0 ? 0 : videoEl.currentTime / d;
+    // Progress is scrub-scoped so the played-bar fill stays accurate
+    // for both modes: 0..1 across [scrubStart, scrubEnd], not across
+    // the whole file. For a clip this means the bar fills naturally
+    // from 0% at clipStart to 100% at clipEnd.
+    if (scrubSpan > 0) {
+      const rel = (videoEl.currentTime - scrubStart) / scrubSpan;
+      videoProgress = Math.max(0, Math.min(1, rel));
+    } else {
+      videoProgress = d === 0 ? 0 : videoEl.currentTime / d;
+    }
 
     // Accumulate wall-clock playback time and fire the watch beacon once we
     // clear 10 seconds. We sample on ontimeupdate (~4Hz while playing), so a
@@ -666,6 +789,25 @@
     clipError = null;
   }
 
+  // Find the next "Clip###" name that isn't already used among the
+  // parent's existing clips. Three-digit zero-padding so a sorted
+  // list reads naturally up to 999 clips. Only the literal `Clip`
+  // prefix + digits matches, so user-renamed entries (e.g. "Big
+  // catch", "Save 02") are ignored — auto-numbering doesn't drift
+  // around them.
+  function nextClipDefaultName(): string {
+    const re = /^Clip(\d+)$/;
+    let max = 0;
+    for (const c of parentClips) {
+      const match = c.fileName.match(re);
+      if (match) {
+        const n = parseInt(match[1], 10);
+        if (Number.isFinite(n) && n > max) max = n;
+      }
+    }
+    return `Clip${String(max + 1).padStart(3, '0')}`;
+  }
+
   // Close the clip (Ctrl+Shift+]) and POST it to the API. Inherits tags
   // from the parent. No-op if startClip wasn't pressed first.
   async function endClip() {
@@ -682,8 +824,16 @@
     if (end - start < 0.25) return;
     clipCreating = true;
     clipError = null;
+    // Compute the default name BEFORE the API call so we can pass it
+    // to createClip and preseed the input placeholder. Computed off
+    // the current parentClips list — the new clip isn't in it yet.
+    const defaultName = nextClipDefaultName();
     try {
-      const clipId = await api.createClip(video.id, { startSeconds: start, endSeconds: end });
+      const clipId = await api.createClip(video.id, {
+        startSeconds: start,
+        endSeconds: end,
+        name: defaultName
+      });
       const clip = await api.getVideo(clipId);
       if (!clip) throw new Error('Created clip not found.');
       try { videoEl?.pause(); } catch { /* nothing to do */ }
@@ -692,6 +842,28 @@
       previewPaused = true;
       previewMuted = true;
       previewCurrent = clip.clipStartSeconds ?? 0;
+      // Empty input + placeholder = defaultName. If the user hits
+      // Enter without typing, keepPreviewClip falls back to this
+      // placeholder (which is also the name we already saved on
+      // createClip — so no rename round-trip is needed in that
+      // case).
+      previewClipName = '';
+      previewClipDefaultName = defaultName;
+      // Land focus on the name field so the user can start typing
+      // a real name immediately. queueMicrotask defers past the
+      // initial render so the bound element actually exists.
+      queueMicrotask(() => {
+        previewClipNameInputEl?.focus();
+        previewClipNameInputEl?.select();
+      });
+      // Tell the host to refresh sidebar counts — the new clip bumps
+      // the structural "Clip" flag count (and possibly the parent's tag
+      // counts if the clip inherited tags). Without this the Flags-tree
+      // badge stays stale until the next manual reload.
+      if (onAfterSave) await onAfterSave();
+      // Re-pull the parent's clip list so the new clip immediately
+      // shows up as a green band on the scrubber.
+      if (video) loadParentClips(video);
     } catch (e) {
       clipError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -704,21 +876,74 @@
   function closePreview() {
     previewingClip = null;
     previewError = null;
+    previewClipName = '';
+    previewClipDefaultName = '';
   }
 
-  // "Keep" = close the modal; the clip is already persisted on the server.
-  function keepPreviewClip() {
-    if (previewDiscarding) return;
-    closePreview();
+  // "Keep" = the clip is already persisted on the server. If the user
+  // typed a different name in the modal's input, rename via updateVideo
+  // before closing. Empty input falls back to the placeholder default
+  // (which is also what we passed on createClip), so no rename in that
+  // case — saves a round-trip.
+  async function keepPreviewClip() {
+    if (previewDiscarding || previewKeeping) return;
+    if (!previewingClip) {
+      closePreview();
+      return;
+    }
+    const clip = previewingClip;
+    const typed = previewClipName.trim();
+    const targetName = typed.length > 0 ? typed : previewClipDefaultName;
+    if (!targetName || targetName === clip.fileName) {
+      closePreview();
+      return;
+    }
+    previewKeeping = true;
+    try {
+      // updateVideo expects the full UpdateVideoRequest payload; we
+      // send the existing field values for everything except fileName
+      // so nothing else changes as a side effect of the rename.
+      await api.updateVideo(clip.id, {
+        fileName: targetName,
+        ingestDate: clip.ingestDate,
+        cameraType: clip.cameraType,
+        videoQuality: clip.videoQuality,
+        watchCount: clip.watchCount,
+        notes: clip.notes,
+        needsReview: clip.needsReview,
+        isFavorite: clip.isFavorite,
+        clipStartSeconds: clip.clipStartSeconds,
+        clipEndSeconds: clip.clipEndSeconds,
+        chapterMarkers: clip.chapterMarkers,
+        videoBlocks: clip.videoBlocks,
+        tagIds: clip.tags.map(t => t.id)
+      });
+      // Refresh the parent's clip list so the rename is reflected in
+      // the in-page Clips list immediately.
+      if (video) loadParentClips(video);
+      closePreview();
+    } catch (e) {
+      // Surface the error in the modal rather than closing — the user
+      // probably wants to know the rename didn't take. The clip itself
+      // is still persisted with its previous name.
+      previewError = `Failed to rename clip: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      previewKeeping = false;
+    }
   }
 
   async function discardPreviewClip() {
-    if (!previewingClip || previewDiscarding) return;
+    if (!previewingClip || previewDiscarding || previewKeeping) return;
     previewDiscarding = true;
     previewError = null;
     try {
       await api.deleteVideo(previewingClip.id);
       closePreview();
+      // Un-bump the Clip count on the host's Flags tree — the row we
+      // just deleted was counted by the createClip onAfterSave above.
+      if (onAfterSave) await onAfterSave();
+      // And drop the green band that the createClip flow added.
+      if (video) loadParentClips(video);
     } catch (e) {
       previewError = `Failed to discard: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
@@ -823,13 +1048,62 @@
 
   type Bookmark = Video['chapterMarkers'][number];
 
+  // Bookmark-naming modal state. K (or the toolbar button) opens it
+  // with a default name like "Bookmark001". Enter commits, Esc
+  // cancels. The actual chapterMarker isn't pushed onto the video
+  // until the user confirms — we don't want a stray Esc to silently
+  // create a half-named row.
+  let bookmarkModal = $state<{ offset: number; name: string } | null>(null);
+  let bookmarkNameInputEl: HTMLInputElement | null = $state(null);
+
+  // Find the next "Bookmark###" name that isn't already used on this
+  // video. Three-digit zero-padding so a sorted list reads naturally
+  // up to 999 markers. The scan only matches the literal `Bookmark`
+  // prefix + digits — user-renamed entries (e.g. "Intro", "Big swing")
+  // are ignored, so the auto-numbering doesn't drift around them.
+  function nextBookmarkDefaultName(): string {
+    const existing = video?.chapterMarkers ?? [];
+    const re = /^Bookmark(\d+)$/;
+    let max = 0;
+    for (const m of existing) {
+      const match = m.comment?.match(re);
+      if (match) {
+        const n = parseInt(match[1], 10);
+        if (Number.isFinite(n) && n > max) max = n;
+      }
+    }
+    return `Bookmark${String(max + 1).padStart(3, '0')}`;
+  }
+
   function addBookmark() {
     if (!video || !videoEl) return;
-    const t = videoEl.currentTime;
+    bookmarkModal = {
+      offset: videoEl.currentTime,
+      name: nextBookmarkDefaultName()
+    };
+    queueMicrotask(() => {
+      bookmarkNameInputEl?.focus();
+      bookmarkNameInputEl?.select();
+    });
+  }
+
+  function commitBookmarkModal() {
+    const m = bookmarkModal;
+    if (!m || !video) return;
+    const trimmed = m.name.trim();
+    // Empty name → fall back to the default. Saves a click for users
+    // who hit Enter on an inadvertently cleared field, and keeps the
+    // bookmark visually identifiable in the list.
+    const finalName = trimmed.length > 0 ? trimmed : nextBookmarkDefaultName();
     video.chapterMarkers = [
       ...video.chapterMarkers,
-      { offset: t, comment: formatClock(t) }
+      { offset: m.offset, comment: finalName }
     ];
+    bookmarkModal = null;
+  }
+
+  function cancelBookmarkModal() {
+    bookmarkModal = null;
   }
 
   function jumpToBookmark(offset: number) {
@@ -859,6 +1133,80 @@
   // directly, so changes persist on the next save (Shift+arrow nav,
   // Save button, etc.) without us tracking pending state.
   let editingBookmarkIdx = $state<number | null>(null);
+
+  // Which bookmark row currently has its trash button hovered. Used
+  // to paint the entire row red (timestamp link + name + pencil) so
+  // the user has a clear "this is what I'm about to remove" preview
+  // before clicking. Setting it to null clears the highlight.
+  let hoveringDeleteIdx = $state<number | null>(null);
+  // Same idea for the clips list under the player — keyed by clip
+  // id since clips don't have a stable index in the unsorted list.
+  let hoveringDeleteClipId = $state<string | null>(null);
+  // Per-clip in-flight set so a row can show a spinner without
+  // freezing the rest of the list, and so a second rapid click
+  // can't fire two mark-for-deletion calls on the same clip.
+  let clipDeleteBusy = $state<Set<string>>(new Set());
+
+  function jumpToClip(clip: ClipSummary) {
+    if (!videoEl) return;
+    videoEl.currentTime = clip.clipStartSeconds;
+  }
+
+  // True while the parent-video swap (Open Full Video button) is in
+  // flight. Disables the button so a double-click can't fire two
+  // getVideo calls in parallel.
+  let openingParent = $state(false);
+
+  // Swap the player from the current clip to its parent file. The
+  // bound `video` update propagates to the host (bind:video), which
+  // re-renders with the parent loaded; the $effect on `video.id`
+  // change in this component then resets the scrubber, reloads
+  // parentClips, etc. — same path used by host-driven navigation.
+  // Surfaces an inline error on failure but doesn't otherwise
+  // interrupt the current playback if the fetch falls through.
+  async function openParentVideo() {
+    if (!video?.parentVideoId || openingParent) return;
+    openingParent = true;
+    try {
+      const parent = await api.getVideo(video.parentVideoId);
+      if (parent) {
+        // Pause the clip's <video> element first so the underlying
+        // file handle is released cleanly before the new src lands.
+        try { videoEl?.pause(); } catch { /* nothing to do */ }
+        video = parent;
+      } else {
+        errorMessage = 'Parent video not found.';
+      }
+    } catch (e) {
+      errorMessage = `Failed to open parent video: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      openingParent = false;
+    }
+  }
+
+  // Soft-delete: marks the clip for deletion and drops it from the
+  // local list. The clip then appears on the /purge "Clips" section
+  // where the user can either Restore or Purge for real. This
+  // matches the explicit "deleting clips should never delete the
+  // original video" guarantee — `markForDeletion` for a clip just
+  // sets the flag (no file move, no parent-file delete).
+  async function deleteClipFromList(clip: ClipSummary) {
+    if (clipDeleteBusy.has(clip.id)) return;
+    clipDeleteBusy.add(clip.id);
+    clipDeleteBusy = new Set(clipDeleteBusy);
+    try {
+      await api.markForDeletion(clip.id);
+      parentClips = parentClips.filter(c => c.id !== clip.id);
+      // Tell the host so the structural Clip flag count and any
+      // other badges that key off this clip stay in sync.
+      if (onAfterSave) await onAfterSave();
+    } catch (e) {
+      errorMessage = `Failed to delete clip: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      clipDeleteBusy.delete(clip.id);
+      clipDeleteBusy = new Set(clipDeleteBusy);
+    }
+  }
 
   // Action: focus + select-all on mount. Used on the bookmark-name
   // input when it appears, so the user can type to overwrite an
@@ -892,6 +1240,25 @@
     const s = total % 60;
     if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  // Human-readable elapsed time, e.g. "30s", "1m 12s", "1h 5m".
+  // Integer seconds throughout (sub-second durations round up to "1s"
+  // so the user never sees "0s" for a real clip). Used in row labels
+  // where the user wants to know "how long is this slice" at a
+  // glance — shorter and more legible than the hh:mm:ss form for
+  // sub-minute ranges.
+  function formatHumanDuration(seconds: number): string {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '0s';
+    // Use ceil so a 0.4s clip reads as "1s" instead of vanishing to
+    // "0s" — it's still a real, non-zero duration.
+    const total = seconds < 1 ? 1 : Math.round(seconds);
+    if (total < 60) return `${total}s`;
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return s > 0 ? `${h}h ${m}m ${s}s` : `${h}h ${m}m`;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
   }
 
   function scrubPreviewStyle(idx: number): string {
@@ -1232,31 +1599,76 @@
   async function onWindowKeyDown(e: KeyboardEvent) {
     if (!shortcutsEnabled || !video) return;
     // While the clip-preview modal is open, hand keys off to the modal:
-    // Escape / Enter approve, Space toggles play/pause, and the Numpad /
-    // Shift+digit seek keys below fall through — they retarget to the
-    // preview element via currentSeekContext(). All other shortcuts are
-    // swallowed so W/D/F etc. don't fire against the parent video behind
-    // the modal.
+    //   Enter   — accept (Keep) the new clip
+    //   Escape  — reject (Discard); deletes the just-created clip row
+    //   Space   — toggle play/pause on the preview
+    // Numpad / Shift+digit seek keys below fall through — they retarget
+    // to the preview element via currentSeekContext(). All other
+    // shortcuts are swallowed so W/D/F etc. don't fire against the
+    // parent video behind the modal.
     if (previewingClip) {
-      if (e.key === 'Escape' || e.key === 'Enter') {
+      // Whether focus is on the clip-name input. When typing,
+      // Space must reach the input as a literal character, and any
+      // alphabetic shortcut (W/D/F/K/etc.) below must NOT fire — the
+      // user is naming the clip, not driving the player. Enter and
+      // Escape stay routed to keepPreviewClip / discardPreviewClip
+      // either way, so the dialog's contract holds whether focus is
+      // in the input or somewhere else in the modal.
+      const typingInModal = isTypingTarget(e.target);
+      if (e.key === 'Enter') {
         e.preventDefault();
         e.stopPropagation();
         keepPreviewClip();
         return;
       }
-      if (e.key === ' ') {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        // Don't fire while a discard is already in flight — that
+        // would race a second DELETE against the same id.
+        if (!previewDiscarding) discardPreviewClip();
+        return;
+      }
+      if (e.key === ' ' && !typingInModal) {
         e.preventDefault();
         e.stopPropagation();
         togglePreviewPlay();
         return;
       }
+      // Any other key while focus is in the name input: let it through
+      // for typing, but bail out so the rest of this handler (W/D/F/
+      // F/K/etc., numpad seeks) doesn't fire.
+      if (typingInModal) return;
     }
-    // ArrowLeft/Right save-if-dirty and navigate. Shift is required whenever
-    // the user is typing in a tag input OR the Edit Tags panel is open — that
-    // way an accidental ← while editing tags doesn't jump to another video.
-    // Disabled outright while the clip-preview modal is open.
+    // Bookmark-naming modal is up: Enter commits, Esc cancels, every
+    // other key falls through to the (focused) name input for normal
+    // typing. Swallowing the rest at window level prevents F/D/W/K
+    // from firing the parent video's shortcuts mid-edit.
+    if (bookmarkModal) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        commitBookmarkModal();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelBookmarkModal();
+        return;
+      }
+      // Don't preventDefault — the input still needs the key — but
+      // bail out so none of the global shortcuts below fire.
+      return;
+    }
+    // ArrowLeft/Right save-if-dirty and navigate. Shift is only required
+    // when the user is typing inside an INPUT/TEXTAREA — there a plain ←
+    // would normally move the cursor and we don't want it to also jump
+    // videos. With the Tags panel merely open (focus on the player /
+    // body), plain arrows still navigate. Disabled outright while the
+    // clip-preview modal is open.
     const isTyping = isTypingTarget(e.target);
-    const requireShift = isTyping || tagsPanelOpen;
+    const requireShift = isTyping;
     if (!previewingClip && e.key === 'ArrowRight') {
       if (requireShift && !e.shiftKey) return;
       e.preventDefault(); await goNext(); return;
@@ -1572,55 +1984,83 @@
         aria-valuenow={Math.round(videoProgress * 100)}
       >
         <div class="absolute inset-y-0 left-0 bg-primary/60" style="width: {videoProgress * 100}%"></div>
+        <!-- All overlays below position via scrubFrac() so they map
+             into whichever scope the scrubber is currently showing —
+             [0, duration] for the parent, [clipStart, clipEnd] for a
+             clip. Markers outside that range return null and don't
+             render, which is what we want for clip mode (a chapter
+             marker at the parent's 30:00 has no place on a [10:00,
+             12:00] clip scrubber). -->
+
+        <!-- Existing-clip overlays — green tinted bands at each clip
+             range. ONLY rendered when watching the parent video; the
+             list is empty for clips (clips don't have children) so
+             the {#each} no-ops there. -->
+        {#if scrubSpan > 0 && parentClips.length > 0}
+          {#each parentClips as c (c.id)}
+            {@const startFrac = scrubFrac(c.clipStartSeconds)}
+            {@const endFrac = scrubFrac(c.clipEndSeconds)}
+            {#if startFrac !== null && endFrac !== null}
+              <div
+                class="absolute inset-y-0 bg-success/30 pointer-events-none"
+                style="left: {startFrac * 100}%; width: {(endFrac - startFrac) * 100}%"
+                title={`Clip: ${c.fileName}`}
+              ></div>
+            {/if}
+          {/each}
+        {/if}
+
         <!-- Hide blocks overlay the scrubber as red bands. pointer-events
              stay off so scrubber clicks still seek; deletion lives in
              the timestamped list under the player. -->
-        {#if videoDuration > 0 && video?.videoBlocks?.length}
+        {#if scrubSpan > 0 && video?.videoBlocks?.length}
           {#each video.videoBlocks as b, i (i)}
             {#if b.videoBlockType === 'hide'}
-              <div
-                class="absolute inset-y-0 bg-error/60 pointer-events-none"
-                style="left: {(b.offsetInSeconds / videoDuration) * 100}%; width: {(b.lengthInSeconds / videoDuration) * 100}%"
-              ></div>
+              {@const startFrac = scrubFrac(b.offsetInSeconds)}
+              {@const endFrac = scrubFrac(b.offsetInSeconds + b.lengthInSeconds)}
+              {#if startFrac !== null && endFrac !== null}
+                <div
+                  class="absolute inset-y-0 bg-error/60 pointer-events-none"
+                  style="left: {startFrac * 100}%; width: {(endFrac - startFrac) * 100}%"
+                ></div>
+              {/if}
             {/if}
           {/each}
         {/if}
         <!-- Pending block start: the first B-press landmark while waiting for
              the second B-press to close the region. -->
-        {#if pendingBlockStart !== null && videoDuration > 0}
-          <div
-            class="absolute inset-y-0 w-0.5 bg-warning pointer-events-none"
-            style="left: {(pendingBlockStart / videoDuration) * 100}%"
-          ></div>
-        {/if}
-        <!-- When watching a clip, paint its in/out range as a soft overlay so
-             the viewer sees "the highlighted bit" against the full source. -->
-        {#if video?.isClip
-             && video.clipStartSeconds !== null && video.clipStartSeconds !== undefined
-             && video.clipEndSeconds !== null && video.clipEndSeconds !== undefined
-             && videoDuration > 0}
-          <div
-            class="absolute inset-y-0 bg-success/30 pointer-events-none"
-            style="left: {(video.clipStartSeconds / videoDuration) * 100}%; width: {((video.clipEndSeconds - video.clipStartSeconds) / videoDuration) * 100}%"
-          ></div>
+        {#if pendingBlockStart !== null}
+          {@const f = scrubFrac(pendingBlockStart)}
+          {#if f !== null}
+            <div
+              class="absolute inset-y-0 w-0.5 bg-warning pointer-events-none"
+              style="left: {f * 100}%"
+            ></div>
+          {/if}
         {/if}
         <!-- Pending clip start while the user is defining a new clip. -->
-        {#if pendingClipStart !== null && videoDuration > 0}
-          <div
-            class="absolute inset-y-0 w-0.5 bg-success pointer-events-none"
-            style="left: {(pendingClipStart / videoDuration) * 100}%"
-          ></div>
+        {#if pendingClipStart !== null}
+          {@const f = scrubFrac(pendingClipStart)}
+          {#if f !== null}
+            <div
+              class="absolute inset-y-0 w-0.5 bg-success pointer-events-none"
+              style="left: {f * 100}%"
+            ></div>
+          {/if}
         {/if}
         <!-- Bookmark markers — thin blue pins along the scrubber. Pointer
              events off so scrubber clicks still seek normally; jumping is
              handled by the bookmark list below. -->
-        {#if videoDuration > 0 && video?.chapterMarkers?.length}
+        {#if scrubSpan > 0 && video?.chapterMarkers?.length}
           {#each video.chapterMarkers as bm, i (i)}
-            <div
-              class="absolute inset-y-0 w-0.5 bg-info pointer-events-none"
-              style="left: {(bm.offset / videoDuration) * 100}%"
-              title={bm.comment}
-            ></div>
+            {@const f = scrubFrac(bm.offset)}
+            {#if f !== null}
+              <div
+                class="absolute inset-y-0 w-0.5 bg-info pointer-events-none"
+                style="left: {f * 100}%"
+                title={bm.comment}
+              ></div>
+            {/if}
           {/each}
         {/if}
         {#if scrubHoverX !== null}
@@ -1635,8 +2075,12 @@
         >
           <div class="absolute inset-0" style={scrubPreviewStyle(scrubHoverIdx)}></div>
           {#if scrubHoverTime !== null}
+            <!-- Hover label is scrub-scoped to match the readout below
+                 the scrubber: clip-relative when watching a clip,
+                 absolute when watching a parent. Same `Math.max(0,
+                 hover - start)` math both places. -->
             <div class="absolute bottom-0 right-0 bg-black/75 text-white text-xs px-1.5 py-0.5 font-mono tabular-nums rounded-tl">
-              {formatClock(scrubHoverTime)}
+              {formatClock(Math.max(0, scrubHoverTime - scrubStart))}
             </div>
           {/if}
         </div>
@@ -1645,7 +2089,7 @@
           class="absolute pointer-events-none bg-black/75 text-white text-xs px-1.5 py-0.5 rounded font-mono tabular-nums"
           style="bottom: calc(100% + 6px); left: {scrubHoverX}px; transform: translateX(-50%);"
         >
-          {formatClock(scrubHoverTime)}
+          {formatClock(Math.max(0, scrubHoverTime - scrubStart))}
         </div>
       {/if}
     </div>
@@ -1658,8 +2102,14 @@
          tail the time when active; zoom + download cluster on the
          right via justify-between. -->
     <div class="flex items-center gap-3 mt-1">
+      <!-- Time readout — scoped to the scrubber's window so a clip
+           reads as 0:00 / clipDuration instead of the parent's
+           absolute timestamp. The hover-time tooltip above the
+           scrubber stays in absolute coords (it shows where in the
+           parent file you'd be seeking to), but this readout is
+           about "where in what I'm watching" — which is the clip. -->
       <span class="text-base tabular-nums px-2 text-base-content/70">
-        {formatClock(videoCurrentTime)} / {formatClock(videoDuration)}
+        {formatClock(Math.max(0, videoCurrentTime - scrubStart))} / {formatClock(scrubSpan > 0 ? scrubSpan : videoDuration)}
       </span>
       {#if pendingClipStart !== null}
         <span class="badge badge-success badge-sm uppercase tracking-wide">Clip</span>
@@ -1754,72 +2204,201 @@
       </div>
     {/if}
 
-    {#if video && sortedBookmarks.length > 0}
-      <div class="mt-2 border border-base-300 rounded p-2 space-y-1 text-xs">
-        <div class="flex items-center text-base-content/70 uppercase tracking-wide">
+    <!-- Bookmarks + Clips sit side-by-side. Both are inline-grid
+         "subview" cards that hug their content; wrapping them in a
+         flex row places them next to each other when both exist,
+         and a single one occupies the left when the other is empty.
+         flex-wrap lets the Clips card drop to a new line on a narrow
+         player pane so the labels stay readable instead of being
+         truncated into oblivion. -->
+    {#if video && (sortedBookmarks.length > 0 || parentClips.length > 0)}
+    <div class="mt-2 flex flex-row flex-wrap gap-2 items-start">
+    {#if sortedBookmarks.length > 0}
+      <div class="border border-base-300 rounded p-2 text-xs">
+        <div class="flex items-center text-base-content/70 uppercase tracking-wide mb-1">
           <span>Bookmarks</span>
           <span class="ml-2 text-[10px] normal-case tracking-normal text-base-content/50">
             Press <kbd class="kbd kbd-xs">K</kbd> to add
           </span>
         </div>
-        {#each sortedBookmarks as row (row.idx)}
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="link link-hover tabular-nums font-mono shrink-0"
-              title="Jump to {formatClock(row.bookmark.offset)}"
-              onclick={() => jumpToBookmark(row.bookmark.offset)}
-            >{formatClock(row.bookmark.offset)}</button>
-            {#if editingBookmarkIdx === row.idx}
-              <input
-                type="text"
-                class="input input-xs input-bordered min-w-0 max-w-xs"
-                bind:value={video.chapterMarkers[row.idx].comment}
-                placeholder={formatClock(row.bookmark.offset)}
-                use:bookmarkAutofocus
-                onblur={() => (editingBookmarkIdx = null)}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === 'Escape') {
-                    (e.currentTarget as HTMLInputElement).blur();
-                  }
-                }}
-              />
-            {:else}
-              <!-- Name + edit/delete buttons sit right next to each
-                   other (no flex-1 stretching the name to the row's
-                   right edge). max-w-xs caps long names with ellipsis;
-                   anything beyond that just truncates instead of
-                   shoving the action buttons off-screen. -->
-              <button
-                type="button"
-                class="min-w-0 max-w-xs truncate text-left cursor-text {video.chapterMarkers[row.idx].comment ? '' : 'italic text-base-content/40'}"
-                title="Click ✎ to rename"
-                onclick={() => (editingBookmarkIdx = row.idx)}
-              >{video.chapterMarkers[row.idx].comment || formatClock(row.bookmark.offset)}</button>
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs shrink-0"
-                onclick={() => (editingBookmarkIdx = row.idx)}
-                aria-label="Edit bookmark name"
-                title="Edit name"
-              >✎</button>
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs shrink-0 text-base-content/60 hover:text-error"
-                onclick={() => removeBookmark(row.idx)}
-                aria-label="Delete bookmark"
-                title="Delete bookmark"
+        <!-- 4-column inline grid:
+               col 1: type icon (bookmark)  (auto = icon size)
+               col 2: timestamp link         (auto = widest stamp)
+               col 3: name + ✎ pencil        (auto, capped via child max-w-xs)
+               col 4: trash button           (auto = icon size)
+             Using inline-grid keeps the grid's outer width tight to its
+             content rather than stretching to the card's full width —
+             that way the trash column sits at the natural right edge
+             of the bookmarks block, NOT pushed out to the page edge.
+             Each row uses display: contents so its four children flow
+             directly into the grid as siblings, sharing column widths
+             across all rows so the icons / trash buttons line up
+             vertically. The same column template is reused by the
+             Clips section below for visual consistency. -->
+        <div class="inline-grid grid-cols-[auto_auto_auto_auto] gap-x-2 gap-y-1 items-center">
+          {#each sortedBookmarks as row (row.idx)}
+            {@const previewDelete = hoveringDeleteIdx === row.idx}
+            <div class="contents">
+              <!-- Bookmark ribbon icon, info-blue to match the
+                   chapter-marker pin painted on the scrubber. -->
+              <span
+                class="shrink-0 {previewDelete ? 'text-error' : 'text-info'}"
+                aria-hidden="true"
               >
-                <!-- Trash-can SVG. Reads unambiguously as "delete"
-                     where the previous bare × glyph was easy to miss. -->
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-4 w-4 fill-current">
-                  <path d="M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z" />
+                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current">
+                  <path d="M6 2a1 1 0 00-1 1v18l7-4 7 4V3a1 1 0 00-1-1H6z" />
                 </svg>
-              </button>
-            {/if}
-          </div>
-        {/each}
+              </span>
+              <button
+                type="button"
+                class="tabular-nums font-mono shrink-0 {previewDelete ? 'text-error link-hover' : 'link link-hover'}"
+                title="Jump to {formatClock(row.bookmark.offset)}"
+                onclick={() => jumpToBookmark(row.bookmark.offset)}
+              >{formatClock(row.bookmark.offset)}</button>
+              {#if editingBookmarkIdx === row.idx}
+                <!-- Editing mode: input spans the (name+pencil) and
+                     (trash) columns so the field has room to grow up
+                     to the same right boundary the trash would have
+                     occupied. col-span-2 keeps grid alignment stable. -->
+                <input
+                  type="text"
+                  class="input input-xs input-bordered min-w-0 max-w-xs col-span-2"
+                  bind:value={video.chapterMarkers[row.idx].comment}
+                  placeholder={formatClock(row.bookmark.offset)}
+                  use:bookmarkAutofocus
+                  onblur={() => (editingBookmarkIdx = null)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' || e.key === 'Escape') {
+                      (e.currentTarget as HTMLInputElement).blur();
+                    }
+                  }}
+                />
+              {:else}
+                <!-- Name + ✎ are wrapped in a tight flex sub-group so
+                     the pencil sits visually attached to the name
+                     (gap-0.5) rather than at the grid's column gap.
+                     max-w-xs on the name caps long bookmarks with
+                     ellipsis so a single huge name can't blow out
+                     the column and push the trash off-screen. -->
+                <div class="flex items-center gap-0.5 min-w-0">
+                  <button
+                    type="button"
+                    class="min-w-0 max-w-xs truncate text-left cursor-text {video.chapterMarkers[row.idx].comment ? '' : 'italic text-base-content/40'} {previewDelete ? 'text-error' : ''}"
+                    title="Click ✎ to rename"
+                    onclick={() => (editingBookmarkIdx = row.idx)}
+                  >{video.chapterMarkers[row.idx].comment || formatClock(row.bookmark.offset)}</button>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-xs shrink-0 px-1 {previewDelete ? 'text-error' : ''}"
+                    onclick={() => (editingBookmarkIdx = row.idx)}
+                    aria-label="Edit bookmark name"
+                    title="Edit name"
+                  >✎</button>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-xs shrink-0 {previewDelete ? 'text-error' : 'text-base-content/60 hover:text-error'}"
+                  onclick={() => removeBookmark(row.idx)}
+                  onmouseenter={() => (hoveringDeleteIdx = row.idx)}
+                  onmouseleave={() => (hoveringDeleteIdx = null)}
+                  aria-label="Delete bookmark"
+                  title="Delete bookmark"
+                >
+                  <!-- Trash-can SVG. Reads unambiguously as "delete"
+                       where the previous bare × glyph was easy to miss. -->
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-4 w-4 fill-current">
+                    <path d="M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z" />
+                  </svg>
+                </button>
+              {/if}
+            </div>
+          {/each}
+        </div>
       </div>
+    {/if}
+
+    <!-- Clips list: shown only when watching a parent video that has
+         clips. Visually mirrors the Bookmarks block (same 4-col grid,
+         same trash + hover-row-red affordance) so the two read as
+         parallel "sub-views" of the current file. The leading scissor
+         icon is yellow-400 — same color used for the clip indicator
+         on VideoCard thumbnails and the "Clip" flag in the browse-
+         page Flags tree, so the visual language is consistent.
+         `parentClips` is left at [] by loadParentClips() when the
+         current video is itself a clip, so this block silently
+         disappears in clip view. -->
+    {#if parentClips.length > 0}
+      <div class="border border-base-300 rounded p-2 text-xs">
+        <div class="flex items-center text-base-content/70 uppercase tracking-wide mb-1">
+          <span>Clips</span>
+          <span class="ml-2 text-[10px] normal-case tracking-normal text-base-content/50">
+            {parentClips.length}
+          </span>
+        </div>
+        <div class="inline-grid grid-cols-[auto_auto_auto_auto] gap-x-2 gap-y-1 items-center">
+          {#each parentClips as c (c.id)}
+            {@const previewDelete = hoveringDeleteClipId === c.id}
+            {@const busy = clipDeleteBusy.has(c.id)}
+            <div class="contents">
+              <!-- Scissor icon, yellow-400 — same color used by the
+                   Clip flag in the browse-page Flags tree and the
+                   indicator on VideoCard thumbnails. Goes red when
+                   the trash on this row is hovered. -->
+              <span
+                class="shrink-0"
+                style:color={previewDelete ? undefined : 'rgb(250 204 21)'}
+                class:text-error={previewDelete}
+                aria-hidden="true"
+              >
+                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current">
+                  <path d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm0 12c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3z" />
+                </svg>
+              </span>
+              <!-- Clicking the start time jumps the player to the
+                   clip's in-point in the parent — the green band on
+                   the scrubber lights up as the playhead enters it.
+                   The "(30s)" suffix gives the user an at-a-glance
+                   sense of clip length without having to subtract
+                   start from end mentally. Duration sits inside the
+                   same button so the whole "2:43 (30s)" reads as one
+                   jump-to-start affordance. -->
+              <button
+                type="button"
+                class="tabular-nums font-mono shrink-0 {previewDelete ? 'text-error link-hover' : 'link link-hover'}"
+                title="Jump to {formatClock(c.clipStartSeconds)}"
+                onclick={() => jumpToClip(c)}
+              >{formatClock(c.clipStartSeconds)} <span class="opacity-60">({formatHumanDuration(c.clipEndSeconds - c.clipStartSeconds)})</span></button>
+              <span
+                class="min-w-0 max-w-xs truncate text-left {previewDelete ? 'text-error' : ''}"
+                title={c.fileName}
+              >{c.fileName}</span>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs shrink-0 {previewDelete ? 'text-error' : 'text-base-content/60 hover:text-error'}"
+                onclick={() => deleteClipFromList(c)}
+                onmouseenter={() => (hoveringDeleteClipId = c.id)}
+                onmouseleave={() => (hoveringDeleteClipId = null)}
+                disabled={busy}
+                aria-label="Delete clip"
+                title="Mark clip for deletion (review on the Purge Deleted page)"
+              >
+                {#if busy}
+                  <span class="loading loading-spinner loading-xs"></span>
+                {:else}
+                  <!-- Trash-can SVG, identical to the bookmark trash
+                       so the two lists scan as a single visual
+                       pattern. -->
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-4 w-4 fill-current">
+                    <path d="M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z" />
+                  </svg>
+                {/if}
+              </button>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+    </div>
     {/if}
 
     <!-- Title row: filename + ★ Favorite toggle (F shortcut also flips it).
@@ -1841,6 +2420,23 @@
       </button>
       <span class="text-base-content/60">File:</span>
       <span class="text-base-content/70 break-all">{video.fileName}</span>
+      {#if video.isClip && video.parentVideoId}
+        <!-- Visible only on a clip. One click swaps the player out of
+             the clip view into the parent's full timeline. Useful
+             when the user wants to see the slice in context (or
+             trim/extend it) without bouncing back through the
+             browse grid. -->
+        <button
+          type="button"
+          class="btn btn-xs btn-soft btn-primary ml-2 shrink-0"
+          onclick={openParentVideo}
+          disabled={openingParent}
+          title="Switch the player to the full parent video"
+        >
+          {#if openingParent}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Open Full Video
+        </button>
+      {/if}
     </div>
 
     <!-- Tags grouped by tagGroupName + structural status pills. -->
@@ -1996,9 +2592,13 @@
   <!-- Post-create preview: auto-plays the new clip in a loop so the user can
        decide whether to Keep it (close) or Discard it (DELETE the row).
        Escape / Enter / backdrop click all fall through to Keep — the clip is
-       already saved, so "do nothing" is the safe default. -->
+       already saved, so "do nothing" is the safe default.
+       use:portal re-parents the modal to <body> so the fixed-position
+       backdrop + box render above page chrome (filter sidebar at z-20,
+       sticky chips/player at z-10) instead of being trapped under
+       this component's parent stacking context. -->
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="clip-preview-title">
+  <div use:portal class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="clip-preview-title" style="z-index: 9999;">
     <div class="modal-box max-w-4xl w-full">
       <h3 id="clip-preview-title" class="font-semibold text-lg mb-2 flex items-center gap-2">
         <span class="badge badge-tag-other">Clip</span>
@@ -2061,8 +2661,27 @@
         >
           {#if previewMuted}🔇{:else}🔊{/if}
         </button>
-        <span class="text-base-content/50 break-all font-sans">{previewingClip.fileName}</span>
       </div>
+
+      <!-- Name field for the new clip. Empty by default; the
+           placeholder shows the next auto-numbered slot
+           ("Clip001"...). Hitting Enter (or clicking Approve) saves
+           whatever's typed; if blank, the placeholder name is used.
+           The window-level Enter handler routes through
+           keepPreviewClip, which renames the clip via updateVideo
+           when the typed name differs from what was saved at
+           createClip time. -->
+      <label class="form-control mt-3">
+        <span class="label-text text-xs text-base-content/60 mb-1">Clip name</span>
+        <input
+          bind:this={previewClipNameInputEl}
+          type="text"
+          class="input input-bordered input-sm"
+          bind:value={previewClipName}
+          placeholder={previewClipDefaultName}
+          autocomplete="off"
+        />
+      </label>
 
       {#if previewError}
         <div class="alert alert-error text-sm mt-2">{previewError}</div>
@@ -2072,22 +2691,74 @@
           type="button"
           class="btn btn-error"
           onclick={discardPreviewClip}
-          disabled={previewDiscarding}
+          disabled={previewDiscarding || previewKeeping}
+          title="Reject the clip — deletes the just-created row (Esc)"
         >
           {#if previewDiscarding}<span class="loading loading-spinner loading-xs"></span>{/if}
-          Reject
+          Reject <kbd class="kbd kbd-xs ml-1 text-white">Esc</kbd>
         </button>
         <button
           type="button"
           class="btn btn-primary"
           onclick={keepPreviewClip}
-          disabled={previewDiscarding}
-        >Approve</button>
+          disabled={previewDiscarding || previewKeeping}
+          title="Approve the clip — saves the name and closes the preview (Enter)"
+        >
+          {#if previewKeeping}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Approve <kbd class="kbd kbd-xs ml-1">Enter</kbd>
+        </button>
       </div>
     </div>
     <!-- Backdrop is intentionally non-interactive — use the Keep / Discard
          buttons or Escape / Enter to close the modal. Avoids an a11y warning
          about bare click handlers on a static element. -->
     <div class="modal-backdrop"></div>
+  </div>
+{/if}
+
+<!-- Bookmark-naming modal. Pops on K (or the toolbar Add Bookmark
+     button) and offers a default name like "Bookmark001" so the
+     user can hit Enter to accept or type to rename in one stroke.
+     Uses the shared portal action so the modal escapes any sticky/
+     overflow ancestors (same rationale as the clip preview / tag
+     edit modals). -->
+{#if bookmarkModal}
+  {@const m = bookmarkModal}
+  <div use:portal class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="bookmark-name-title" style="z-index: 9999;">
+    <div class="modal-box max-w-sm">
+      <h3 id="bookmark-name-title" class="font-bold text-lg mb-3">New Bookmark</h3>
+      <p class="text-sm text-base-content/70 mb-3">
+        At <span class="font-mono tabular-nums">{formatClock(m.offset)}</span>
+      </p>
+      <input
+        bind:this={bookmarkNameInputEl}
+        type="text"
+        class="input input-bordered w-full"
+        bind:value={m.name}
+        placeholder={nextBookmarkDefaultName()}
+      />
+      <p class="text-xs text-base-content/50 mt-2">
+        <kbd class="kbd kbd-xs">Enter</kbd> to save · <kbd class="kbd kbd-xs">Esc</kbd> to cancel
+      </p>
+      <div class="modal-action">
+        <button
+          type="button"
+          class="btn btn-sm btn-cancel"
+          onclick={cancelBookmarkModal}
+        >Cancel</button>
+        <button
+          type="button"
+          class="btn btn-sm btn-soft btn-primary btn-cta"
+          onclick={commitBookmarkModal}
+        >Save</button>
+      </div>
+    </div>
+    <!-- Backdrop click cancels — same affordance as Cancel/Esc. -->
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Cancel bookmark"
+      onclick={cancelBookmarkModal}
+    ></button>
   </div>
 {/if}
