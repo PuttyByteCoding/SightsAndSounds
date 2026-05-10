@@ -3,7 +3,7 @@
   // dynamically) plus structural fields (Year, NeedsReview, Notes). Saves
   // tag set + scalar fields via /api/videos/{id} and /api/videos/{id}/tags.
 
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { api } from '$lib/api';
   import type { Tag, TagGroup, Video, VideoTagSummary } from '$lib/types';
   import { pillClass } from '$lib/tagColors';
@@ -45,25 +45,76 @@
   // focus [0] on Shift+arrow nav so the user can start typing into the
   // first tag group immediately.
   let composerInputs: HTMLInputElement[] = $state([]);
+  // DOM refs for each group's fieldset, indexed by render order. Used by
+  // the open-panel focus effect — for checkbox-mode groups (e.g. Flags)
+  // there is no composer input, so we fall back to the first focusable
+  // element inside the fieldset (typically the first checkbox).
+  let groupFieldsets: HTMLFieldSetElement[] = $state([]);
 
   function ensureComposer(groupId: string) {
     if (!composer[groupId]) composer[groupId] = { input: '', open: false, highlighted: -1 };
   }
 
-  // Focus the first tag-group composer ONLY when the panel transitions
-  // from closed to open — not on every video change. Refocusing on
-  // every nav (R clears review, W marks won't-play, →, etc.) used to
-  // re-trigger :focus-within on the host's hover-strip wrapper and
-  // visually expand it on each keystroke, which felt like the panel
-  // was "opening itself". Tracking the previous `show` value lets us
-  // discriminate the open transition from later video swaps.
+  // Focus the first tag-group's input/checkbox whenever
+  //   (a) the panel transitions from closed to open, OR
+  //   (b) the panel is open and the user navigates to a different
+  //       video (e.g. ←/→ in VideoPlayer).
+  // Case (b) lets the user immediately keep typing into the first
+  // tag autocomplete (typically Performer) on each new video without
+  // having to click back into the field.
+  //
+  // Two-phase focus is needed because groups load async after mount:
+  //   1. the trigger (open or video change) arms `pendingFocus`
+  //   2. once `groups` populates and the fieldsets render, the second
+  //      effect performs the focus and disarms the flag
+  //
+  // Resolution order:
+  //   1. first defined composer input        — first autocomplete
+  //      tag group, typically "Performer"; checkbox-only groups
+  //      like "Flags" leave their slot in composerInputs undefined
+  //      so we skip past them
+  //   2. first focusable inside fieldset[0]  — fallback only when
+  //      every group is checkbox-mode (no autocomplete to type into)
+  // Skipping checkbox groups is intentional: the user can't "type"
+  // into a checkbox, so landing focus there on every nav doesn't
+  // help with rapid tag entry — they'd have to Tab past it anyway.
   let prevShow = false;
+  let prevVideoId: string | null = null;
+  let pendingFocus = $state(false);
   $effect(() => {
-    const opened = show && !prevShow;
+    if (!show || !video?.id) {
+      prevShow = show;
+      prevVideoId = video?.id ?? null;
+      return;
+    }
+    const opened = !prevShow;
+    const videoChanged = prevVideoId !== null && prevVideoId !== video.id;
     prevShow = show;
-    if (!opened || !video?.id) return;
-    const first = composerInputs[0];
-    if (first) queueMicrotask(() => first.focus());
+    prevVideoId = video.id;
+    if (opened || videoChanged) pendingFocus = true;
+  });
+  $effect(() => {
+    if (!pendingFocus) return;
+    if (groups.length === 0) return;
+    pendingFocus = false;
+    // Wait for the rendered fieldsets / composer inputs to land in the
+    // DOM after the groups assignment, otherwise the bound refs may
+    // still be empty.
+    tick().then(() => {
+      // Find the first autocomplete input — composerInputs is sparse
+      // (checkbox-mode groups don't bind a slot), so [0] may be a
+      // hole. .find() walks past undefined entries.
+      const composer = composerInputs.find(el => el != null);
+      if (composer) { composer.focus(); return; }
+      // Pure-checkbox panel fallback: focus the first focusable in
+      // the first group's fieldset (typically the first checkbox).
+      const fs = groupFieldsets[0];
+      if (!fs) return;
+      const firstFocusable = fs.querySelector<HTMLElement>(
+        'input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      firstFocusable?.focus();
+    });
   });
 
   // Edits live-mutate `video.*` directly (no staged copy). That way
@@ -195,6 +246,12 @@
     } else {
       video.tags = [...video.tags, summary];
     }
+    // Applying any tag implies the user has reviewed the video, so
+    // clear "Needs Review" if it's set. The change rides along on
+    // the next save (Shift+arrow nav, Save button, etc.) — saveIfDirty
+    // in VideoPlayer diffs the bound video and includes needsReview
+    // in the UpdateVideoRequest payload.
+    if (video.needsReview) video.needsReview = false;
     composer[group.id] = { input: '', open: false, highlighted: -1 };
   }
 
@@ -370,9 +427,30 @@
         }
         break;
       case 'Escape':
-        composer[group.id] = { ...c, open: false, highlighted: -1 };
+        // If the suggestion dropdown is open, Esc closes it but does
+        // NOT close the panel — stop propagation so the panel-level
+        // handler below doesn't also fire. If the dropdown is already
+        // closed, let Esc bubble so the panel handler closes the panel.
+        if (c.open || c.highlighted >= 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          composer[group.id] = { ...c, open: false, highlighted: -1 };
+        }
         break;
     }
+  }
+
+  // Panel-level Esc: close the panel when focus is anywhere inside it
+  // and Esc isn't being consumed by something else (open suggestion
+  // dropdown, drag-reorder mode). The TagEditModal portals itself to
+  // <body> and handles its own Esc at the window level, so events from
+  // inside the modal don't bubble through us — we won't accidentally
+  // close the panel when the user is dismissing the modal.
+  function onPanelKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return;
+    if (editingPanel) return; // drag-reorder mode has its own Cancel button
+    e.preventDefault();
+    show = false;
   }
 
   async function save() {
@@ -411,7 +489,8 @@
 </script>
 
 {#if show && video}
-  <div class="card bg-base-200 p-4 space-y-4">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="card bg-base-200 p-4 space-y-4" onkeydown={onPanelKeyDown}>
     <header class="flex items-center justify-between">
       <h2 class="text-lg font-semibold">Tags</h2>
       <div class="flex gap-2">
@@ -442,6 +521,7 @@
     {#each renderItems as item, idx (item.group.id)}
       {@const group = item.group}
         <fieldset
+          bind:this={groupFieldsets[idx]}
           class="rounded px-3 pb-3 pt-1 transition-opacity {editingPanel ? 'cursor-grab border-2 border-base-300' : 'border border-base-300'} {dragIdx !== null && dragIdx !== idx ? 'opacity-40' : ''} {dragIdx === idx ? 'border-primary' : ''}"
           draggable={editingPanel}
           ondragstart={editingPanel ? (e) => onDragStart(idx, e) : undefined}
