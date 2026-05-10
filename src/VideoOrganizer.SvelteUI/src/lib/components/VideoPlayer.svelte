@@ -2451,7 +2451,8 @@
                 type: 'tag',
                 value: t.id,
                 label: t.name,
-                tagGroupName: t.tagGroupName
+                tagGroupName: t.tagGroupName,
+                videoId: video?.id
               })}
               title="Filter by {t.tagGroupName}: {t.name}"
             >{t.name}</button>

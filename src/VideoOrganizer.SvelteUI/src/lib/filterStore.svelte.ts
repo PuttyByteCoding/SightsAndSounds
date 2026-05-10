@@ -11,6 +11,12 @@ export interface FilterTag {
   label: string;
   // Optional display hint for tag-type refs.
   tagGroupName?: string;
+  // Set when the tag click originated from a specific video's tag
+  // pill (VideoCard / VideoPlayer). Lets FilterDialog offer the
+  // "Remove from this video" action — without it the dialog can
+  // only filter / rename / delete the tag itself. Untouched on tag
+  // clicks from the browse sidebar / search box (no video context).
+  videoId?: string;
 }
 
 function keyOf(t: FilterTag) {

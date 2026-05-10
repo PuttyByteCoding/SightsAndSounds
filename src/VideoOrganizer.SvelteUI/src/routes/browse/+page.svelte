@@ -1496,6 +1496,30 @@
   </div>
 </div>
 
-<FilterDialog />
+<FilterDialog
+  onTagChanged={async () => {
+    // Tag rename / delete from inside the dialog — refresh the
+    // sidebar (tag tree, counts, favorites) AND the playing video
+    // pane (so its tag pills lose the deleted tag or pick up the
+    // rename) AND the grid (so card tag pills update too).
+    await refreshSidebarTagCounts();
+    await refreshPlaying();
+    void refreshVideos();
+  }}
+  onVideoChanged={async (videoId) => {
+    // "Remove tag from this video" — re-fetch just that one row
+    // and patch it into the grid so its tag pill disappears
+    // immediately. If the removed tag was on the currently
+    // playing video, refreshPlaying() also picks it up.
+    try {
+      const updated = await api.getVideo(videoId);
+      if (updated) patchVideoInGrid(updated);
+      if (playingVideo?.id === videoId) await refreshPlaying();
+      // Tag-count badges on the sidebar tree key off video counts
+      // — drop one usage and the count needs to redraw.
+      await refreshSidebarTagCounts();
+    } catch { /* non-fatal — UI re-syncs on next nav / reload */ }
+  }}
+/>
 <TagEditModal bind:show={editTagModalShow} tag={editingTag} onSaved={onTagSavedFromSidebar} />
 
