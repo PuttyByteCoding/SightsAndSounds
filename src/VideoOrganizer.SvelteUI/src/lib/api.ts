@@ -33,7 +33,8 @@ import type {
   VideoSetInput,
   RuntimeInfo,
   FfprobeResult,
-  FlagCounts
+  FlagCounts,
+  ClipSummary
 } from './types';
 
 const BASE = '';
@@ -191,6 +192,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req)
     }),
+
+  // Minimal list of clips of a parent video. Used by VideoPlayer to
+  // paint green-tinted bands on the scrubber so the viewer can see
+  // at a glance which slices have been clipped out. Returns [] for
+  // a video that itself is a clip (it has no children).
+  listClipsOfVideo: (parentId: string) =>
+    request<ClipSummary[]>(`/api/videos/${parentId}/clips`),
 
   deleteVideo: (id: string) =>
     request<void>(`/api/videos/${id}`, { method: 'DELETE' }),

@@ -486,6 +486,11 @@ public static class ApiEndpoints
                     "playbackIssue" => v.PlaybackIssue,
                     "markedForDeletion" => v.MarkedForDeletion,
                     "favorite" => v.IsFavorite,
+                    // "isClip" reads off the structural ParentVideoId
+                    // — a Video row is a clip iff it has a parent. No
+                    // separate boolean column; clips are flagged
+                    // automatically when CreateClip inserts the row.
+                    "isClip" => v.ParentVideoId.HasValue,
                     _ => false
                 };
             default:
@@ -925,10 +930,10 @@ public static class ApiEndpoints
         {
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (enabledRoots.Count == 0)
-                return Results.Ok(new FlagCountsDto(0, 0, 0, 0));
+                return Results.Ok(new FlagCountsDto(0, 0, 0, 0, 0));
             var scoped = db.Videos.AsNoTracking()
                 .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
-            // Four small COUNT queries against indexed boolean
+            // Five small COUNT queries against indexed boolean / FK
             // columns — Postgres handles this in milliseconds. Doing
             // them sequentially (rather than as a single grouped
             // aggregate) keeps the EF translation stable.
@@ -936,8 +941,9 @@ public static class ApiEndpoints
             var needsReview = await scoped.CountAsync(v => v.NeedsReview, ct);
             var playbackIssue = await scoped.CountAsync(v => v.PlaybackIssue, ct);
             var markedForDeletion = await scoped.CountAsync(v => v.MarkedForDeletion, ct);
+            var isClip = await scoped.CountAsync(v => v.ParentVideoId.HasValue, ct);
             return Results.Ok(new FlagCountsDto(
-                favorite, needsReview, playbackIssue, markedForDeletion));
+                favorite, needsReview, playbackIssue, markedForDeletion, isClip));
         }).WithName("GetFlagCounts");
 
         // GET /api/videos — simple AND-of-tags filter. Repeatable ?tagId=
@@ -1325,6 +1331,26 @@ public static class ApiEndpoints
 
             return Results.Ok(clip.Id);
         }).WithName("CreateClip");
+
+        // List clips of a parent video — used by the scrubber to paint
+        // green-tinted bands at each clip's [start, end] range so the
+        // viewer can see which slices have been clipped out without
+        // leaving the player. Ordered by start time. Empty list when
+        // the parent has no clips, or when {parentId} is itself a clip.
+        api.MapGet("/videos/{parentId:guid}/clips", async (
+            Guid parentId, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var clips = await db.Videos
+                .AsNoTracking()
+                .Where(v => v.ParentVideoId == parentId
+                    && v.ClipStartSeconds != null
+                    && v.ClipEndSeconds != null)
+                .OrderBy(v => v.ClipStartSeconds)
+                .Select(v => new ClipSummaryDto(
+                    v.Id, v.FileName, v.ClipStartSeconds!.Value, v.ClipEndSeconds!.Value))
+                .ToListAsync(ct);
+            return Results.Ok(clips);
+        }).WithName("GetClipsOfParent");
 
         api.MapGet("/videos/marked-for-deletion", async (
             VideoOrganizerDbContext db, CancellationToken ct) =>

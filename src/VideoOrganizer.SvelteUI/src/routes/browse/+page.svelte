@@ -367,7 +367,7 @@
   let searchQuery = $state('');
   type SearchResult =
     | { kind: 'tag'; tag: Tag; matchedAlias?: string }
-    | { kind: 'status'; value: 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion'; label: string }
+    | { kind: 'status'; value: 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion' | 'isClip'; label: string }
     | { kind: 'missing'; group: TagGroup };
 
   const searchResults = $derived.by<SearchResult[]>(() => {
@@ -386,7 +386,8 @@
       { value: 'favorite', label: 'Favorite' },
       { value: 'needsReview', label: 'Needs Review' },
       { value: 'playbackIssue', label: "Playback Issue" },
-      { value: 'markedForDeletion', label: 'To Delete' }
+      { value: 'markedForDeletion', label: 'To Delete' },
+      { value: 'isClip', label: 'Clip' }
     ] as const;
     for (const s of statuses) {
       if (s.label.toLowerCase().includes(q)) {
@@ -455,7 +456,7 @@
     await refreshSidebarTagCounts();
   }
 
-  function pickStatus(status: 'needsReview' | 'playbackIssue' | 'markedForDeletion' | 'favorite', label: string) {
+  function pickStatus(status: 'needsReview' | 'playbackIssue' | 'markedForDeletion' | 'favorite' | 'isClip', label: string) {
     // Status hits from the search box still go through the picker
     // dialog (Required / Optional / Excluded). The Flags tree skips
     // the dialog and uses applyFlag below; both call paths can
@@ -479,13 +480,19 @@
   // We skip the picker dialog entirely; filterStore.apply() routes
   // straight into the chosen bucket, idempotently replacing whatever
   // bucket the same item was in before.
-  type FlagValue = 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion';
+  type FlagValue = 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion' | 'isClip';
   interface FlagDef { value: FlagValue; label: string; }
   const FLAG_DEFS: FlagDef[] = [
     { value: 'favorite',          label: 'Favorite' },
     { value: 'needsReview',       label: 'Needs Review' },
     { value: 'playbackIssue',          label: "Playback Issue" },
-    { value: 'markedForDeletion', label: 'To Delete' }
+    { value: 'markedForDeletion', label: 'To Delete' },
+    // Clip is structural (the row has a parent) rather than a
+    // user-toggled flag, but it's exposed here so users can filter
+    // clips in / out alongside the other flags. The cycle button
+    // writes a `status:isClip` filter just like the others; the
+    // server-side MatchesFilter switch maps it to ParentVideoId.HasValue.
+    { value: 'isClip',            label: 'Clip' }
   ];
 
   // Per-flag total counts, refreshed on initial sidebar load and
@@ -497,7 +504,8 @@
     favorite: 0,
     needsReview: 0,
     playbackIssue: 0,
-    markedForDeletion: 0
+    markedForDeletion: 0,
+    isClip: 0
   });
   async function refreshFlagCounts() {
     try {
@@ -876,9 +884,15 @@
                     <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(249 115 22);">
                       <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.32 12.9L7.1 5.68A8 8 0 0112 4zM5.68 7.1l11.22 11.22A8 8 0 015.68 7.1z" />
                     </svg>
-                  {:else}
+                  {:else if item.def.value === 'markedForDeletion'}
                     <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(239 68 68);">
                       <path d="M9 3a1 1 0 00-1 1v1H5a1 1 0 100 2h14a1 1 0 100-2h-3V4a1 1 0 00-1-1H9zm-2 6v11a2 2 0 002 2h6a2 2 0 002-2V9H7zm2 2h2v8H9v-8zm4 0h2v8h-2v-8z" />
+                    </svg>
+                  {:else}
+                    <!-- isClip: scissor icon, yellow-400 to match the
+                         clip indicator on the VideoCard thumbnail. -->
+                    <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(250 204 21);">
+                      <path d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm0 12c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3z" />
                     </svg>
                   {/if}
                 {:else}

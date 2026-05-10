@@ -256,6 +256,17 @@ export interface CreateClipRequest {
   name?: string;
 }
 
+// GET /api/videos/{parentId}/clips. Minimal projection used by the
+// VideoPlayer scrubber to paint green-tinted bands at each clip range
+// so the viewer can see at a glance which slices of the parent file
+// have been clipped out.
+export interface ClipSummary {
+  id: string;
+  fileName: string;
+  clipStartSeconds: number;
+  clipEndSeconds: number;
+}
+
 // --- Filtering -------------------------------------------------------------
 
 // Wire enum from VideoOrganizer.Shared.Dto.FilterRefType.
@@ -444,12 +455,15 @@ export interface FfprobeResult {
 
 // GET /api/videos/flag-counts. Drives the per-flag count badges on
 // the Flags tree in the browse sidebar — number of videos whose
-// boolean flag is set, scoped to enabled VideoSets.
+// boolean flag is set, scoped to enabled VideoSets. `isClip` is
+// structural (true iff ParentVideoId is non-null) but exposed
+// through the same Flags-tree UI as the toggleable flags.
 export interface FlagCounts {
   favorite: number;
   needsReview: number;
   playbackIssue: number;
   markedForDeletion: number;
+  isClip: number;
 }
 
 // --- VideoSet --------------------------------------------------------------
