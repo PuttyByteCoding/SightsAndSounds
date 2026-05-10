@@ -10,24 +10,11 @@
   import { api, ApiError } from '$lib/api';
   import type { Tag } from '$lib/types';
 
-  // Portal action — re-parents the element to <body> on mount so the
-  // modal escapes every ancestor stacking context, transform-
-  // containing-block, and overflow-hidden it might be sitting under
-  // (e.g. inside the EditTagsPanel hover strip on /browse, or any
-  // sticky+z-index card). Position-fixed inside the portaled element
-  // then renders relative to the viewport unconditionally.
-  //
-  // On destroy we just `node.remove()` — putting the node back into
-  // the original parent (which we tried first) confused Svelte's own
-  // unmount of the {#if show} block: the modal stayed in body when
-  // show flipped to false. `node.remove()` is idempotent and works
-  // regardless of where the node is currently attached.
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return {
-      destroy() { node.remove(); }
-    };
-  }
+  // Portal action lives in $lib/portal — same one is used by the
+  // FfprobeResultModal and the inline clip-preview modal in
+  // VideoPlayer. See that file for the rationale on why a fixed-
+  // position modal needs to escape its ancestor stacking context.
+  import { portal } from '$lib/portal';
 
   interface Props {
     tag?: Tag | null;

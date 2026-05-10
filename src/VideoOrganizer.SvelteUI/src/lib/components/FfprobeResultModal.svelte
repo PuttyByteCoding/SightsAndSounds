@@ -13,6 +13,7 @@
   // while the modal stays open — useful when checking the same key
   // ("codec_name", "bitrate") across several diagnoses in a row.
   import type { FfprobeResult } from '$lib/types';
+  import { portal } from '$lib/portal';
 
   interface Props {
     result: FfprobeResult | null;
@@ -75,7 +76,11 @@
 <svelte:window onkeydown={onWindowKeyDown} />
 
 {#if result !== null}
-  <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="ffprobe-title">
+  <!-- use:portal — re-parented to <body> so the fixed-position modal
+       paints over the page chrome (e.g. /browse's z-20 filter
+       sidebar) instead of being clipped by the player wrapper's
+       z-10 stacking context that this component is rendered under. -->
+  <div use:portal class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="ffprobe-title" style="z-index: 9999;">
     <div class="modal-box max-w-3xl">
       <div class="flex items-baseline justify-between gap-3">
         <h3 id="ffprobe-title" class="font-bold text-lg">ffprobe diagnostics</h3>
