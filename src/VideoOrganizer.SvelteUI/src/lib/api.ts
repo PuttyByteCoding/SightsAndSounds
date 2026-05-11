@@ -34,7 +34,11 @@ import type {
   RuntimeInfo,
   FfprobeResult,
   FlagCounts,
-  ClipSummary
+  ClipSummary,
+  MissingVideoFile,
+  ExtraDiskFile,
+  Md5Candidate,
+  Md5CheckResult
 } from './types';
 
 const BASE = '';
@@ -199,6 +203,34 @@ export const api = {
   // a video that itself is a clip (it has no children).
   listClipsOfVideo: (parentId: string) =>
     request<ClipSummary[]>(`/api/videos/${parentId}/clips`),
+
+  // --- Data validation ---------------------------------------------------
+  // Video rows whose FilePath no longer resolves on disk. By default
+  // hides files under disabled sources — pass includeDisabled=true
+  // to include them too.
+  getMissingFiles: (includeDisabled = false) =>
+    request<MissingVideoFile[]>(
+      `/api/validation/missing-files?includeDisabled=${includeDisabled ? 'true' : 'false'}`
+    ),
+  // Video files on disk under a configured source that have no
+  // matching Video row. sourceId optional — omit to scan every
+  // enabled source (or every source if includeDisabled=true).
+  getExtraFiles: (sourceId?: string, includeDisabled = false) => {
+    const qs = new URLSearchParams();
+    if (sourceId) qs.set('sourceId', sourceId);
+    qs.set('includeDisabled', includeDisabled ? 'true' : 'false');
+    return request<ExtraDiskFile[]>(`/api/validation/extra-files?${qs.toString()}`);
+  },
+  // Videos eligible for MD5 re-validation. Client iterates this
+  // list and POSTs each id to validateMd5() so progress / cancel
+  // happens in the browser instead of holding a long-running
+  // request open.
+  getMd5Candidates: (includeDisabled = false) =>
+    request<Md5Candidate[]>(
+      `/api/validation/md5-candidates?includeDisabled=${includeDisabled ? 'true' : 'false'}`
+    ),
+  validateMd5: (videoId: string) =>
+    request<Md5CheckResult>(`/api/validation/md5-check/${videoId}`, { method: 'POST' }),
 
   deleteVideo: (id: string) =>
     request<void>(`/api/videos/${id}`, { method: 'DELETE' }),

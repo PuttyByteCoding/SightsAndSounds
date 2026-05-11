@@ -478,3 +478,57 @@ export interface VideoSet {
 }
 
 export type VideoSetInput = Omit<VideoSet, 'pathExists'>;
+
+// --- Data validation -------------------------------------------------------
+
+// GET /api/validation/missing-files. A Video row whose FilePath no
+// longer exists on disk. SourceId/Name come from the longest-prefix
+// match against configured VideoSets; null when no source covers
+// the path (an orphan path or a deleted source).
+export interface MissingVideoFile {
+  videoId: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  ingestDate: string;
+  sourceId: string | null;
+  sourceName: string | null;
+  sourceEnabled: boolean;
+}
+
+// GET /api/validation/extra-files. A video file on disk under a
+// configured source that has no matching Video row in the DB.
+export interface ExtraDiskFile {
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  sourceId: string;
+  sourceName: string;
+}
+
+// GET /api/validation/md5-candidates. Eligibility list the client
+// walks through one-by-one, POSTing each id to /md5-check.
+export interface Md5Candidate {
+  videoId: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  sourceId: string | null;
+  sourceName: string | null;
+  sourceEnabled: boolean;
+  storedMd5: string;
+}
+
+// POST /api/validation/md5-check/{id}. Per-file result.
+// match=false with error=null means the content drifted; with a
+// non-null error means the hash couldn't be computed (file vanished
+// mid-scan, IO error, etc.).
+export interface Md5CheckResult {
+  videoId: string;
+  computedMd5: string;
+  storedMd5: string;
+  match: boolean;
+  fileSize: number;
+  fileExists: boolean;
+  error: string | null;
+}

@@ -116,6 +116,33 @@ public static class ApiEndpoints
         return h > 0 ? $"{h}:{m:00}:{s:00}" : $"{m}:{s:00}";
     }
 
+    // Compute an MD5 hex digest by streaming the file in 256KB chunks
+    // — keeps a multi-GB video out of the heap. Mirrors the worker's
+    // ComputeMd5Async (Md5BackfillService) but without the progress-
+    // tracker / skip-request plumbing the worker needs; this one is
+    // called from the validation endpoint where progress is tracked
+    // client-side and cancellation comes from the request CT.
+    private static async Task<string> ComputeFileMd5Async(string path, CancellationToken ct)
+    {
+        using var md5Alg = System.Security.Cryptography.MD5.Create();
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite,
+            bufferSize: 1024 * 256,
+            options: FileOptions.SequentialScan | FileOptions.Asynchronous);
+        var buffer = new byte[1024 * 256];
+        int read;
+        while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+        {
+            md5Alg.TransformBlock(buffer, 0, read, null, 0);
+        }
+        md5Alg.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return BitConverter.ToString(md5Alg.Hash ?? Array.Empty<byte>())
+            .Replace("-", string.Empty).ToLowerInvariant();
+    }
+
     private static int CountVideoFilesRecursive(string path)
     {
         if (!TryDirectoryExists(path)) return 0;
@@ -523,6 +550,256 @@ public static class ApiEndpoints
                    : "other";
             return Results.Ok(new RuntimeInfoDto(IsLocalRequest(http), os));
         }).WithName("GetRuntimeInfo");
+
+        // === Data validation ================================================
+        // Three diagnostic endpoints powering the /data-validation page:
+        //
+        //   GET /validation/missing-files
+        //     Videos whose FilePath no longer exists on disk. By default
+        //     scoped to enabled sources — pass includeDisabled=true to
+        //     surface orphans under disabled sources too.
+        //
+        //   GET /validation/extra-files
+        //     Video files on disk under a configured source that have no
+        //     matching Video row in the DB. Useful for spotting un-imported
+        //     leftovers. Defaults to enabled sources only; sourceId scopes
+        //     to a single set; includeDisabled=true scans every source.
+        //
+        // The "are sources reachable" check is already covered by
+        // GET /video-sets returning PathExists per row, so no separate
+        // endpoint here.
+
+        api.MapGet("/validation/missing-files", async (
+            VideoOrganizerDbContext db, bool? includeDisabled, CancellationToken ct) =>
+        {
+            var sets = await db.VideoSets.AsNoTracking().ToListAsync(ct);
+            // Build a longest-prefix-first matcher so a video at
+            // "/mnt/A/B/file.mp4" picks up source B's metadata when
+            // both A and A/B are configured.
+            var setsByLength = sets
+                .OrderByDescending(s => s.Path?.Length ?? 0)
+                .ToList();
+
+            var includeAll = includeDisabled == true;
+            var query = db.Videos.AsNoTracking()
+                .Where(v => !v.ParentVideoId.HasValue); // clips share parent's file
+            var videos = await query
+                .Select(v => new { v.Id, v.FileName, v.FilePath, v.FileSize, v.IngestDate })
+                .ToListAsync(ct);
+
+            var missing = new List<MissingVideoFileDto>();
+            foreach (var v in videos)
+            {
+                Domain.Models.VideoSet? set = null;
+                foreach (var s in setsByLength)
+                {
+                    if (!string.IsNullOrEmpty(s.Path)
+                        && v.FilePath.StartsWith(s.Path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        set = s;
+                        break;
+                    }
+                }
+                // Skip videos under a disabled source unless the caller
+                // explicitly opts in. Videos with no matching source
+                // (orphans by definition) are always included so a
+                // path-typo can't permanently hide a missing file.
+                if (!includeAll && set is not null && !set.Enabled) continue;
+
+                if (File.Exists(v.FilePath)) continue;
+
+                missing.Add(new MissingVideoFileDto(
+                    VideoId: v.Id,
+                    FileName: v.FileName,
+                    FilePath: v.FilePath,
+                    FileSize: v.FileSize,
+                    IngestDate: v.IngestDate.ToString("o"),
+                    SourceId: set?.Id,
+                    SourceName: set?.Name,
+                    SourceEnabled: set?.Enabled ?? false));
+            }
+            return Results.Ok(missing
+                .OrderBy(m => m.SourceName)
+                .ThenBy(m => m.FilePath)
+                .ToList());
+        }).WithName("GetValidationMissingFiles");
+
+        api.MapGet("/validation/extra-files", async (
+            VideoOrganizerDbContext db, Guid? sourceId, bool? includeDisabled,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var includeAll = includeDisabled == true;
+            var setsQuery = db.VideoSets.AsNoTracking().AsQueryable();
+            if (sourceId.HasValue)
+                setsQuery = setsQuery.Where(s => s.Id == sourceId.Value);
+            else if (!includeAll)
+                setsQuery = setsQuery.Where(s => s.Enabled);
+            var sets = await setsQuery.ToListAsync(ct);
+            if (sets.Count == 0) return Results.Ok(new List<ExtraDiskFileDto>());
+
+            // Build a fast lookup of every FilePath the DB knows about,
+            // case-insensitive. Clips share their parent's file so
+            // they're effectively dedup'd here too — multiple Video
+            // rows with the same FilePath collapse to one entry.
+            var dbPaths = await db.Videos.AsNoTracking()
+                .Select(v => v.FilePath)
+                .ToListAsync(ct);
+            var known = new HashSet<string>(dbPaths, StringComparer.OrdinalIgnoreCase);
+
+            var extras = new List<ExtraDiskFileDto>();
+            foreach (var s in sets)
+            {
+                if (!TryDirectoryExists(s.Path, logger)) continue;
+                IEnumerable<string> files;
+                try
+                {
+                    files = Directory.EnumerateFiles(s.Path, "*", SearchOption.AllDirectories);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex,
+                        "Skipping VideoSet {VideoSetId} '{Name}' ({Path}) in /validation/extra-files — listing failed",
+                        s.Id, s.Name, s.Path);
+                    continue;
+                }
+                foreach (var f in files)
+                {
+                    // Skip the special-folder staging areas used by
+                    // mark-for-deletion / playback-issue. Those are
+                    // intentionally outside the player grid; flagging
+                    // them as "extra" would just be noise.
+                    if (PathFilters.IsInExcludedFolder(f, s.Path)) continue;
+                    if (!VideoFileExtensions.IsVideo(f)) continue;
+                    var normalized = PathNormalizer.Normalize(f);
+                    if (known.Contains(normalized)) continue;
+                    long size = 0;
+                    try { size = new FileInfo(f).Length; }
+                    catch { /* unreachable file — leave size at 0 */ }
+                    extras.Add(new ExtraDiskFileDto(
+                        FilePath: normalized,
+                        FileName: Path.GetFileName(f),
+                        FileSize: size,
+                        SourceId: s.Id,
+                        SourceName: s.Name));
+                }
+            }
+            return Results.Ok(extras
+                .OrderBy(x => x.SourceName)
+                .ThenBy(x => x.FilePath)
+                .ToList());
+        }).WithName("GetValidationExtraFiles");
+
+        // GET /validation/md5-candidates — list of videos eligible
+        // for MD5 re-verification. Skips clips (share parent's file),
+        // rows without a stored Md5 (nothing to compare against), and
+        // missing files (separate tool covers those). The client
+        // walks this list and POSTs each id to /md5-check below.
+        api.MapGet("/validation/md5-candidates", async (
+            VideoOrganizerDbContext db, bool? includeDisabled, CancellationToken ct) =>
+        {
+            var sets = await db.VideoSets.AsNoTracking().ToListAsync(ct);
+            var setsByLength = sets
+                .OrderByDescending(s => s.Path?.Length ?? 0)
+                .ToList();
+            var includeAll = includeDisabled == true;
+
+            var rows = await db.Videos.AsNoTracking()
+                .Where(v => !v.ParentVideoId.HasValue
+                    && v.Md5 != null && v.Md5 != "")
+                .Select(v => new { v.Id, v.FileName, v.FilePath, v.FileSize, v.Md5 })
+                .ToListAsync(ct);
+
+            var result = new List<Md5CandidateDto>();
+            foreach (var v in rows)
+            {
+                Domain.Models.VideoSet? set = null;
+                foreach (var s in setsByLength)
+                {
+                    if (!string.IsNullOrEmpty(s.Path)
+                        && v.FilePath.StartsWith(s.Path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        set = s;
+                        break;
+                    }
+                }
+                if (!includeAll && set is not null && !set.Enabled) continue;
+                if (!File.Exists(v.FilePath)) continue;
+                result.Add(new Md5CandidateDto(
+                    VideoId: v.Id,
+                    FileName: v.FileName,
+                    FilePath: v.FilePath,
+                    FileSize: v.FileSize,
+                    SourceId: set?.Id,
+                    SourceName: set?.Name,
+                    SourceEnabled: set?.Enabled ?? false,
+                    StoredMd5: v.Md5!));
+            }
+            return Results.Ok(result
+                .OrderBy(r => r.SourceName)
+                .ThenBy(r => r.FilePath)
+                .ToList());
+        }).WithName("GetValidationMd5Candidates");
+
+        // POST /validation/md5-check/{id} — recompute the MD5 of one
+        // video's file and compare against the stored hash. Streams
+        // the file off disk so a multi-GB recording doesn't pin the
+        // entire byte array in memory. Cancellable via the request
+        // CT — if the client navigates away mid-hash, the read
+        // unwinds cleanly.
+        api.MapPost("/validation/md5-check/{id:guid}", async (
+            Guid id, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var video = await db.Videos.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (string.IsNullOrEmpty(video.Md5))
+            {
+                return Results.Ok(new Md5CheckResultDto(
+                    VideoId: id, ComputedMd5: string.Empty,
+                    StoredMd5: string.Empty, Match: false,
+                    FileSize: video.FileSize, FileExists: true,
+                    Error: "Video has no stored MD5 to compare against."));
+            }
+            if (!File.Exists(video.FilePath))
+            {
+                return Results.Ok(new Md5CheckResultDto(
+                    VideoId: id, ComputedMd5: string.Empty,
+                    StoredMd5: video.Md5, Match: false,
+                    FileSize: video.FileSize, FileExists: false,
+                    Error: "File missing on disk."));
+            }
+            try
+            {
+                var computed = await ComputeFileMd5Async(video.FilePath, ct);
+                var match = string.Equals(computed, video.Md5, StringComparison.OrdinalIgnoreCase);
+                if (!match)
+                {
+                    logger.LogWarning(
+                        "MD5 validation mismatch for {VideoId} ({FileName}) at {Path} — stored={Stored} computed={Computed}",
+                        id, video.FileName, video.FilePath, video.Md5, computed);
+                }
+                return Results.Ok(new Md5CheckResultDto(
+                    VideoId: id, ComputedMd5: computed,
+                    StoredMd5: video.Md5, Match: match,
+                    FileSize: video.FileSize, FileExists: true, Error: null));
+            }
+            catch (OperationCanceledException)
+            {
+                throw; // let ASP.NET map to 499
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex,
+                    "MD5 validation failed for {VideoId} ({FileName}) at {Path}",
+                    id, video.FileName, video.FilePath);
+                return Results.Ok(new Md5CheckResultDto(
+                    VideoId: id, ComputedMd5: string.Empty,
+                    StoredMd5: video.Md5, Match: false,
+                    FileSize: video.FileSize, FileExists: true,
+                    Error: ex.Message));
+            }
+        }).WithName("PostValidationMd5Check");
 
         // === Thumbnails worker ==============================================
 
@@ -2559,7 +2836,14 @@ public static class ApiEndpoints
         {
             try
             {
-                var sets = await db.VideoSets.Where(s => s.Enabled)
+                // Include disabled sources too so the browse-page
+                // Sources tree can still surface them (rendered with
+                // a strikethrough + "(Disabled)" suffix on the
+                // client). Disabling a source hides its videos from
+                // the playback grid but shouldn't cut off filesystem
+                // visibility — users may want to see what's there
+                // before re-enabling.
+                var sets = await db.VideoSets
                     .OrderBy(s => s.SortOrder).ThenBy(s => s.Name)
                     .ToListAsync(ct);
 
