@@ -329,10 +329,22 @@
     {#if video.tags.length > 0}
       <div class="flex flex-wrap gap-1">
         {#each video.tags as t (t.id)}
-          <span class="badge badge-sm {pillClass(t.id, t.tagGroupName)} gap-1">
+          <!-- Tag pill — caps width via min(12rem, 100%) so a long
+               tag name truncates inside the pill with an ellipsis
+               instead of wrapping the badge to two lines OR
+               overflowing the thumbnail card. The 100% term is what
+               keeps the chip from spilling past the card's right
+               edge when the card is narrower than 12rem (small
+               grid columns); the 12rem term keeps the chip from
+               becoming absurdly wide on a very wide card.
+               flex-nowrap keeps the name and ✎ on one row; the
+               inner button uses `truncate min-w-0` for the actual
+               ellipsis. Same pattern is reused on the player, the
+               edit-tags panel, and the filter chips. -->
+          <span class="badge badge-sm {pillClass(t.id, t.tagGroupName)} gap-1 max-w-[min(12rem,100%)] flex-nowrap">
             <button
               type="button"
-              class="cursor-pointer"
+              class="cursor-pointer truncate min-w-0"
               onclick={(e) => {
                 e.stopPropagation();
                 filterStore.requestAdd({
@@ -347,7 +359,7 @@
             >{t.name}</button>
             <button
               type="button"
-              class="opacity-70 hover:opacity-100"
+              class="opacity-70 hover:opacity-100 shrink-0"
               onclick={(e) => openEditTag(t.id, e)}
               title="Edit tag"
               aria-label="Edit {t.name}"

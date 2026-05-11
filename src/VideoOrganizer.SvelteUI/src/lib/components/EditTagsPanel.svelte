@@ -572,22 +572,28 @@
             {#if tagsAppliedInGroup(group.id).length > 0}
               <div class="flex flex-wrap gap-1 mb-2">
                 {#each tagsAppliedInGroup(group.id) as t (t.id)}
-                  <span class="badge {pillClass(t.id, group.name)} gap-1">
+                  <!-- Tag pill — same min(14rem, 100%) / truncate /
+                       flex-nowrap pattern as VideoCard / VideoPlayer.
+                       Caps each chip so a long tag name ellipsizes
+                       instead of wrapping the badge OR overflowing
+                       the panel column. -->
+                  <span class="badge {pillClass(t.id, group.name)} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
                     <button
                       type="button"
-                      class="cursor-pointer"
+                      class="cursor-pointer truncate min-w-0"
                       onclick={() => openEditModal(t, group.id)}
                       title="Edit tag"
                     >{t.name}</button>
                     <button
                       type="button"
-                      class="opacity-70 hover:opacity-100"
+                      class="opacity-70 hover:opacity-100 shrink-0"
                       onclick={() => openEditModal(t, group.id)}
                       title="Edit tag"
                       aria-label="Edit {t.name}"
                     >✎</button>
                     <button
                       type="button"
+                      class="shrink-0"
                       onclick={() => removeTag(group.id, t.id)}
                       title="Remove from video"
                       aria-label="Remove {t.name}"

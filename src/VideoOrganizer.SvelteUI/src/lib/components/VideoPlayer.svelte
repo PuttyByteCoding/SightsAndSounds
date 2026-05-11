@@ -2443,10 +2443,15 @@
     {#if video.tags.length > 0 || hasAnyStatus(video)}
       <div class="flex flex-wrap gap-0.5 mt-0.5">
         {#each video.tags as t (t.id)}
-          <span class="badge {pillClass(t.id, t.tagGroupName)} gap-1">
+          <!-- Tag pill — same min(14rem,100%) / truncate / flex-
+               nowrap pattern as VideoCard. The 100% term keeps the
+               chip from overflowing the player's tag row when the
+               window is narrow; the 14rem term caps absolute width
+               so a long name doesn't dominate a wide row. -->
+          <span class="badge {pillClass(t.id, t.tagGroupName)} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
             <button
               type="button"
-              class="cursor-pointer"
+              class="cursor-pointer truncate min-w-0"
               onclick={() => filterStore.requestAdd({
                 type: 'tag',
                 value: t.id,
@@ -2458,7 +2463,7 @@
             >{t.name}</button>
             <button
               type="button"
-              class="opacity-70 hover:opacity-100"
+              class="opacity-70 hover:opacity-100 shrink-0"
               onclick={(e) => { e.stopPropagation(); openEditTagModal(t.id); }}
               title="Edit tag"
               aria-label="Edit {t.name}"

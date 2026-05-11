@@ -515,7 +515,22 @@
           </div>
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-sm btn-soft btn-accent border border-accent/50" onclick={() => startEditGroup(selectedGroup!)}>Edit Group</button>
-            <button class="btn btn-sm btn-soft btn-error border border-error/50" onclick={() => openDeleteGroupConfirm(selectedGroup!)}>Delete [{selectedGroup.name}] Tag Group</button>
+            <!-- Truncation pattern: long group names ellipsize the
+                 middle span instead of wrapping the button onto a
+                 second line. max-w-xs caps the button so it doesn't
+                 hog the action row when the group name is long;
+                 below that cap the inner flex+truncate kicks in. -->
+            <button
+              class="btn btn-sm btn-soft btn-error border border-error/50 flex-nowrap min-w-0 max-w-xs"
+              onclick={() => openDeleteGroupConfirm(selectedGroup!)}
+              title={`Delete [${selectedGroup.name}] Tag Group`}
+            >
+              <span class="flex items-baseline w-full min-w-0">
+                <span class="shrink-0">Delete&nbsp;[</span>
+                <span class="flex-1 min-w-0 truncate">{selectedGroup.name}</span>
+                <span class="shrink-0">]&nbsp;Tag&nbsp;Group</span>
+              </span>
+            </button>
             {#if mergeMode}
               <button class="btn btn-sm btn-cancel" onclick={toggleMerge}>Cancel Merge</button>
             {:else}
