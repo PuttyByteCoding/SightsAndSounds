@@ -32,6 +32,14 @@
     videoCount: number;
     importedCount: number;
     onPickFolder: (fullPath: string, label: string) => void;
+    // Only meaningful at depth 0 (source-root rows). When false, the
+    // row renders the source name with a strikethrough and a faded
+    // "(Disabled)" suffix so it's clear the source is browse-only —
+    // its videos won't appear in the player grid until re-enabled.
+    // Children inherit the visual treatment via depth — sub-folders
+    // of a disabled source still expand, but the user already sees
+    // the disabled state at the root.
+    enabled?: boolean;
   }
 
   let {
@@ -41,7 +49,8 @@
     depth,
     videoCount,
     importedCount,
-    onPickFolder
+    onPickFolder,
+    enabled = true
   }: Props = $props();
 
   let expanded = $state(false);
@@ -121,8 +130,13 @@
       type="button"
       class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
       onclick={pick}
-      title={fullPath}
-    >{name}</button>
+      title={enabled ? fullPath : `${fullPath} — disabled (videos hidden from the grid)`}
+    >
+      <span class={enabled ? '' : 'line-through text-base-content/60'}>{name}</span>
+      {#if !enabled}
+        <span class="text-xs italic text-base-content/50 ml-1 no-underline">(Disabled)</span>
+      {/if}
+    </button>
     <!-- Import-status badge. Two visual states share one slot:
          · fully imported (importedCount ≥ videoCount > 0) → show the
            total as a muted "X" so the user can see the size at a

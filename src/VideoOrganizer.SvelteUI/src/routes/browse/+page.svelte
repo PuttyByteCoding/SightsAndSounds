@@ -333,6 +333,47 @@
   // trip per keystroke. Favorites are derived from the same list.
   let allTags = $state<Tag[]>([]);
   const favoriteTags = $derived(allTags.filter(t => t.isFavorite));
+
+  // Favorite tags grouped by their tag group, mirroring the shape used by
+  // Related Tags / Tag Groups. Renders as a collapsible tree section so
+  // the user can tuck away groups they don't currently care about and
+  // the sidebar layout stays consistent across all tag-listing sections.
+  // Sorted by group name so the order is stable as favorites are added.
+  type FavoriteGroup = { groupId: string; groupName: string; tags: Tag[] };
+  const favoriteTagsByGroup = $derived.by<FavoriteGroup[]>(() => {
+    const map = new Map<string, FavoriteGroup>();
+    for (const t of favoriteTags) {
+      let entry = map.get(t.tagGroupId);
+      if (!entry) {
+        entry = { groupId: t.tagGroupId, groupName: t.tagGroupName, tags: [] };
+        map.set(t.tagGroupId, entry);
+      }
+      entry.tags.push(t);
+    }
+    const out = [...map.values()];
+    out.sort((a, b) => a.groupName.localeCompare(b.groupName));
+    for (const g of out) g.tags.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  });
+  // Expanded-by-default since the user explicitly favorited these.
+  // Tracks which *individual* groups are open so a partial-collapse
+  // state survives re-renders.
+  let expandedFavoriteGroups = $state<Set<string>>(new Set());
+  let favoriteExpansionInitialized = false;
+  $effect(() => {
+    // Auto-expand newly-arrived groups exactly once per page load.
+    // After that the user's expand/collapse choices are sticky.
+    if (favoriteExpansionInitialized) return;
+    if (favoriteTagsByGroup.length === 0) return;
+    expandedFavoriteGroups = new Set(favoriteTagsByGroup.map(g => g.groupId));
+    favoriteExpansionInitialized = true;
+  });
+  function toggleFavoriteGroup(groupId: string) {
+    const next = new Set(expandedFavoriteGroups);
+    if (next.has(groupId)) next.delete(groupId);
+    else next.add(groupId);
+    expandedFavoriteGroups = next;
+  }
   async function loadFavorites() {
     try {
       allTags = await api.listTags({ withCounts: true });
@@ -938,7 +979,7 @@
         {/if}
       </div>
 
-      {#if favoriteTags.length > 0}
+      {#if favoriteTagsByGroup.length > 0}
         <div>
           <button
             type="button"
@@ -961,27 +1002,71 @@
             <h3 class="font-semibold text-sm">Favorite Tags</h3>
           </button>
           {#if !sectionCollapsed.favorites}
-          <div class="flex flex-wrap gap-1 bg-base-100 rounded-box p-2">
-            {#each favoriteTags as t (t.id)}
-              {@const slot = filterSlot(t.id)}
-              <span
-                class="badge {pillClass(t.id, t.tagGroupName)} gap-1"
-                title={slot ? `In filter: ${slot}` : `Filter by ${t.tagGroupName}: ${t.name}`}
-              >
-                <button
-                  type="button"
-                  class="cursor-pointer"
-                  onclick={() => pickTag(t)}
-                >{t.name}</button>
-                <span class="opacity-60 text-xs tabular-nums">{t.videoCount}</span>
-                <button
-                  type="button"
-                  class="opacity-70 hover:opacity-100"
-                  onclick={(e) => openTagEdit(t, e)}
-                  title="Edit tag"
-                  aria-label="Edit {t.name}"
-                >✎</button>
-              </span>
+          <!-- Favorite Tags rendered as a collapsible tree, matching
+               the shape used by Tag Groups, Sources, and Related Tags.
+               Each tag group is a parent row with a chevron + count of
+               favorites in that group; expanding shows the favorited
+               tags as indented leaf rows with the standard count badge
+               + ✎ edit affordance. Replaces the previous flat pill
+               cluster, which scaled poorly past ~20 favorites and broke
+               the visual rhythm of the rest of the sidebar. -->
+          <div class="bg-base-100 rounded-box p-1 text-sm">
+            {#each favoriteTagsByGroup as g (g.groupId)}
+              {@const isExpanded = expandedFavoriteGroups.has(g.groupId)}
+              <div>
+                <div class="flex items-center gap-1 hover:bg-base-200 rounded">
+                  <button
+                    type="button"
+                    class="shrink-0 w-5 h-5 flex items-center justify-center text-base-content/70 hover:text-base-content"
+                    aria-label={isExpanded ? `Collapse ${g.groupName}` : `Expand ${g.groupName}`}
+                    title={isExpanded ? 'Collapse' : 'Expand'}
+                    onclick={() => toggleFavoriteGroup(g.groupId)}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      class="h-3 w-3 fill-current transition-transform {isExpanded ? 'rotate-90' : ''}"
+                    >
+                      <path d="M9 6l6 6-6 6V6z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="flex-1 min-w-0 text-left truncate py-1 font-medium hover:underline"
+                    onclick={() => toggleFavoriteGroup(g.groupId)}
+                    title={isExpanded ? `Collapse ${g.groupName}` : `Expand ${g.groupName}`}
+                  >{g.groupName}</button>
+                  <span
+                    class="shrink-0 text-xs tabular-nums opacity-50"
+                    title="{g.tags.length} favorited tag{g.tags.length === 1 ? '' : 's'} in {g.groupName}"
+                  >{g.tags.length}</span>
+                </div>
+                {#if isExpanded}
+                  {#each g.tags as t (t.id)}
+                    {@const slot = filterSlot(t.id)}
+                    <div
+                      class="flex items-center gap-1 hover:bg-base-200 rounded"
+                      style="padding-left: 0.75rem"
+                    >
+                      <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+                      <button
+                        type="button"
+                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
+                        onclick={() => pickTag(t)}
+                        title={slot ? `In filter: ${slot}` : `Filter by ${g.groupName}: ${t.name}`}
+                      >{t.name}</button>
+                      <span class="shrink-0 text-xs tabular-nums opacity-50">{t.videoCount}</span>
+                      <button
+                        type="button"
+                        class="shrink-0 px-1 opacity-70 hover:opacity-100"
+                        onclick={(e) => openTagEdit(t, e)}
+                        title="Edit tag"
+                        aria-label="Edit {t.name}"
+                      >✎</button>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
             {/each}
           </div>
           {/if}
@@ -1093,7 +1178,7 @@
             >
               <path d="M9 6l6 6-6 6V6z" />
             </svg>
-            <h3 class="font-semibold text-sm">Folders</h3>
+            <h3 class="font-semibold text-sm">Sources</h3>
           </button>
           {#if !sectionCollapsed.folders}
           <!-- Tree view that mirrors the on-disk layout under each
@@ -1108,6 +1193,7 @@
                — the rest (and their subtrees) are pruned out. -->
           <div class="bg-base-100 rounded-box p-1">
             {#each visibleFolderRoots as root (root.fullPath)}
+              {@const matchingSet = sets.find(s => s.path === root.fullPath || s.name === root.name)}
               <FolderTreeNode
                 name={root.name}
                 fullPath={root.fullPath}
@@ -1115,6 +1201,7 @@
                 depth={0}
                 videoCount={root.videoCount}
                 importedCount={root.importedCount}
+                enabled={matchingSet ? matchingSet.enabled : true}
                 onPickFolder={(path, label) =>
                   filterStore.requestAdd({ type: 'folder', value: path, label })}
               />
@@ -1288,9 +1375,13 @@
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Required</span>
                   {#each filterStore.required as t (`req-${t.type}-${t.value}`)}
-                    <span class="badge {filterSlotClass('required')} gap-1">
-                      {t.label}
-                      <button onclick={() => filterStore.remove(t)}>×</button>
+                    <!-- Filter chip — max-w + truncate so long
+                         labels ellipsize instead of pushing the
+                         row to wrap or scroll. Same pattern reused
+                         by Optional / Excluded below. -->
+                    <span class="badge {filterSlotClass('required')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
+                      <span class="truncate min-w-0">{t.label}</span>
+                      <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
                 </div>
@@ -1299,9 +1390,9 @@
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Optional</span>
                   {#each filterStore.optional as t (`opt-${t.type}-${t.value}`)}
-                    <span class="badge {filterSlotClass('optional')} gap-1">
-                      {t.label}
-                      <button onclick={() => filterStore.remove(t)}>×</button>
+                    <span class="badge {filterSlotClass('optional')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
+                      <span class="truncate min-w-0">{t.label}</span>
+                      <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
                 </div>
@@ -1310,9 +1401,9 @@
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Excluded</span>
                   {#each filterStore.excluded as t (`exc-${t.type}-${t.value}`)}
-                    <span class="badge {filterSlotClass('excluded')} gap-1">
-                      {t.label}
-                      <button onclick={() => filterStore.remove(t)}>×</button>
+                    <span class="badge {filterSlotClass('excluded')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
+                      <span class="truncate min-w-0">{t.label}</span>
+                      <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
                 </div>
