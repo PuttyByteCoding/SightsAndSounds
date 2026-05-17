@@ -562,6 +562,17 @@
     }
   }
 
+  // Manual file-list refresh — invalidates the per-folder cache and
+  // re-fetches every selected path. Useful when the user has just
+  // dropped new files into a folder on disk and wants the Will
+  // Import / Already Imported / Not a Video counts to reflect what's
+  // actually there now without changing the selection. No-op when
+  // nothing is selected; `loadFiles()` handles the empty case.
+  async function refreshFiles() {
+    filesByFolder = new Map();
+    await loadFiles();
+  }
+
   // Refresh the file list when the user toggles "Include subdirectories"
   // so the table immediately reflects what would actually be imported.
   // Invalidates the entire cache because recursion changes every
@@ -924,7 +935,19 @@
               <span class="loading loading-spinner loading-sm"></span> Loading files...
             </div>
           {:else if fileList.length === 0 && nonImportableFileList.length === 0}
-            <div class="text-base-content/60 text-sm italic">Folder is empty.</div>
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-base-content/60 text-sm italic">Folder is empty.</span>
+              <!-- Still expose the refresh affordance in the empty
+                   state — common workflow is "I just dropped files
+                   into the folder, re-scan." -->
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs"
+                onclick={refreshFiles}
+                title="Re-scan folder(s) for new or removed files"
+                aria-label="Refresh file list"
+              >↻ Refresh</button>
+            </div>
           {:else}
             <div role="tablist" class="tabs tabs-boxed bg-base-100">
               <button
@@ -985,6 +1008,23 @@
                  : activeFileTab === 'imported' ? alreadyImportedFiles.length
                  : nonImportableFileList.length}
               </span>
+              <!-- Manual refresh — invalidates the per-folder cache
+                   and re-fetches every currently-selected path.
+                   Useful when files have been added or removed on
+                   disk since the selection was made. Disabled while
+                   a load is already in flight so a frantic click
+                   can't fire overlapping requests. -->
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs"
+                onclick={refreshFiles}
+                disabled={filesLoading}
+                title="Re-scan folder(s) for new or removed files"
+                aria-label="Refresh file list"
+              >
+                {#if filesLoading}<span class="loading loading-spinner loading-xs"></span>{:else}↻{/if}
+                Refresh
+              </button>
             </div>
 
             {#if visibleFiles.length === 0}
