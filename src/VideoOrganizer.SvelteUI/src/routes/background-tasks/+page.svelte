@@ -93,6 +93,18 @@
     try {
       await api.triggerThumbnailScan();
       await load();
+      // Surface the result as a modal so the user sees what the
+      // scan actually queued up. Opens the existing thumb-queue
+      // table with a one-line summary banner; the table itself
+      // lists the files about to be processed.
+      const pending = thumbStatus?.pending ?? 0;
+      const failed = thumbStatus?.failed ?? 0;
+      const summary = pending === 0
+        ? failed > 0
+          ? `Scan complete — no new thumbnails needed. (${failed} failed previously; use "Show Failed" to retry.)`
+          : `Scan complete — every video already has a thumbnail.`
+        : `Scan started — ${pending} video${pending === 1 ? '' : 's'} queued for thumbnail generation. Worker is processing in the background.`;
+      await openTableModal('thumb-queue', { summary });
     } catch (e) {
       thumbError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -105,6 +117,17 @@
     try {
       await api.triggerMd5BackfillScan();
       await load();
+      // Same pattern as triggerThumbScan — open the queue modal
+      // with a result-banner summary instead of returning silently
+      // to a page where nothing visibly changed.
+      const pending = md5Status?.pending ?? 0;
+      const failed = md5Status?.failed ?? 0;
+      const summary = pending === 0
+        ? failed > 0
+          ? `Scan complete — no new MD5 hashes needed. (${failed} failed previously; use "Show Failed" to retry.)`
+          : `Scan complete — every video already has an MD5 hash.`
+        : `Scan started — ${pending} video${pending === 1 ? '' : 's'} queued for MD5 calculation. Worker is processing in the background.`;
+      await openTableModal('md5-queue', { summary });
     } catch (e) {
       md5Error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -177,6 +200,34 @@
   const queuedImports = $derived(activeImports.filter((j) => j.startedAt === null));
   const runningImports = $derived(activeImports.filter((j) => j.startedAt !== null));
 
+  // Sorted view used for rendering — order matches when each job
+  // will actually run on the server:
+  //   1. Running   (startedAt set, not yet completed) — happening now
+  //   2. Queued    (startedAt null)  — FIFO by enqueuedAt so the
+  //      next job up the worker will pick lands directly under the
+  //      currently-running one
+  //   3. Completed — already processed; most recently finished first
+  //      so the user's last action stays at the top of the bottom
+  //      section instead of scrolling off in old-completion order
+  // Falls back through completedAt → startedAt → enqueuedAt when a
+  // timestamp is missing so a partial record still sorts sensibly.
+  const sortedImportJobs = $derived.by(() => {
+    const ms = (s: string | null | undefined) => (s ? new Date(s).getTime() : 0);
+    const phase = (j: ImportJobSummary) =>
+      j.isCompleted ? 2 : (j.startedAt !== null ? 0 : 1);
+    return [...importJobs].sort((a, b) => {
+      const pa = phase(a), pb = phase(b);
+      if (pa !== pb) return pa - pb;
+      if (pa === 2) {
+        // Completed: most-recent first.
+        return ms(b.completedAt ?? b.startedAt ?? b.enqueuedAt)
+             - ms(a.completedAt ?? a.startedAt ?? a.enqueuedAt);
+      }
+      // Running or queued: FIFO — earliest enqueuedAt first.
+      return ms(a.enqueuedAt) - ms(b.enqueuedAt);
+    });
+  });
+
   // Paused-flag state for the three workers. Polled alongside the rest;
   // toggled by the per-card pause/resume buttons.
   let pauseStatus = $state<{ importPaused: boolean; thumbnailsPaused: boolean; md5Paused: boolean }>({
@@ -239,11 +290,52 @@
   let modalRows = $state<Array<Record<string, unknown>>>([]);
   let modalLoading = $state(false);
   let modalError = $state<string | null>(null);
+  // Optional one-line summary shown in DataTableModal's header
+  // banner. Three sources:
+  //   1. Caller passes `opts.summary` when opening (used by
+  //      triggerThumbScan / triggerMd5Scan to surface scan
+  //      results like "Scan started — N queued").
+  //   2. computeModalSummary() runs after refreshModal() and
+  //      derives a summary from the freshly-loaded rows (used by
+  //      md5-dups to count distinct groups).
+  //   3. Stays null otherwise (no banner).
+  let modalSummary = $state<string | null>(null);
+  // True when this modal session should keep its custom summary
+  // across the user's ↻ refresh clicks (e.g. "Scan started" should
+  // stay even if they refresh). False = re-compute from rows on
+  // every refresh.
+  let modalSummaryLocked = $state(false);
 
-  async function openTableModal(kind: ModalKind) {
+  async function openTableModal(kind: ModalKind, opts?: { summary?: string }) {
     openModal = kind;
     modalError = null;
+    if (opts?.summary !== undefined) {
+      modalSummary = opts.summary;
+      modalSummaryLocked = true;
+    } else {
+      modalSummary = null;
+      modalSummaryLocked = false;
+    }
     await refreshModal();
+  }
+
+  // Derive a one-line summary from the just-loaded rows, for modal
+  // kinds where a per-row count alone undersells the data. Returns
+  // null for kinds where the table header already conveys the count.
+  function computeModalSummary(kind: ModalKind, rows: Array<Record<string, unknown>>): string | null {
+    if (kind === 'md5-dups') {
+      // Always emit a "Scan complete" banner so the result feels
+      // consistent with the other two scan buttons (which surface
+      // their result regardless of count). Empty result still
+      // confirms the scan ran — the table's own empty-state copy
+      // is below this banner, not a replacement for it.
+      if (rows.length === 0) {
+        return `Scan complete — no duplicate videos found.`;
+      }
+      const distinct = new Set(rows.map(r => r.md5 as string)).size;
+      return `Scan complete — found ${distinct} duplicate group${distinct === 1 ? '' : 's'} across ${rows.length} video${rows.length === 1 ? '' : 's'}. Videos sharing an MD5 are listed together.`;
+    }
+    return null;
   }
 
   async function refreshModal() {
@@ -274,6 +366,12 @@
           modalRows = (await api.getImportQueue()) as unknown as Record<string, unknown>[];
           break;
       }
+      // Caller-supplied summaries (scan triggers) win over the
+      // auto-derived ones and persist across refreshes; otherwise
+      // recompute from the current rows.
+      if (!modalSummaryLocked) {
+        modalSummary = computeModalSummary(openModal, modalRows);
+      }
     } catch (e) {
       modalError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -285,6 +383,8 @@
     openModal = null;
     modalRows = [];
     modalError = null;
+    modalSummary = null;
+    modalSummaryLocked = false;
   }
 
   // Column sets per modal kind. Reused across "failed" and "queue" — only
@@ -330,10 +430,10 @@
     title: string; columns: Column[]; searchKeys: string[]; emptyText: string;
   }> = {
     'thumb-failed':   { title: 'Create thumbnails — Failed', columns: failedColumns, searchKeys: ['fileName', 'filePath', 'error'], emptyText: 'No failed thumbnails.' },
-    'thumb-queue':    { title: 'Create thumbnails — Queue',  columns: queueColumns,  searchKeys: ['fileName', 'filePath'],          emptyText: 'Queue is empty.' },
+    'thumb-queue':    { title: 'Videos without Thumbnails',  columns: queueColumns,  searchKeys: ['fileName', 'filePath'],          emptyText: 'Queue is empty.' },
     'md5-failed':     { title: 'Calculate MD5 — Failed',        columns: failedColumns, searchKeys: ['fileName', 'filePath', 'error'], emptyText: 'No failed MD5 hashes.' },
-    'md5-queue':      { title: 'Calculate MD5 — Queue',         columns: queueColumns,  searchKeys: ['fileName', 'filePath'],          emptyText: 'Queue is empty.' },
-    'md5-dups':       { title: 'Calculate MD5 — Duplicates',    columns: md5DupsColumns, searchKeys: ['fileName', 'filePath', 'md5'],  emptyText: 'No duplicate MD5 hashes found.' },
+    'md5-queue':      { title: 'Videos without MD5',         columns: queueColumns,  searchKeys: ['fileName', 'filePath'],          emptyText: 'Queue is empty.' },
+    'md5-dups':       { title: 'Duplicate Videos',           columns: md5DupsColumns, searchKeys: ['fileName', 'filePath', 'md5'],  emptyText: 'No duplicate MD5 hashes found.' },
     'imports-failed': { title: 'Imports — Failed',              columns: failedColumns, searchKeys: ['fileName', 'filePath', 'error'], emptyText: 'No failed imports in memory.' },
     'imports-queue':  { title: 'Imports — Queue',               columns: importQueueColumns, searchKeys: ['fileName', 'filePath', 'status'], emptyText: 'No active imports.' }
   };
@@ -545,7 +645,7 @@
         title="Scan the library now for any video missing a thumbnail."
       >
         {#if thumbScanBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
-        🔍 Scan Thumbnails (entire library)
+        🔍 Scan - Videos without thumbnails
       </button>
       <button
         type="button"
@@ -555,7 +655,7 @@
         title="Scan the library now for any video missing an MD5."
       >
         {#if md5ScanBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
-        🔍 Scan MD5 (entire library)
+        🔍 Scan - Videos without md5
       </button>
       <!-- Disabled until at least two videos have an MD5 — finding
            "duplicates" requires comparable hashes. md5Status.hashed is
@@ -569,7 +669,7 @@
           ? 'Find videos that share an MD5 hash.'
           : `Need at least 2 videos with an MD5 to compare (currently ${md5Status?.hashed ?? 0}).`}
       >
-        🔎 Check for dups by MD5
+        🔎 Scan - Duplicate Videos
       </button>
     </div>
   </section>
@@ -639,7 +739,7 @@
            MD5 for those files. Per-task counts come from the server-side
            join on Videos.ImportJobId. -->
       <ul class="space-y-3">
-        {#each importJobs as job (job.jobId)}
+        {#each sortedImportJobs as job (job.jobId)}
           {@const importTotal = job.totalFiles}
           {@const importDone = job.completedCount + job.failedCount + job.skippedCount}
           {@const importPercent = importTotal > 0 ? Math.round((importDone / importTotal) * 100) : 0}
@@ -1095,6 +1195,7 @@
       emptyText={cfg.emptyText}
       loading={modalLoading}
       error={modalError}
+      summary={modalSummary}
       onRefresh={refreshModal}
       onClose={closeModal}
     />

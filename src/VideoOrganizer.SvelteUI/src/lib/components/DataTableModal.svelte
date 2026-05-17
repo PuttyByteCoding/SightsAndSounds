@@ -45,6 +45,7 @@
     emptyText = 'Nothing here.',
     loading = false,
     error = null,
+    summary = null,
     onRefresh,
     onClose
   }: {
@@ -55,6 +56,11 @@
     emptyText?: string;
     loading?: boolean;
     error?: string | null;
+    // One-line summary rendered below the title — caller computes
+    // from the row set (e.g. "Found N duplicate groups across M
+    // videos") or sets a static string for action results
+    // (e.g. "Scan started — N videos queued"). Null suppresses.
+    summary?: string | null;
     onRefresh?: () => void;
     onClose: () => void;
   } = $props();
@@ -337,7 +343,7 @@
     role="presentation"
     onclick={(e) => e.stopPropagation()}
   >
-    <div class="flex items-center justify-between gap-3 mb-3 shrink-0">
+    <div class="flex items-center justify-between gap-3 shrink-0">
       <h3 class="font-bold text-lg">{title}</h3>
       <div class="flex items-center gap-2">
         {#if onRefresh}
@@ -349,6 +355,17 @@
         <button type="button" class="btn btn-sm btn-ghost" onclick={onClose}>×</button>
       </div>
     </div>
+    {#if summary}
+      <!-- Caller-provided one-line context (e.g. "Found N duplicate
+           groups across M videos", or "Scan started — N queued").
+           Sits between the title and the search row in an info-tinted
+           pill so it reads as a result banner rather than chrome. -->
+      <div class="alert alert-info text-sm py-2 mt-2 mb-3 shrink-0">
+        <span>{summary}</span>
+      </div>
+    {:else}
+      <div class="mb-3"></div>
+    {/if}
 
     <div class="flex items-center gap-2 mb-3 shrink-0">
       <input
