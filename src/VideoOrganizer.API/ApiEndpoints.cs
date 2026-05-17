@@ -531,7 +531,27 @@ public static class ApiEndpoints
     {
         var api = endpoints.MapGroup("/api");
 
-        api.MapGet("/logs", (LogBuffer buf) => Results.Ok(buf.Snapshot())).WithName("GetLogs");
+        // GET /logs — Windowed snapshot of the in-memory log buffer.
+        //
+        //   sinceMinutes  default 5, clamped [1, 2880] (=48h, the
+        //                 buffer's retention). The Logs page defaults
+        //                 to a 5-minute window because the previous
+        //                 "return everything" behavior was sending the
+        //                 full 48h of events on every poll, which got
+        //                 painfully slow on chatty boots.
+        //   take          default 1000, clamped [1, 5000]. Caps the
+        //                 response so an unusually loud minute can't
+        //                 dump megabytes per poll. The client polls
+        //                 every 2.5s anyway, so a 1000-entry cap is
+        //                 plenty of recent context. Older entries
+        //                 belong in Seq.
+        api.MapGet("/logs", (LogBuffer buf, int? sinceMinutes, int? take) =>
+        {
+            var minutes = Math.Clamp(sinceMinutes ?? 5, 1, 2880);
+            var limit = Math.Clamp(take ?? 1000, 1, 5000);
+            var since = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(minutes);
+            return Results.Ok(buf.SnapshotRecent(since, limit));
+        }).WithName("GetLogs");
 
         // === Runtime info ===================================================
         // Tells the frontend whether the request came in over the loopback

@@ -25,9 +25,12 @@ SCRATCH_*.md
 [Bb]in/
 [Oo]bj/
 [Ll]og/
-[Ll]ogs/
 [Rr]elease/
 [Dd]ebug/
+# [Ll]ogs/ removed — was accidentally swallowing the SvelteKit
+# `routes/logs/` page (the in-memory log viewer). Build pipelines
+# don't dump bare top-level `logs/` dirs in this repo, and `[Ll]og/`
+# above still covers MSBuild's per-project log folders.
 x64/
 x86/
 [Aa][Rr][Mm]/

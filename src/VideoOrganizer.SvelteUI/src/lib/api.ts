@@ -349,7 +349,17 @@ export const api = {
 
   // --- Logs / Imports ------------------------------------------------------
 
-  getLogs: () => request<LogEvent[]>('/api/logs'),
+  // Windowed snapshot of the in-memory log buffer. Defaults to the
+  // last 5 minutes capped at 1000 entries — matches the server-side
+  // defaults so omitting the opts is safe. Older / wider queries
+  // should go through Seq.
+  getLogs: (opts?: { sinceMinutes?: number; take?: number }) => {
+    const qs = new URLSearchParams();
+    if (opts?.sinceMinutes !== undefined) qs.set('sinceMinutes', String(opts.sinceMinutes));
+    if (opts?.take !== undefined) qs.set('take', String(opts.take));
+    const s = qs.toString();
+    return request<LogEvent[]>(`/api/logs${s ? `?${s}` : ''}`);
+  },
   getRuntimeInfo: () => request<RuntimeInfo>('/api/runtime-info'),
 
   browseImport: (path?: string | null) => {

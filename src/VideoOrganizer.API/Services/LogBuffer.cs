@@ -37,4 +37,30 @@ public sealed class LogBuffer
             return _events.ToArray();
         }
     }
+
+    /// <summary>
+    /// Returns up to <paramref name="take"/> of the most recent events
+    /// whose timestamp is at or after <paramref name="since"/>, in
+    /// ascending order. Walks the tail backwards so we can stop early
+    /// — the cost is O(min(take, eventsInWindow)) rather than O(N)
+    /// even on a buffer that's been collecting for 48 hours. Used by
+    /// GET /api/logs so the Logs page doesn't blow its first paint
+    /// budget on thousands of stale entries.
+    /// </summary>
+    public IReadOnlyList<LogEvent> SnapshotRecent(DateTimeOffset since, int take)
+    {
+        if (take <= 0) return Array.Empty<LogEvent>();
+        lock (_lock)
+        {
+            var result = new List<LogEvent>(Math.Min(take, _events.Count));
+            for (var node = _events.Last; node != null; node = node.Previous)
+            {
+                if (node.Value.Timestamp < since) break;
+                result.Add(node.Value);
+                if (result.Count >= take) break;
+            }
+            result.Reverse();
+            return result;
+        }
+    }
 }
