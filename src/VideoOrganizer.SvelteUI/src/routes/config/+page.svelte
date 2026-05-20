@@ -10,12 +10,13 @@
   import type { VideoSet } from '$lib/types';
   import {
     applySortClick,
+    ariaSort,
     compareBySortStack,
+    resizable,
     sortDir,
     sortPosition,
     loadColumnWidths,
     saveColumnWidths,
-    startColumnResize,
     type SortEntry,
   } from '$lib/tableUtils.svelte';
 
@@ -42,6 +43,17 @@
   function getSourcesWidth(col: string, fallback: number): number {
     return sourcesWidths[col] ?? fallback;
   }
+  // Explicit table width = sum of column widths. See DataTableModal for
+  // why this is required: `width: max-content` resolves from cell
+  // min-content, not from the colgroup, and would let column 1 refuse
+  // to shrink past its content's natural width.
+  const sourcesTotalWidth = $derived(
+    getSourcesWidth('name', 200)
+    + getSourcesWidth('path', 480)
+    + getSourcesWidth('enabled', 90)
+    + getSourcesWidth('status', 110)
+    + getSourcesWidth('actions', 200)
+  );
 
   // --- Skip settings ---
 
@@ -485,7 +497,7 @@
         <!-- See note in /purge: dropping min-width:100% prevents the
              browser from redistributing leftover space and making the
              first column appear unresizable to the left. -->
-        <table class="table table-sm" style="table-layout: fixed; width: max-content;">
+        <table class="table table-sm resizable-table" style="table-layout: fixed; width: {sourcesTotalWidth}px;">
           <colgroup>
             <col style="width: {getSourcesWidth('name', 200)}px" />
             <col style="width: {getSourcesWidth('path', 480)}px" />
@@ -501,12 +513,16 @@
                 { key: 'enabled' as const, label: 'Enabled', sortable: true, def: 90 },
                 { key: 'status' as const, label: 'Status', sortable: true, def: 110 },
               ] as col (col.key)}
-                <th class="relative select-none p-0">
+                <th
+                  class="relative select-none p-0"
+                  style="width: {getSourcesWidth(col.key, col.def)}px;"
+                  aria-sort={ariaSort(sourcesSort, col.key)}
+                >
                   <button
                     type="button"
                     class="w-full text-left px-3 py-2 hover:bg-base-200 cursor-pointer flex items-center gap-1"
                     onclick={(e) => onSourcesSortClick(col.key, e)}
-                    title="Click to sort. Shift-click for multi-column sort."
+                    title="Click to sort. Shift-click for multi-column sort. Double-click the right edge to auto-fit."
                   >
                     <span class="overflow-hidden text-ellipsis flex-1">{col.label}</span>
                     {#if sortDir(sourcesSort, col.key)}
@@ -517,19 +533,28 @@
                   </button>
                   <button
                     type="button"
-                    aria-label={`Resize ${col.label}`}
+                    aria-label={`Resize ${col.label} (double-click to auto-fit)`}
                     class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
-                    onmousedown={(e) => startColumnResize(e, getSourcesWidth(col.key, col.def), (w) => setSourcesWidth(col.key, w))}
+                    use:resizable={{
+                      getWidth: () => getSourcesWidth(col.key, col.def),
+                      setWidth: (w) => setSourcesWidth(col.key, w),
+                    }}
                   ></button>
                 </th>
               {/each}
-              <th class="relative select-none text-right">
+              <th
+                class="relative select-none text-right"
+                style="width: {getSourcesWidth('actions', 200)}px;"
+              >
                 Actions
                 <button
                   type="button"
-                  aria-label="Resize Actions"
+                  aria-label="Resize Actions (double-click to auto-fit)"
                   class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
-                  onmousedown={(e) => startColumnResize(e, getSourcesWidth('actions', 200), (w) => setSourcesWidth('actions', w))}
+                  use:resizable={{
+                    getWidth: () => getSourcesWidth('actions', 200),
+                    setWidth: (w) => setSourcesWidth('actions', w),
+                  }}
                 ></button>
               </th>
             </tr>

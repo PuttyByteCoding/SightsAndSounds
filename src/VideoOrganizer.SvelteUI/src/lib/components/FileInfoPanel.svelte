@@ -5,6 +5,11 @@
   // wraps it in a fixed-width sticky column. T toggles tags, I toggles
   // file-info; either or both can be open at once.
   import type { Video } from '$lib/types';
+  import {
+    loadColumnWidths,
+    saveColumnWidths,
+    resizable,
+  } from '$lib/tableUtils.svelte';
 
   interface Props {
     show: boolean;
@@ -12,6 +17,23 @@
   }
 
   let { show = $bindable(), video }: Props = $props();
+
+  // Persisted widths for the key/value table. The Field column was
+  // previously fixed at `w-40` (160px); Value flowed from content.
+  const WIDTHS_KEY = 'fileInfoPanel.kv';
+  let widths = $state<Record<string, number>>(loadColumnWidths(WIDTHS_KEY, {
+    field: 160,
+    value: 280,
+  }));
+  function setWidth(col: string, w: number) {
+    widths = { ...widths, [col]: w };
+    saveColumnWidths(WIDTHS_KEY, widths);
+  }
+  function getWidth(col: string, fallback: number): number {
+    return widths[col] ?? fallback;
+  }
+  // Explicit table width (see DataTableModal note re: max-content).
+  const totalWidth = $derived(getWidth('field', 160) + getWidth('value', 280));
 
   function formatBytes(bytes: number): string {
     if (!bytes || bytes <= 0) return '—';
@@ -58,9 +80,37 @@
 
     <div class="text-xs text-base-content/60 break-all">{video.filePath}</div>
 
-    <table class="table table-sm">
+    <table class="table table-sm resizable-table" style="table-layout: fixed; width: {totalWidth}px;">
+      <colgroup>
+        <col style="width: {getWidth('field', 160)}px" />
+        <col style="width: {getWidth('value', 280)}px" />
+      </colgroup>
+      <thead>
+        <tr>
+          {#each [
+            { key: 'field', label: 'Field', def: 160 },
+            { key: 'value', label: 'Value', def: 280 },
+          ] as col (col.key)}
+            <th
+              class="relative select-none p-0 text-left bg-base-200"
+              style="width: {getWidth(col.key, col.def)}px;"
+            >
+              <span class="block px-3 py-2 truncate text-xs uppercase tracking-wide text-base-content/70">{col.label}</span>
+              <button
+                type="button"
+                aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                use:resizable={{
+                  getWidth: () => getWidth(col.key, 100),
+                  setWidth: (w) => setWidth(col.key, w),
+                }}
+              ></button>
+            </th>
+          {/each}
+        </tr>
+      </thead>
       <tbody>
-        <tr><td class="font-medium w-40">File Name</td><td class="break-all">{video.fileName}</td></tr>
+        <tr><td class="font-medium">File Name</td><td class="break-all">{video.fileName}</td></tr>
         <tr><td class="font-medium">File Size</td><td>{formatBytes(video.fileSize)}</td></tr>
         <tr><td class="font-medium">MD5</td><td class="font-mono text-xs break-all">{orDash(video.md5)}</td></tr>
         <tr><td class="font-medium">Duration</td><td>{orDash(video.duration)}</td></tr>

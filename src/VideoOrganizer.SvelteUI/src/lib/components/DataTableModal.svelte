@@ -20,7 +20,9 @@
 <script lang="ts">
   import {
     applySortClick,
+    ariaSort,
     compareBySortStack,
+    resizable,
     sortDir,
     sortPosition,
     type SortEntry,
@@ -114,33 +116,36 @@
     catch { /* quota / privacy mode — non-fatal */ }
   }
 
-  // Resize: mousedown on a column's right edge, track movement, commit on
-  // mouseup. Min width 60px so a column doesn't disappear entirely.
-  let resizing: { key: string; startX: number; startWidth: number } | null = null;
-
-  function startResize(e: MouseEvent, key: string) {
-    e.preventDefault();
-    e.stopPropagation();
-    resizing = { key, startX: e.clientX, startWidth: widths[key] ?? defaultWidthFor(columns.find((c) => c.key === key)!) };
-    window.addEventListener('mousemove', onResize);
-    window.addEventListener('mouseup', endResize);
+  // Reactive width setter wired through `use:resizable` below. The action
+  // calls this on every mousemove during a drag and once after a double-
+  // click auto-fit, so we reassign the whole object (Svelte 5 proxies
+  // track top-level writes most reliably) and then persist.
+  function setWidth(key: string, w: number) {
+    widths = { ...widths, [key]: w };
+    saveWidths();
+  }
+  function widthFor(col: Column): number {
+    return widths[col.key] ?? defaultWidthFor(col);
   }
 
-  function onResize(e: MouseEvent) {
-    if (!resizing) return;
-    const next = { ...widths };
-    next[resizing.key] = Math.max(60, resizing.startWidth + (e.clientX - resizing.startX));
-    widths = next;
-  }
-
-  function endResize() {
-    window.removeEventListener('mousemove', onResize);
-    window.removeEventListener('mouseup', endResize);
-    if (resizing) {
-      saveWidths();
-      resizing = null;
-    }
-  }
+  // Explicit pixel width for the <table>, derived from the sum of all
+  // column widths. This is the key to making `table-layout: fixed`
+  // actually honor every <col>'s width — including the first.
+  //
+  // The previous version used `style="width: max-content"`, which
+  // sounds equivalent ("be as wide as your colgroup says") but isn't:
+  // browsers compute a table's max-content from its *cells'* intrinsic
+  // sizes, not from the colgroup. So if column 1 had a cell whose
+  // unbroken text was 300px wide while the colgroup said 240px, the
+  // table's effective width became 300px-driven, the cell rendered
+  // 300px, and the first column appeared unshrinkable.
+  //
+  // Setting `width: {totalWidth}px` removes that ambiguity entirely —
+  // the table is exactly the sum of declared column widths, and the
+  // browser has no leftover budget to redistribute back into column 1.
+  const totalWidth = $derived(
+    columns.reduce((s, c) => s + (widths[c.key] ?? defaultWidthFor(c)), 0)
+  );
 
   // ---- Sort + filter ----------------------------------------------------
 
@@ -390,15 +395,34 @@
     {#if rows.length === 0 && !loading}
       <div class="text-sm text-base-content/60 italic p-4">{emptyText}</div>
     {:else}
-      <!-- flex-1 + overflow-auto: takes whatever vertical space is left
-           after header/search rows, scrolls internally so the modal box's
-           own resize boundary stays where the user dragged it. -->
-      <div class="flex-1 min-h-0 overflow-auto border border-base-300 rounded">
-        <!-- See note in /purge: min-width:100% triggers space
-             redistribution that prevents the first column from
-             shrinking. Plain width:max-content keeps the table sized to
-             exactly the sum of col widths. -->
-        <table class="table table-xs table-pin-rows" style="table-layout: fixed; width: max-content;">
+      <!-- flex-1 + overflow-auto: takes the remaining vertical space
+           after header/search rows; scrolls internally so the modal
+           box's own resize boundary stays put. min-w-0 lets the flex
+           item shrink below its min-content size — without it, the
+           container would refuse to be narrower than the table's
+           widest unbreakable cell, which would re-introduce the
+           first-column-won't-shrink symptom one level up. -->
+      <div class="flex-1 min-h-0 min-w-0 overflow-auto border border-base-300 rounded">
+        <!--
+          Why `width: {totalWidth}px` and not `width: max-content`:
+            max-content for a table is computed from cells' intrinsic
+            sizes, not from <colgroup>. If a cell's natural text width
+            exceeds the colgroup width, max-content returns the larger
+            value — and that's exactly what was happening for column 1
+            (long fileName strings), making the first column appear
+            unshrinkable while later columns worked fine.
+            Setting an explicit pixel width derived from the widths
+            state removes the ambiguity: the table is exactly the sum
+            of column widths, no more, no less.
+
+          Widths are applied in TWO places (colgroup AND first-row
+          <th>) so the layout still resolves correctly on browsers
+          that prefer one source over the other.
+        -->
+        <table
+          class="table table-xs table-pin-rows resizable-table"
+          style="table-layout: fixed; width: {totalWidth}px;"
+        >
           <colgroup>
             {#each columns as col (col.key)}
               <col style="width: {widths[col.key] ?? defaultWidthFor(col)}px" />
@@ -409,14 +433,18 @@
               {#each columns as col (col.key)}
                 {@const dir = sortDir(sortStack, col.key)}
                 {@const pos = sortPosition(sortStack, col.key)}
-                <th class="text-left whitespace-nowrap relative select-none p-0">
+                <th
+                  class="text-left whitespace-nowrap relative select-none p-0"
+                  style="width: {widths[col.key] ?? defaultWidthFor(col)}px; min-width: 0;"
+                  aria-sort={ariaSort(sortStack, col.key)}
+                >
                   <!-- Header text doubles as a sort button. Click cycles
                        primary asc → desc → cleared; shift-click adds the
                        column as a secondary/tertiary sort. -->
                   <button
                     type="button"
                     class="w-full text-left px-3 py-2 hover:bg-base-200 cursor-pointer flex items-center gap-1"
-                    title="Click to sort. Shift-click for multi-column sort."
+                    title="Click to sort. Shift-click for multi-column sort. Double-click the right edge to auto-fit."
                     onclick={(e) => onHeaderClick(col.key, e)}
                   >
                     <span class="overflow-hidden text-ellipsis flex-1">{col.label}</span>
@@ -426,13 +454,16 @@
                       </span>
                     {/if}
                   </button>
-                  <!-- Resize handle. Wider hit target than visible width so
-                       it's easy to grab. Visible only on hover. -->
+                  <!-- Resize handle. Double-click to auto-fit the column
+                       to its widest cell content. -->
                   <button
                     type="button"
-                    aria-label={`Resize ${col.label}`}
-                    class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
-                    onmousedown={(e) => startResize(e, col.key)}
+                    aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                    class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-10"
+                    use:resizable={{
+                      getWidth: () => widthFor(col),
+                      setWidth: (w) => setWidth(col.key, w),
+                    }}
                   ></button>
                 </th>
               {/each}
@@ -443,6 +474,7 @@
               <tr>
                 {#each columns as col (col.key)}
                   <td
+                    style="min-width: 0;"
                     class:font-mono={col.mono}
                     class:break-all={col.wide && col.mono}
                     class:break-words={col.wide && !col.mono}

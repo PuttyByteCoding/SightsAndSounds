@@ -10,6 +10,11 @@
   import { onDestroy, onMount } from 'svelte';
   import { api, ApiError } from '$lib/api';
   import type { LogEvent } from '$lib/types';
+  import {
+    loadColumnWidths,
+    saveColumnWidths,
+    resizable,
+  } from '$lib/tableUtils.svelte';
 
   const LEVELS = ['Trace', 'Debug', 'Information', 'Warning', 'Error', 'Critical'] as const;
   type Level = (typeof LEVELS)[number];
@@ -51,6 +56,32 @@
   // Tail container: scroll to bottom after each poll unless the user pauses
   // or scrolls up.
   let tailEl: HTMLDivElement | null = $state(null);
+
+  // Column widths persisted to localStorage. Defaults mirror the prior
+  // hard-coded `w-24 / w-24 / w-48` Tailwind values for time/level/category
+  // (24 * 4 = 96px, 48 * 4 = 192px). Message gets a generous default since
+  // it's the actual payload column.
+  const WIDTHS_KEY = 'logs.tail';
+  let widths = $state<Record<string, number>>(loadColumnWidths(WIDTHS_KEY, {
+    time: 96,
+    level: 96,
+    category: 192,
+    message: 900,
+  }));
+  function setWidth(col: string, w: number) {
+    widths = { ...widths, [col]: w };
+    saveColumnWidths(WIDTHS_KEY, widths);
+  }
+  function getWidth(col: string, fallback: number): number {
+    return widths[col] ?? fallback;
+  }
+  // Explicit table width (see DataTableModal note re: max-content).
+  const totalWidth = $derived(
+    getWidth('time', 96)
+    + getWidth('level', 96)
+    + getWidth('category', 192)
+    + getWidth('message', 900)
+  );
 
   async function load() {
     polling = true;
@@ -265,17 +296,53 @@
           {events.length === 0 ? 'No log events yet.' : 'No events match the current filter.'}
         </div>
       {:else}
-        <table class="table table-compact table-zebra w-full">
+        <!-- table-layout:fixed lets the colgroup widths apply so users
+             can drag column borders to resize. The thead is sticky to
+             the scroll container so labels + resize handles stay
+             visible while tailing. -->
+        <table class="table table-compact table-zebra resizable-table" style="table-layout: fixed; width: {totalWidth}px;">
+          <colgroup>
+            <col style="width: {getWidth('time', 96)}px" />
+            <col style="width: {getWidth('level', 96)}px" />
+            <col style="width: {getWidth('category', 192)}px" />
+            <col style="width: {getWidth('message', 900)}px" />
+          </colgroup>
+          <thead class="sticky top-0 z-10 bg-base-200 shadow-[0_1px_0_0_var(--color-base-300)]">
+            <tr>
+              {#each [
+                { key: 'time', label: 'Time', def: 96 },
+                { key: 'level', label: 'Level', def: 96 },
+                { key: 'category', label: 'Category', def: 192 },
+                { key: 'message', label: 'Message', def: 900 },
+              ] as col (col.key)}
+                <th
+                  class="relative select-none p-0 text-left bg-base-200"
+                  style="width: {getWidth(col.key, col.def)}px;"
+                >
+                  <span class="block px-3 py-2 truncate text-xs uppercase tracking-wide text-base-content/70">{col.label}</span>
+                  <button
+                    type="button"
+                    aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                    class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                    use:resizable={{
+                      getWidth: () => getWidth(col.key, 100),
+                      setWidth: (w) => setWidth(col.key, w),
+                    }}
+                  ></button>
+                </th>
+              {/each}
+            </tr>
+          </thead>
           <tbody>
             {#each visible as e (e.timestamp + ':' + e.category + ':' + e.message)}
               <tr>
-                <td class="w-24 align-top text-base-content/60 whitespace-nowrap">
+                <td class="align-top text-base-content/60 whitespace-nowrap">
                   {formatTime(e.timestamp)}
                 </td>
-                <td class="w-24 align-top">
+                <td class="align-top">
                   <span class={levelBadgeClass(e.level)}>{e.level}</span>
                 </td>
-                <td class="w-48 align-top text-base-content/70 truncate" title={e.category}>
+                <td class="align-top text-base-content/70 truncate" title={e.category}>
                   {#each highlight(shortCategory(e.category), searchInput) as seg (seg.text)}
                     {#if seg.match}<mark class="bg-warning/50 rounded px-0.5">{seg.text}</mark>{:else}{seg.text}{/if}
                   {/each}

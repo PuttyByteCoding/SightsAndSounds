@@ -23,6 +23,54 @@
     MissingVideoFile, ExtraDiskFile, VideoSet,
     Md5Candidate, Md5CheckResult
   } from '$lib/types';
+  import {
+    loadColumnWidths,
+    saveColumnWidths,
+    resizable,
+  } from '$lib/tableUtils.svelte';
+
+  // Column widths for the five diagnostic tables on this page. One
+  // map per table, persisted under distinct keys so users can shape
+  // each independently. Defaults mirror the prior inline `w-24` /
+  // `w-32` Tailwind classes for fixed columns, plus reasonable
+  // estimates for the previously content-sized text columns.
+  const TABLE_DEFAULTS: Record<string, Record<string, number>> = {
+    sources:    { name: 200, path: 480, enabled: 96, reachable: 128 },
+    missing:    { source: 160, file: 480, size: 96 },
+    extras:     { source: 160, file: 480, size: 96 },
+    md5Match:   { source: 160, file: 480, size: 96, stored: 280, computed: 280 },
+    md5Errors:  { source: 160, file: 480, error: 400 },
+  };
+  // Top-level reassignment pattern (see history/+page.svelte) — each
+  // setW call replaces the per-table map AND the outer object so
+  // Svelte's proxy registers the write at the column granularity
+  // that drives the colgroup re-render.
+  let tableW = $state<Record<string, Record<string, number>>>(
+    Object.fromEntries(
+      Object.entries(TABLE_DEFAULTS).map(([k, d]) =>
+        [k, loadColumnWidths(`data-validation.${k}`, d)]
+      )
+    )
+  );
+  function setW(table: string, col: string, w: number) {
+    const next = { ...(tableW[table] ?? {}), [col]: w };
+    tableW = { ...tableW, [table]: next };
+    saveColumnWidths(`data-validation.${table}`, next);
+  }
+  function getW(table: string, col: string, fallback: number): number {
+    return tableW[table]?.[col] ?? fallback;
+  }
+  // Per-table explicit pixel widths (sum of declared columns). See
+  // DataTableModal for why `width: max-content` doesn't honor the
+  // colgroup — that fix lives here too for every diagnostic table.
+  const totalW: Record<string, number> = $derived(
+    Object.fromEntries(
+      Object.entries(TABLE_DEFAULTS).map(([table, defs]) => [
+        table,
+        Object.entries(defs).reduce((s, [col, def]) => s + getW(table, col, def), 0),
+      ])
+    )
+  );
 
   // --- Sources ----------------------------------------------------------
   let sources = $state<VideoSet[]>([]);
@@ -228,13 +276,38 @@
     {#if sources.length === 0 && !sourcesLoading}
       <div class="text-base-content/60 italic">No sources configured. Add one on the Configuration page.</div>
     {:else if sources.length > 0}
-      <table class="table table-sm">
+      <div class="overflow-x-auto">
+        <table class="table table-sm resizable-table" style="table-layout: fixed; width: {totalW.sources}px;">
+          <colgroup>
+            <col style="width: {getW('sources', 'name', 200)}px" />
+            <col style="width: {getW('sources', 'path', 480)}px" />
+            <col style="width: {getW('sources', 'enabled', 96)}px" />
+            <col style="width: {getW('sources', 'reachable', 128)}px" />
+          </colgroup>
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Path</th>
-            <th class="text-center w-24">Enabled</th>
-            <th class="text-center w-32">Reachable</th>
+            {#each [
+              { key: 'name', label: 'Name', align: 'left', def: 200 },
+              { key: 'path', label: 'Path', align: 'left', def: 480 },
+              { key: 'enabled', label: 'Enabled', align: 'center', def: 96 },
+              { key: 'reachable', label: 'Reachable', align: 'center', def: 128 },
+            ] as col (col.key)}
+              <th
+                class="relative select-none p-0 {col.align === 'center' ? 'text-center' : 'text-left'}"
+                style="width: {getW('sources', col.key, col.def)}px;"
+              >
+                <span class="block px-3 py-2 truncate">{col.label}</span>
+                <button
+                  type="button"
+                  aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                  class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                  use:resizable={{
+                    getWidth: () => getW('sources', col.key, 100),
+                    setWidth: (w) => setW('sources', col.key, w),
+                  }}
+                ></button>
+              </th>
+            {/each}
           </tr>
         </thead>
         <tbody>
@@ -268,7 +341,8 @@
             </tr>
           {/each}
         </tbody>
-      </table>
+        </table>
+      </div>
     {/if}
   </section>
 
@@ -322,12 +396,35 @@
           {missing.length} missing · {formatBytes(missingTotalBytes)} total
         </div>
         <div class="overflow-x-auto">
-          <table class="table table-sm">
+          <table class="table table-sm resizable-table" style="table-layout: fixed; width: {totalW.missing}px;">
+            <colgroup>
+              <col style="width: {getW('missing', 'source', 160)}px" />
+              <col style="width: {getW('missing', 'file', 480)}px" />
+              <col style="width: {getW('missing', 'size', 96)}px" />
+            </colgroup>
             <thead>
               <tr>
-                <th>Source</th>
-                <th>File</th>
-                <th class="text-right w-24">Size</th>
+                {#each [
+                  { key: 'source', label: 'Source', align: 'left', def: 160 },
+                  { key: 'file', label: 'File', align: 'left', def: 480 },
+                  { key: 'size', label: 'Size', align: 'right', def: 96 },
+                ] as col (col.key)}
+                  <th
+                    class="relative select-none p-0 {col.align === 'right' ? 'text-right' : 'text-left'}"
+                    style="width: {getW('missing', col.key, col.def)}px;"
+                  >
+                    <span class="block px-3 py-2 truncate">{col.label}</span>
+                    <button
+                      type="button"
+                      aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                      class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                      use:resizable={{
+                        getWidth: () => getW('missing', col.key, 100),
+                        setWidth: (w) => setW('missing', col.key, w),
+                      }}
+                    ></button>
+                  </th>
+                {/each}
               </tr>
             </thead>
             <tbody>
@@ -425,12 +522,35 @@
           {extras.length} extra file{extras.length === 1 ? '' : 's'} · {formatBytes(extrasTotalBytes)} total
         </div>
         <div class="overflow-x-auto">
-          <table class="table table-sm">
+          <table class="table table-sm resizable-table" style="table-layout: fixed; width: {totalW.extras}px;">
+            <colgroup>
+              <col style="width: {getW('extras', 'source', 160)}px" />
+              <col style="width: {getW('extras', 'file', 480)}px" />
+              <col style="width: {getW('extras', 'size', 96)}px" />
+            </colgroup>
             <thead>
               <tr>
-                <th>Source</th>
-                <th>File</th>
-                <th class="text-right w-24">Size</th>
+                {#each [
+                  { key: 'source', label: 'Source', align: 'left', def: 160 },
+                  { key: 'file', label: 'File', align: 'left', def: 480 },
+                  { key: 'size', label: 'Size', align: 'right', def: 96 },
+                ] as col (col.key)}
+                  <th
+                    class="relative select-none p-0 {col.align === 'right' ? 'text-right' : 'text-left'}"
+                    style="width: {getW('extras', col.key, col.def)}px;"
+                  >
+                    <span class="block px-3 py-2 truncate">{col.label}</span>
+                    <button
+                      type="button"
+                      aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                      class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                      use:resizable={{
+                        getWidth: () => getW('extras', col.key, 100),
+                        setWidth: (w) => setW('extras', col.key, w),
+                      }}
+                    ></button>
+                  </th>
+                {/each}
               </tr>
             </thead>
             <tbody>
@@ -566,14 +686,40 @@
       {#if md5Mismatches.length > 0}
         <div class="overflow-x-auto">
           <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1">Mismatches</div>
-          <table class="table table-sm">
+          <table class="table table-sm resizable-table" style="table-layout: fixed; width: {totalW.md5Match}px;">
+            <colgroup>
+              <col style="width: {getW('md5Match', 'source', 160)}px" />
+              <col style="width: {getW('md5Match', 'file', 480)}px" />
+              <col style="width: {getW('md5Match', 'size', 96)}px" />
+              <col style="width: {getW('md5Match', 'stored', 280)}px" />
+              <col style="width: {getW('md5Match', 'computed', 280)}px" />
+            </colgroup>
             <thead>
               <tr>
-                <th>Source</th>
-                <th>File</th>
-                <th class="text-right w-24">Size</th>
-                <th>Stored MD5</th>
-                <th>Computed MD5</th>
+                {#each [
+                  { key: 'source', label: 'Source', align: 'left', max: undefined, def: 160 },
+                  { key: 'file', label: 'File', align: 'left', max: undefined, def: 480 },
+                  { key: 'size', label: 'Size', align: 'right', max: 200, def: 96 },
+                  { key: 'stored', label: 'Stored MD5', align: 'left', max: 400, def: 280 },
+                  { key: 'computed', label: 'Computed MD5', align: 'left', max: 400, def: 280 },
+                ] as col (col.key)}
+                  <th
+                    class="relative select-none p-0 {col.align === 'right' ? 'text-right' : 'text-left'}"
+                    style="width: {getW('md5Match', col.key, col.def)}px;"
+                  >
+                    <span class="block px-3 py-2 truncate">{col.label}</span>
+                    <button
+                      type="button"
+                      aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                      class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                      use:resizable={{
+                        getWidth: () => getW('md5Match', col.key, 100),
+                        setWidth: (w) => setW('md5Match', col.key, w),
+                        maxWidth: col.max,
+                      }}
+                    ></button>
+                  </th>
+                {/each}
               </tr>
             </thead>
             <tbody>
@@ -609,12 +755,35 @@
       {#if md5Errors.length > 0}
         <div class="overflow-x-auto">
           <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1 mt-3">Errors</div>
-          <table class="table table-sm">
+          <table class="table table-sm resizable-table" style="table-layout: fixed; width: {totalW.md5Errors}px;">
+            <colgroup>
+              <col style="width: {getW('md5Errors', 'source', 160)}px" />
+              <col style="width: {getW('md5Errors', 'file', 480)}px" />
+              <col style="width: {getW('md5Errors', 'error', 400)}px" />
+            </colgroup>
             <thead>
               <tr>
-                <th>Source</th>
-                <th>File</th>
-                <th>Error</th>
+                {#each [
+                  { key: 'source', label: 'Source', align: 'left', def: 160 },
+                  { key: 'file', label: 'File', align: 'left', def: 480 },
+                  { key: 'error', label: 'Error', align: 'left', def: 400 },
+                ] as col (col.key)}
+                  <th
+                    class="relative select-none p-0 text-left"
+                    style="width: {getW('md5Errors', col.key, col.def)}px;"
+                  >
+                    <span class="block px-3 py-2 truncate">{col.label}</span>
+                    <button
+                      type="button"
+                      aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                      class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                      use:resizable={{
+                        getWidth: () => getW('md5Errors', col.key, 100),
+                        setWidth: (w) => setW('md5Errors', col.key, w),
+                      }}
+                    ></button>
+                  </th>
+                {/each}
               </tr>
             </thead>
             <tbody>

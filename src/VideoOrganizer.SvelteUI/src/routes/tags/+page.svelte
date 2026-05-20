@@ -7,9 +7,13 @@
   import TagEditModal from '$lib/components/TagEditModal.svelte';
   import {
     applySortClick,
+    ariaSort,
     compareBySortStack,
+    resizable,
     sortDir,
     sortPosition,
+    loadColumnWidths,
+    saveColumnWidths,
     type SortEntry,
   } from '$lib/tableUtils.svelte';
 
@@ -133,6 +137,27 @@
     sortStack = applySortClick(sortStack, col, e.shiftKey);
   }
 
+  // Column widths persisted to localStorage. Defaults mirror the prior
+  // hard-coded `w-8` (favorite) / `w-44` (actions) Tailwind values
+  // (8*4 = 32, 44*4 = 176); the data columns inherited their widths
+  // from content before, so the new defaults are reasonable estimates.
+  const WIDTHS_KEY = 'tags.list';
+  let widths = $state<Record<string, number>>(loadColumnWidths(WIDTHS_KEY, {
+    merge: 40,
+    favorite: 48,
+    name: 240,
+    aliases: 320,
+    videos: 96,
+    actions: 176,
+  }));
+  function setWidth(col: string, w: number) {
+    widths = { ...widths, [col]: w };
+    saveColumnWidths(WIDTHS_KEY, widths);
+  }
+  function getWidth(col: string, fallback: number): number {
+    return widths[col] ?? fallback;
+  }
+
   // Per-column getters for compareBySortStack. Favorite is mapped
   // to a number so the boolean sort puts starred tags ahead of
   // non-starred (or behind, on desc). Aliases compares the joined
@@ -165,6 +190,18 @@
   const similarClusters = $derived(similarOnly ? clusterSimilar(filteredTags) : []);
 
   let mergeMode = $state(false);
+  // Explicit table width = sum of column widths (see DataTableModal
+  // note re: max-content). The merge column is conditional — only
+  // included in the sum when mergeMode is on, matching the conditional
+  // <col> in the colgroup below.
+  const totalWidth = $derived(
+    (mergeMode ? getWidth('merge', 40) : 0)
+    + getWidth('favorite', 48)
+    + getWidth('name', 240)
+    + getWidth('aliases', 320)
+    + getWidth('videos', 96)
+    + getWidth('actions', 176)
+  );
   let mergeSelected = $state<Set<string>>(new Set());
   let mergeTargetId = $state<string>('');
   // Optional: name of a brand-new tag to create as the merge target. When
@@ -664,7 +701,19 @@
           </tr>
         {/snippet}
 
-        <table class="table table-sm">
+        <!-- table-layout:fixed lets the colgroup widths apply so users
+             can drag column borders to resize. Without it, the cells
+             negotiate their widths from content and the colgroup is
+             ignored. -->
+        <table class="table table-sm resizable-table" style="table-layout: fixed; width: {totalWidth}px;">
+          <colgroup>
+            {#if mergeMode}<col style="width: {getWidth('merge', 40)}px" />{/if}
+            <col style="width: {getWidth('favorite', 48)}px" />
+            <col style="width: {getWidth('name', 240)}px" />
+            <col style="width: {getWidth('aliases', 320)}px" />
+            <col style="width: {getWidth('videos', 96)}px" />
+            <col style="width: {getWidth('actions', 176)}px" />
+          </colgroup>
           <!-- thead is position:sticky on the parent (the page's
                natural document scroll). Each <th> gets a bg-base-200
                background and a bottom border so the header still
@@ -675,18 +724,33 @@
                (the BFS group order would just get scrambled). -->
           <thead class="sticky top-0 z-10 bg-base-200 shadow-[0_1px_0_0_var(--color-base-300)]">
             <tr>
-              {#if mergeMode}<th class="w-8 bg-base-200"></th>{/if}
+              {#if mergeMode}
+                <th class="relative bg-base-200 select-none p-0" style="width: {getWidth('merge', 40)}px;">
+                  <span class="block px-2 py-2"></span>
+                  <button
+                    type="button"
+                    aria-label="Resize merge column (double-click to auto-fit)"
+                    class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                    use:resizable={{
+                      getWidth: () => getWidth('merge', 40),
+                      setWidth: (w) => setWidth('merge', w),
+                    }}
+                  ></button>
+                </th>
+              {/if}
               {#each [
-                { key: 'favorite' as const, label: '★', align: 'center' as const, hint: 'Favorite' },
-                { key: 'name' as const, label: 'Name', align: 'left' as const, hint: null },
-                { key: 'aliases' as const, label: 'Aliases', align: 'left' as const, hint: null },
-                { key: 'videos' as const, label: 'Videos', align: 'right' as const, hint: null },
+                { key: 'favorite' as const, label: '★', align: 'center' as const, hint: 'Favorite', def: 48 },
+                { key: 'name' as const, label: 'Name', align: 'left' as const, hint: null, def: 240 },
+                { key: 'aliases' as const, label: 'Aliases', align: 'left' as const, hint: null, def: 320 },
+                { key: 'videos' as const, label: 'Videos', align: 'right' as const, hint: null, def: 96 },
               ] as col (col.key)}
                 {@const dir = sortDir(sortStack, col.key)}
                 {@const pos = sortPosition(sortStack, col.key)}
                 <th
-                  class="bg-base-200 select-none p-0 {col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'} {col.key === 'favorite' ? 'w-8' : ''}"
-                  title={col.hint ?? `Click to sort. Shift-click for multi-column sort.`}
+                  class="relative bg-base-200 select-none p-0 {col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'}"
+                  style="width: {getWidth(col.key, col.def)}px;"
+                  aria-sort={similarOnly ? 'none' : ariaSort(sortStack, col.key)}
+                  title={col.hint ?? `Click to sort. Shift-click for multi-column sort. Double-click the right edge to auto-fit.`}
                 >
                   <button
                     type="button"
@@ -704,9 +768,29 @@
                       </span>
                     {/if}
                   </button>
+                  <button
+                    type="button"
+                    aria-label={`Resize ${col.label} (double-click to auto-fit)`}
+                    class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                    use:resizable={{
+                      getWidth: () => getWidth(col.key, 100),
+                      setWidth: (w) => setWidth(col.key, w),
+                    }}
+                  ></button>
                 </th>
               {/each}
-              <th class="w-44 bg-base-200"></th>
+              <th class="relative bg-base-200 select-none p-0" style="width: {getWidth('actions', 176)}px;">
+                <span class="block px-3 py-2"></span>
+                <button
+                  type="button"
+                  aria-label="Resize actions column (double-click to auto-fit)"
+                  class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
+                  use:resizable={{
+                    getWidth: () => getWidth('actions', 176),
+                    setWidth: (w) => setWidth('actions', w),
+                  }}
+                ></button>
+              </th>
             </tr>
           </thead>
           <tbody>

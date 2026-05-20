@@ -7,12 +7,13 @@
   import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
   import {
     applySortClick,
+    ariaSort,
     compareBySortStack,
+    resizable,
     sortDir,
     sortPosition,
     loadColumnWidths,
     saveColumnWidths,
-    startColumnResize,
     type SortEntry,
   } from '$lib/tableUtils.svelte';
 
@@ -52,6 +53,13 @@
   function getWidth(col: string, fallback: number): number {
     return widths[col] ?? fallback;
   }
+  // Explicit pixel table width (see DataTableModal note).
+  const totalWidth = $derived(
+    getWidth('preview', 176)
+    + getWidth('file', 480)
+    + getWidth('size', 96)
+    + getWidth('actions', 360)
+  );
 
   const sortedVideos = $derived.by(() => {
     if (sortStack.length === 0) return videos;
@@ -412,7 +420,7 @@
       {videos.length} video{videos.length === 1 ? '' : 's'} · {formatBytes(totalBytes)} total
     </div>
     <div class="overflow-x-auto border border-base-300 rounded">
-      <table class="table table-sm" style="table-layout: fixed; width: max-content;">
+      <table class="table table-sm resizable-table" style="table-layout: fixed; width: {totalWidth}px;">
         <colgroup>
           <col style="width: {getWidth('preview', 176)}px" />
           <col style="width: {getWidth('file', 480)}px" />
@@ -421,25 +429,32 @@
         </colgroup>
         <thead>
           <tr>
-            <th class="relative select-none">
+            <th class="relative select-none" style="width: {getWidth('preview', 176)}px;">
               Preview
               <button
                 type="button"
-                aria-label="Resize Preview"
+                aria-label="Resize Preview (double-click to auto-fit)"
                 class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
-                onmousedown={(e) => startColumnResize(e, getWidth('preview', 176), (w) => setWidth('preview', w))}
+                use:resizable={{
+                  getWidth: () => getWidth('preview', 176),
+                  setWidth: (w) => setWidth('preview', w),
+                }}
               ></button>
             </th>
             {#each [
               { key: 'file' as const, label: 'File', align: 'left' as const, def: 480 },
               { key: 'size' as const, label: 'Size', align: 'right' as const, def: 96 },
             ] as col (col.key)}
-              <th class="relative select-none p-0 {col.align === 'right' ? 'text-right' : ''}">
+              <th
+                class="relative select-none p-0 {col.align === 'right' ? 'text-right' : ''}"
+                style="width: {getWidth(col.key, col.def)}px;"
+                aria-sort={ariaSort(sortStack, col.key)}
+              >
                 <button
                   type="button"
                   class="w-full px-3 py-2 hover:bg-base-200 cursor-pointer flex items-center gap-1 {col.align === 'right' ? 'justify-end' : ''}"
                   onclick={(e) => onSortClick(col.key, e)}
-                  title="Click to sort. Shift-click for multi-column sort."
+                  title="Click to sort. Shift-click for multi-column sort. Double-click the right edge to auto-fit."
                 >
                   <span class="overflow-hidden text-ellipsis {col.align === 'left' ? 'flex-1 text-left' : ''}">{col.label}</span>
                   {#if sortDir(sortStack, col.key)}
@@ -450,19 +465,25 @@
                 </button>
                 <button
                   type="button"
-                  aria-label={`Resize ${col.label}`}
+                  aria-label={`Resize ${col.label} (double-click to auto-fit)`}
                   class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
-                  onmousedown={(e) => startColumnResize(e, getWidth(col.key, col.def), (w) => setWidth(col.key, w))}
+                  use:resizable={{
+                    getWidth: () => getWidth(col.key, col.def),
+                    setWidth: (w) => setWidth(col.key, w),
+                  }}
                 ></button>
               </th>
             {/each}
-            <th class="relative select-none text-right">
+            <th class="relative select-none text-right" style="width: {getWidth('actions', 360)}px;">
               Actions
               <button
                 type="button"
-                aria-label="Resize Actions"
+                aria-label="Resize Actions (double-click to auto-fit)"
                 class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
-                onmousedown={(e) => startColumnResize(e, getWidth('actions', 360), (w) => setWidth('actions', w))}
+                use:resizable={{
+                  getWidth: () => getWidth('actions', 360),
+                  setWidth: (w) => setWidth('actions', w),
+                }}
               ></button>
             </th>
           </tr>
