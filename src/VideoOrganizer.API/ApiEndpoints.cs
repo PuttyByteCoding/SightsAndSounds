@@ -87,6 +87,19 @@ public static class ApiEndpoints
         return ip != null && IPAddress.IsLoopback(ip);
     }
 
+    // Escape the three Postgres LIKE/ILIKE metacharacters so a raw user
+    // query like "50%_off" matches the literal string instead of being
+    // interpreted as wildcards. Backslash also needs escaping because
+    // we use it as the escape character (Npgsql's default).
+    //
+    // Shared by /api/search and POST /api/videos/filter (when its
+    // SearchQuery field is set) — both wrap the result in %…% for a
+    // substring match against trigram-indexed columns.
+    private static string EscapeLikePattern(string s) => s
+        .Replace("\\", "\\\\")
+        .Replace("%",  "\\%")
+        .Replace("_",  "\\_");
+
     // Reload a Video from the DB with all DTO-shaped navigation
     // properties, then project to VideoDto. Used by the mark/unmark
     // endpoints (mark-for-deletion, mark-playback-issue, …) so they can
@@ -552,6 +565,146 @@ public static class ApiEndpoints
             var since = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(minutes);
             return Results.Ok(buf.SnapshotRecent(since, limit));
         }).WithName("GetLogs");
+
+        // === Global search ==================================================
+        // Powers the Ctrl+K command palette on the frontend. v1 returns
+        // matching videos; v2 will add tag / source / etc. results behind
+        // additional [JsonDerivedType] entries on SearchResult.
+        //
+        // Query string is treated as a single substring (case-insensitive).
+        // Matches against four trigram-indexed fields (FileName, FilePath,
+        // Notes, Md5) plus tag names via the VideoTags JOIN. Pg_trgm GIN
+        // indexes (see migration 20260520010000_AddSearchTrigramIndexes)
+        // keep this subsecond at 100k+ rows; without them this would be a
+        // sequential scan.
+        //
+        // v2 hooks already present in the wire contract:
+        //   · `kinds` query param accepts a CSV allow-list. v1 only honors
+        //     "video"; the parameter is parsed and validated now so v2
+        //     can add "tag", "source", etc. without a breaking change.
+        //   · The SearchResult union is open — v2 just adds a
+        //     [JsonDerivedType] on SearchResult and a new result-shape
+        //     record, then wires the corresponding query into this method.
+        //   · Tag.Aliases is JSONB — v1 skips alias matching to keep the
+        //     query in pure LINQ; v2 should add a raw-SQL fragment using
+        //     `jsonb_array_elements_text(...) ILIKE ?`.
+        api.MapGet("/search", async (
+            VideoOrganizerDbContext db,
+            string? q,
+            int? limit,
+            int? offset,
+            string? kinds,
+            CancellationToken ct) =>
+        {
+            var query = (q ?? string.Empty).Trim();
+            if (query.Length == 0)
+            {
+                return Results.Ok(new SearchResponse(
+                    Query: string.Empty,
+                    TotalCount: 0,
+                    Truncated: false,
+                    Results: Array.Empty<SearchResult>()));
+            }
+
+            var lim = Math.Clamp(limit ?? 50, 1, 200);
+            var off = Math.Max(offset ?? 0, 0);
+
+            // Allow-list parsing. v1 only recognizes "video". Unknown
+            // kinds are silently dropped so a v1 server still works
+            // when a v2 client sends `?kinds=video,tag`.
+            var requestedKinds = (kinds ?? "video")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(k => k.ToLowerInvariant())
+                .ToHashSet();
+            var includeVideos = requestedKinds.Contains("video");
+
+            if (!includeVideos)
+            {
+                return Results.Ok(new SearchResponse(
+                    Query: query,
+                    TotalCount: 0,
+                    Truncated: false,
+                    Results: Array.Empty<SearchResult>()));
+            }
+
+            // Build the ILIKE pattern via the shared escape helper so a
+            // stray % or _ in the user input doesn't act as a wildcard.
+            var pat = $"%{EscapeLikePattern(query)}%";
+
+            // Base predicate: OR across the four indexed string fields +
+            // matching tag names via the VideoTags join. Aliases skipped
+            // in v1 (see note above).
+            var baseQuery = db.Videos
+                .AsNoTracking()
+                .Where(v =>
+                    EF.Functions.ILike(v.FileName, pat) ||
+                    EF.Functions.ILike(v.FilePath, pat) ||
+                    EF.Functions.ILike(v.Notes, pat) ||
+                    (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+
+            var totalCount = await baseQuery.CountAsync(ct);
+
+            // Cheap relevance ranking: exact-filename match first, then
+            // filename substring, then filepath, then everything else.
+            // Stable secondary sort by filename so equal-tier matches
+            // come back deterministically.
+            var lower = query.ToLowerInvariant();
+            var rows = await baseQuery
+                .Include(v => v.VideoTags).ThenInclude(vt => vt.Tag).ThenInclude(t => t!.TagGroup)
+                .OrderBy(v =>
+                    v.FileName.ToLower() == lower ? 0 :
+                    EF.Functions.ILike(v.FileName, pat) ? 1 :
+                    EF.Functions.ILike(v.FilePath, pat) ? 2 : 3)
+                .ThenBy(v => v.FileName)
+                .Skip(off)
+                .Take(lim)
+                .ToListAsync(ct);
+
+            var results = rows.Select(v =>
+            {
+                // Tag matches in this iteration so the UI can surface
+                // them as "tag:Performer/Bob Marley"-shaped breadcrumbs
+                // rather than just showing the file's full tag list.
+                var matched = new List<string>(4);
+                if (v.FileName.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("fileName");
+                if (v.FilePath.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("filePath");
+                if (v.Notes.Contains(query, StringComparison.OrdinalIgnoreCase))    matched.Add("notes");
+                if (v.Md5 != null && v.Md5.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("md5");
+                foreach (var vt in v.VideoTags)
+                {
+                    if (vt.Tag != null && vt.Tag.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var groupName = vt.Tag.TagGroup?.Name ?? "?";
+                        matched.Add($"tag:{groupName}/{vt.Tag.Name}");
+                    }
+                }
+
+                var tagNames = v.VideoTags
+                    .Where(vt => vt.Tag != null)
+                    .OrderBy(vt => vt.Tag!.TagGroup?.SortOrder ?? 0)
+                    .ThenBy(vt => vt.Tag!.SortOrder)
+                    .ThenBy(vt => vt.Tag!.Name)
+                    .Select(vt => vt.Tag!.Name)
+                    .ToList();
+
+                return (SearchResult)new VideoSearchResult(
+                    Id: v.Id,
+                    Title: v.FileName,
+                    Subtitle: v.FilePath,
+                    FileSize: v.FileSize,
+                    Duration: v.Duration,
+                    IsClip: v.ParentVideoId.HasValue,
+                    Tags: tagNames,
+                    MatchedFields: matched);
+            }).ToList();
+
+            return Results.Ok(new SearchResponse(
+                Query: query,
+                TotalCount: totalCount,
+                Truncated: totalCount > off + lim,
+                Results: results));
+        }).WithName("Search");
 
         // === Runtime info ===================================================
         // Tells the frontend whether the request came in over the loopback
@@ -1287,10 +1440,28 @@ public static class ApiEndpoints
             if (enabledRoots.Count == 0)
                 return Results.Ok(new List<VideoDto>());
 
-            var candidates = await IncludeForVideoDto(db.Videos)
+            // Build the SQL-side candidates query. The base filter is the
+            // enabled-VideoSet path-prefix predicate; SearchQuery (when
+            // present) pushes a free-text ILIKE down through the same
+            // query so the trigram GIN indexes do the heavy lifting
+            // instead of yanking every video into memory and filtering.
+            var candidatesQuery = IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)))
-                .ToListAsync(ct);
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+
+            var searchQuery = filter?.SearchQuery?.Trim();
+            if (!string.IsNullOrEmpty(searchQuery))
+            {
+                var pat = $"%{EscapeLikePattern(searchQuery)}%";
+                candidatesQuery = candidatesQuery.Where(v =>
+                    EF.Functions.ILike(v.FileName, pat) ||
+                    EF.Functions.ILike(v.FilePath, pat) ||
+                    EF.Functions.ILike(v.Notes, pat) ||
+                    (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+            }
+
+            var candidates = await candidatesQuery.ToListAsync(ct);
 
             var lookup = await LoadTagLookupAsync(db, ct);
 

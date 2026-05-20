@@ -114,6 +114,51 @@ export interface TagSearchHit {
   aliases: string[];
 }
 
+// --- Global search (Ctrl+K palette) ----------------------------------------
+//
+// Mirrors src/VideoOrganizer.Shared/Dto/SearchDto.cs. The server uses
+// [JsonPolymorphic] with discriminator "kind", so every result carries a
+// `kind` field that lets the client pattern-match on result type without
+// runtime type sniffing.
+//
+// v1 only emits VideoSearchResult; v2 will add `kind: 'tag' | 'source' | …`.
+// New shapes layer in as additional union members below — no change needed
+// to the API call site.
+
+export interface VideoSearchResult {
+  kind: 'video';
+  id: string;
+  title: string;             // file name
+  subtitle: string;          // file path
+  fileSize: number;
+  duration: string;          // TimeSpan, ISO 8601 string (e.g. "00:03:42.1230000")
+  isClip: boolean;
+  tags: string[];            // ordered tag names (group-sort, then name-sort)
+  matchedFields: string[];   // which fields the query matched, e.g.
+                             //   ["fileName"], ["filePath", "tag:Performer/Bob Marley"]
+}
+
+export type SearchResult = VideoSearchResult;
+//                       | TagSearchResult | SourceSearchResult …   ← v2
+
+export interface SearchResponse {
+  query: string;
+  totalCount: number;
+  truncated: boolean;        // true when totalCount > limit + offset
+  results: SearchResult[];
+}
+
+export interface SearchRequestOpts {
+  /** The query string. Treated as a single case-insensitive substring in v1. */
+  q: string;
+  /** Page size, clamped server-side to [1, 200]. Defaults to 50. */
+  limit?: number;
+  /** Page offset, defaults to 0. */
+  offset?: number;
+  /** CSV allow-list of result kinds to include. v1 only honors "video". */
+  kinds?: string;
+}
+
 export interface PropertyDefinition {
   id: string;
   name: string;
@@ -291,10 +336,18 @@ export interface FilterTag extends FilterRef {
 }
 
 // POST body for /api/videos/filter and /api/playlists/random.
+//
+// searchQuery is a free-text substring (case-insensitive). When set,
+// it ANDs with the tag filter — only videos whose fileName, filePath,
+// notes, md5, or any tag name contains the substring are returned.
+// Backed by Postgres trigram indexes so it stays subsecond at 100k+
+// rows. Used by /browse's ?searchQuery= deep-link to turn search-
+// palette results into a playable playlist.
 export interface PlaylistFilterRequest {
   required: FilterRef[];
   optional: FilterRef[];
   excluded: FilterRef[];
+  searchQuery?: string;
 }
 
 // --- Logs / workers / imports ---------------------------------------------

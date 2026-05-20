@@ -5,6 +5,7 @@
   import { api } from '$lib/api';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { runtimeStore } from '$lib/runtimeStore.svelte';
+  import SearchPalette from '$lib/components/SearchPalette.svelte';
 
   let { children } = $props();
 
@@ -69,6 +70,7 @@
   // Most-used shortcuts — the full reference lives on the Config page.
   // Seek keys live in their own 3x2 numpad-style grid below.
   const shortcuts = [
+    { keys: ['⌃K'],      label: 'Search everything' },
     { keys: ['␣'],       label: 'Play / pause' },
     { keys: ['←', '→'],  label: 'Save & prev/next' },
     { keys: ['T'],       label: 'Edit Tags' },
@@ -102,7 +104,39 @@
     collapsed = !collapsed;
     localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0');
   }
+
+  // --- Global Ctrl+K / Cmd+K command palette -----------------------------
+  // Mounted once at the layout level so it's available from every
+  // route. Hotkey works anywhere on the page — including while
+  // typing in inputs/textareas — because every other interactive
+  // form on the site reserves their text-only Ctrl key combos for
+  // browser defaults (Ctrl+A, Ctrl+C, etc.). Ctrl+K isn't taken.
+  //
+  // The palette itself is bind:open={searchOpen} so it can flip
+  // itself closed on Esc / result-pick.
+  let searchOpen = $state(false);
+  function onGlobalKeyDown(e: KeyboardEvent) {
+    // Ctrl+K on Win/Linux, Cmd+K on macOS. Ignore when a modifier
+    // combo we don't expect is also pressed so users with Karabiner
+    // / AutoHotKey remappings don't get a surprise palette.
+    const isToggle =
+      (e.key === 'k' || e.key === 'K') &&
+      (e.ctrlKey || e.metaKey) &&
+      !e.altKey && !e.shiftKey;
+    if (!isToggle) return;
+    e.preventDefault();
+    searchOpen = !searchOpen;
+  }
 </script>
+
+<!-- Global Ctrl+K / Cmd+K listener — single window-level handler so
+     the palette opens regardless of where focus currently is. -->
+<svelte:window onkeydown={onGlobalKeyDown} />
+
+<!-- Global search palette. Mounted once at the layout level so every
+     route gets it. bind:open lets the palette flip itself closed on
+     Esc / result pick. -->
+<SearchPalette bind:open={searchOpen} />
 
 <div class="drawer lg:drawer-open min-h-screen">
   <input id="main-drawer" type="checkbox" class="drawer-toggle" />

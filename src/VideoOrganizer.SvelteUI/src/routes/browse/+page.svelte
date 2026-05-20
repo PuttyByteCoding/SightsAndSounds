@@ -4,6 +4,7 @@
   // the existing VideoPlayer and offers the generic EditTagsPanel.
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { api } from '$lib/api';
   import type {
     Video,
@@ -220,17 +221,28 @@
     videosLoading = true;
     loadError = null;
     try {
+      // ?searchQuery= deep-link → AND a free-text substring into the
+      // filter. Drives the "Play all results" path from the Ctrl+K
+      // search palette. Trimmed; empty string is treated as no search.
+      const searchQuery = (page.url.searchParams.get('searchQuery') ?? '').trim();
       const filter = {
         required: filterStore.required.map((t): FilterRef => ({ type: t.type, value: t.value })),
         optional: filterStore.optional.map((t): FilterRef => ({ type: t.type, value: t.value })),
-        excluded: filterStore.excluded.map((t): FilterRef => ({ type: t.type, value: t.value }))
+        excluded: filterStore.excluded.map((t): FilterRef => ({ type: t.type, value: t.value })),
+        searchQuery: searchQuery.length > 0 ? searchQuery : undefined
       };
       const fetched = await api.filterVideos(filter);
-      // First load: shuffle into a random playlist and auto-play the first.
-      // Subsequent filter changes leave the order alone and don't disrupt
-      // whatever video is currently playing.
+      // First load: shuffle into a random playlist and auto-play the
+      // first. Subsequent filter changes leave the order alone and
+      // don't disrupt whatever video is currently playing.
+      //
+      // Search-driven loads (?searchQuery=…) skip the shuffle: the
+      // server already returned hits in relevance order (exact
+      // filename match first, then filename substring, then path,
+      // etc.), and randomizing would defeat the ranking the user
+      // expected from the palette.
       if (initialAutoplayPending && fetched.length > 0) {
-        videos = shuffleInPlace(fetched);
+        videos = filter.searchQuery ? fetched : shuffleInPlace(fetched);
         playingVideo = videos[0];
         initialAutoplayPending = false;
       } else {
@@ -247,10 +259,65 @@
   }
 
   $effect(() => {
-    // Re-fetch whenever the filter store changes.
+    // Re-fetch whenever the filter store OR the URL's searchQuery
+    // changes. Touching `page.url.searchParams` makes the effect
+    // reactive to navigation events (back/forward, palette "Play
+    // all" clicks, etc.) without remounting the component.
     void filterStore.required; void filterStore.optional; void filterStore.excluded;
+    void page.url.searchParams.get('searchQuery');
     refreshVideos();
   });
+
+  // ?id= deep-link → play that specific video.
+  //
+  // Used by:
+  //   · The Ctrl+K search palette ("open this match in the player")
+  //   · The /history page's row click
+  //   · Any external link sharing a specific video URL
+  //
+  // Behavior:
+  //   1. Suppress the initialAutoplayPending override so refreshVideos
+  //      won't replace our pick with `videos[0]` on first paint.
+  //   2. Fetch the video by id and set it as `playingVideo`.
+  //   3. If the video isn't already in the current `videos` list
+  //      (because it doesn't match the active filter), prepend it so
+  //      next/prev navigation works against a non-empty playlist
+  //      anchored on the user's choice.
+  //
+  // Reactive via `page.url.searchParams.get('id')` — clicking another
+  // search result while already on /browse changes the URL without
+  // remounting the component, but the effect re-runs and swaps to
+  // the new video.
+  let lastOpenedId = $state<string | null>(null);
+  $effect(() => {
+    const id = page.url.searchParams.get('id');
+    if (!id) return;
+    if (id === lastOpenedId) return;       // avoid re-fetching the same id
+    if (playingVideo?.id === id) {
+      lastOpenedId = id;
+      return;
+    }
+    lastOpenedId = id;
+    initialAutoplayPending = false;
+    void openVideoFromUrl(id);
+  });
+
+  async function openVideoFromUrl(id: string) {
+    try {
+      const v = await api.getVideo(id);
+      if (!v) return;
+      if (!videos.some((x) => x.id === id)) {
+        // Inject at the front so the player has a playlist context
+        // even when the filter excludes this video. Filter changes
+        // later may clobber this — the user's already in the player
+        // by then, so the side-effect is acceptable.
+        videos = [v, ...videos];
+      }
+      playingVideo = v;
+    } catch (e: any) {
+      loadError = `Failed to open video: ${e?.message ?? String(e)}`;
+    }
+  }
 
   // Once the initial sidebar load decides the DB is empty (no
   // VideoSets configured) we skip the filterVideos call entirely and

@@ -1761,6 +1761,19 @@
       cancelPendingClip();
       return;
     }
+
+    // Plain single-letter shortcuts (W/D/U/R/T/I/F/K below) skip when
+    // Ctrl / Cmd / Alt are held — otherwise Ctrl+K (global search
+    // palette in +layout.svelte) would also fire K's bookmark, Cmd+R
+    // (browser refresh) would race R's needs-review toggle, etc.
+    // Shift+letter still passes through because the lowercase/uppercase
+    // pair of each check below is deliberately matching both the
+    // shifted and unshifted forms.
+    // The bracket cluster lower down uses modifiers intentionally
+    // (Ctrl+Shift+[ / Shift+[ / [) — it's after this guard, but the
+    // bracket keys aren't [A-Za-z] so they're unaffected.
+    if ((e.ctrlKey || e.metaKey || e.altKey) && /^[A-Za-z]$/.test(e.key)) return;
+
     if (e.key === ' ') {
       e.preventDefault();
       togglePlayPause();

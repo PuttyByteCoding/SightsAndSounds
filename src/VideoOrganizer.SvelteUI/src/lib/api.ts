@@ -38,6 +38,8 @@ import type {
   MissingVideoFile,
   ExtraDiskFile,
   Md5Candidate,
+  SearchRequestOpts,
+  SearchResponse,
   Md5CheckResult
 } from './types';
 
@@ -312,6 +314,23 @@ export const api = {
   searchTags: async (q: string): Promise<TagSearchHit[]> => {
     if (!q.trim()) return [];
     return request<TagSearchHit[]>(`/api/tags/search?q=${enc(q.trim())}`);
+  },
+
+  // Global search — powers the Ctrl+K command palette. Returns a
+  // discriminated SearchResponse so the caller can pattern-match on
+  // result.kind. Empty / whitespace queries short-circuit to an empty
+  // response without a network round-trip.
+  search: async (opts: SearchRequestOpts): Promise<SearchResponse> => {
+    const q = opts.q.trim();
+    if (!q) {
+      return { query: '', totalCount: 0, truncated: false, results: [] };
+    }
+    const qs = new URLSearchParams();
+    qs.set('q', q);
+    if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts.offset !== undefined) qs.set('offset', String(opts.offset));
+    if (opts.kinds !== undefined) qs.set('kinds', opts.kinds);
+    return request<SearchResponse>(`/api/search?${qs.toString()}`);
   },
   setTagProperties: (id: string, body: SetPropertyValuesRequest) =>
     request<void>(`/api/tags/${id}/properties`, {
