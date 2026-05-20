@@ -1513,6 +1513,7 @@
   // would 403. ffprobe results land in `ffprobeResult`, which the
   // template renders as a modal alongside everything else.
   let revealBusy = $state(false);
+  let terminalBusy = $state(false);
   let ffprobeBusy = $state(false);
   let ffprobeResult = $state<FfprobeResult | null>(null);
 
@@ -1526,6 +1527,22 @@
       errorMessage = `Failed to open folder: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
       revealBusy = false;
+    }
+  }
+
+  async function openTerminalForCurrent() {
+    if (!video || terminalBusy) return;
+    terminalBusy = true;
+    errorMessage = null;
+    try {
+      await api.openTerminalAtVideo(video.id);
+    } catch (e) {
+      // Linux: the API surfaces its full fallback list when none of
+      // them were installed, so showing the raw message is genuinely
+      // useful ("Tried: x-terminal-emulator, gnome-terminal, …").
+      errorMessage = `Failed to open terminal: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      terminalBusy = false;
     }
   }
 
@@ -2176,6 +2193,48 @@
               aria-label="Larger"
             >+</button>
           </div>
+        {/if}
+        <!-- Local-only file-system shortcuts. Hidden when the browser
+             isn't on the API host (the corresponding endpoints would
+             403 anyway). Same gate the Playback Issue overlay uses
+             below for its Show in Folder / Diagnose pair. -->
+        {#if runtimeStore.isLocal}
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            disabled={revealBusy}
+            onclick={revealCurrentInFolder}
+            title="Reveal this file in the host OS file manager"
+            aria-label="Show in folder"
+          >
+            {#if revealBusy}
+              <span class="loading loading-spinner loading-xs"></span>
+            {:else}
+              <!-- Folder icon — clear "this is the file manager" affordance. -->
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-6 w-6 fill-current">
+                <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+              </svg>
+            {/if}
+          </button>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            disabled={terminalBusy}
+            onclick={openTerminalForCurrent}
+            title="Open a terminal in this file's directory (Windows Terminal / gnome-terminal / etc.)"
+            aria-label="Open terminal"
+          >
+            {#if terminalBusy}
+              <span class="loading loading-spinner loading-xs"></span>
+            {:else}
+              <!-- Terminal icon: a rounded window with a `>` prompt and
+                   underscore cursor, drawn as fills so it inherits
+                   currentColor with the rest of the toolbar. -->
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-6 w-6 fill-current">
+                <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zM6 10l2 2-2 2-1-1 1-1-1-1 1-1zm3 4h6v1H9v-1z" />
+              </svg>
+            {/if}
+          </button>
         {/if}
         <a
           class="btn btn-ghost btn-sm"

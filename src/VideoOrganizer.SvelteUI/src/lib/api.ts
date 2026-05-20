@@ -264,6 +264,12 @@ export const api = {
   // local so the failure isn't surprising.
   revealVideo: (id: string) =>
     request<void>(`/api/videos/${id}/reveal`, { method: 'POST' }),
+  // Opens a terminal at the video's parent directory. Same loopback +
+  // VideoSet path-prefix guards as revealVideo — the API hides which
+  // emulator it actually used (it tries a fallback chain), but on
+  // success the call returns 204 and a window pops up on the host.
+  openTerminalAtVideo: (id: string) =>
+    request<void>(`/api/videos/${id}/open-terminal`, { method: 'POST' }),
   ffprobeVideo: (id: string) =>
     request<FfprobeResult>(`/api/videos/${id}/ffprobe`),
 
