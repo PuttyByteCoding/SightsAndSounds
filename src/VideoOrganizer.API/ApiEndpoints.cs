@@ -100,6 +100,60 @@ public static class ApiEndpoints
         .Replace("%",  "\\%")
         .Replace("_",  "\\_");
 
+    // (command, args[]) pair describing one terminal-launch attempt.
+    // Consumed by /api/videos/{id}/open-terminal.
+    private readonly record struct TerminalAttempt(string Command, string[] Arguments);
+
+    // Ordered list of terminal-launch attempts for the current OS.
+    // The endpoint walks this list, runs Process.Start on each one, and
+    // takes the first that doesn't throw "binary not found". Each entry
+    // is responsible for opening a new interactive shell whose CWD is
+    // `dir` — using the terminal's native "start here" flag where one
+    // exists, or shell tricks (xterm) where one doesn't.
+    //
+    // Linux ordering rationale:
+    //   1. `x-terminal-emulator` — Debian alternatives system. Whatever
+    //      the user picked as their default; if it's set, respect it.
+    //   2. DE-bundled emulators (gnome-terminal, konsole, …) — present
+    //      on the vast majority of desktop installs.
+    //   3. Keyboard-driven favorites (kitty, alacritty, wezterm) — power
+    //      users tend to remove the DE one in favor of these.
+    //   4. xterm — universal-ish fallback. Ugly but reliable.
+    private static IEnumerable<TerminalAttempt> TerminalLaunchAttempts(string dir)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            yield return new("wt.exe", new[] { "-d", dir });
+            // PowerShell -NoExit keeps the window open; -WorkingDirectory
+            // is honored by both Windows PowerShell and PowerShell 7+.
+            yield return new("pwsh.exe",       new[] { "-NoExit", "-WorkingDirectory", dir });
+            yield return new("powershell.exe", new[] { "-NoExit", "-WorkingDirectory", dir });
+            yield return new("cmd.exe",        new[] { "/K", "cd", "/D", dir });
+            yield break;
+        }
+        if (OperatingSystem.IsMacOS())
+        {
+            yield return new("open", new[] { "-a", "Terminal", dir });
+            yield break;
+        }
+        // Linux + other Unixes
+        yield return new("x-terminal-emulator", new[] { "--working-directory", dir });
+        yield return new("gnome-terminal",      new[] { $"--working-directory={dir}" });
+        yield return new("konsole",             new[] { "--workdir", dir });
+        yield return new("xfce4-terminal",      new[] { $"--working-directory={dir}" });
+        yield return new("mate-terminal",       new[] { $"--working-directory={dir}" });
+        yield return new("tilix",               new[] { $"--working-directory={dir}" });
+        yield return new("terminator",          new[] { "--working-directory", dir });
+        yield return new("kitty",               new[] { "--directory", dir });
+        yield return new("alacritty",           new[] { "--working-directory", dir });
+        yield return new("wezterm",             new[] { "start", "--cwd", dir });
+        // xterm has no --working-directory flag. It DOES inherit CWD
+        // from its parent process, and the endpoint already sets
+        // ProcessStartInfo.WorkingDirectory, so a bare xterm invocation
+        // opens in `dir` automatically.
+        yield return new("xterm",               Array.Empty<string>());
+    }
+
     // Reload a Video from the DB with all DTO-shaped navigation
     // properties, then project to VideoDto. Used by the mark/unmark
     // endpoints (mark-for-deletion, mark-playback-issue, …) so they can
@@ -1905,6 +1959,91 @@ public static class ApiEndpoints
                 return Results.Problem($"Failed to open file manager: {ex.Message}");
             }
         }).WithName("RevealVideoInFileManager");
+
+        // === Open terminal at the video's directory =======================
+        //
+        // Same security model as /reveal — loopback-only + VideoSet path-
+        // prefix check. The launch itself is platform-specific:
+        //
+        //   · Windows: try Windows Terminal (wt.exe) first since it's the
+        //              modern default on Win11 and gives the best UX.
+        //              Fall back to PowerShell, then cmd.
+        //   · macOS:   `open -a Terminal <dir>` opens Terminal.app at the
+        //              directory. iTerm users can swap manually.
+        //   · Linux:   no universal terminal — probe a long list of common
+        //              emulators in priority order. x-terminal-emulator is
+        //              Debian's alternatives-managed symlink (whatever
+        //              the user picked); after that, walk through the
+        //              big DE-bundled emulators (gnome-terminal, konsole,
+        //              etc.), then keyboard-driven favorites (kitty,
+        //              alacritty, wezterm), ending at xterm as the
+        //              "always installed somewhere" fallback.
+        //
+        // Each attempt runs via Process.Start with UseShellExecute=false.
+        // A missing binary throws Win32Exception (ERROR_FILE_NOT_FOUND);
+        // we catch and try the next one. First success wins. If none work,
+        // 500 with a list of what was tried so the user knows what to
+        // install.
+        api.MapPost("/videos/{id:guid}/open-terminal", async (
+            Guid id, VideoOrganizerDbContext db, HttpContext http,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            if (!IsLocalRequest(http)) return Results.Forbid();
+
+            var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (string.IsNullOrEmpty(video.FilePath) || !File.Exists(video.FilePath))
+                return Results.NotFound();
+
+            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+            var fullPath = Path.GetFullPath(video.FilePath);
+            if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
+                return Results.Forbid();
+
+            var dir = Path.GetDirectoryName(fullPath);
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                return Results.NotFound();
+
+            var attempts = TerminalLaunchAttempts(dir).ToList();
+            var triedCommands = new List<string>(attempts.Count);
+            Exception? lastEx = null;
+
+            foreach (var attempt in attempts)
+            {
+                triedCommands.Add(attempt.Command);
+                try
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = attempt.Command,
+                        UseShellExecute = false,
+                        // Set the launcher's CWD too — terminals like xterm
+                        // inherit it, so this also covers any emulator we
+                        // didn't bother adding a --working-directory arg for.
+                        WorkingDirectory = dir
+                    };
+                    foreach (var a in attempt.Arguments) psi.ArgumentList.Add(a);
+                    using var _ = Process.Start(psi);
+                    logger.LogInformation(
+                        "Opened terminal for video {VideoId} at {Dir} via {Command}",
+                        video.Id, dir, attempt.Command);
+                    return Results.NoContent();
+                }
+                catch (Exception ex)
+                {
+                    // Most common: Win32Exception "No such file or directory"
+                    // when the binary isn't installed. Keep walking the list.
+                    lastEx = ex;
+                }
+            }
+
+            logger.LogError(lastEx,
+                "No terminal emulator could be launched for video {VideoId} at {Dir}. Tried: {Tried}",
+                video.Id, dir, string.Join(", ", triedCommands));
+            return Results.Problem(
+                $"No terminal emulator could be launched. Tried: {string.Join(", ", triedCommands)}. " +
+                $"Install one (e.g. xterm) or run the API on a machine that has a terminal in PATH.");
+        }).WithName("OpenTerminalAtVideo");
 
         // Run ffprobe on the file and return stdout/stderr/exitCode so
         // the frontend can show a diagnostic modal. Same loopback +
