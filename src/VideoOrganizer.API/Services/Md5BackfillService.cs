@@ -42,8 +42,8 @@ public sealed class Md5BackfillService : BackgroundService
         _pauseStatus = pauseStatus;
         var m = workerOptions.Md5Backfill;
         _perFileCooldown = TimeSpan.FromMilliseconds(Math.Max(0, m.PerFileCooldownMilliseconds));
-        _perFileTimeout  = TimeSpan.FromSeconds(Math.Max(10, m.PerFileTimeoutSeconds));
-        _importGrace     = TimeSpan.FromSeconds(Math.Max(0, m.ImportGraceSeconds));
+        _perFileTimeout = TimeSpan.FromSeconds(Math.Max(10, m.PerFileTimeoutSeconds));
+        _importGrace = TimeSpan.FromSeconds(Math.Max(0, m.ImportGraceSeconds));
     }
 
     // Wake-up model mirrors ThumbnailWarmingService: process whatever is
