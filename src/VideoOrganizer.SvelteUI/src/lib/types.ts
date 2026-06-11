@@ -99,6 +99,10 @@ export interface UpdateTagRequest {
   isFavorite: boolean;
   sortOrder: number;
   notes: string;
+  // When set to a different group, the server moves the tag there —
+  // existing video taggings ride along (VideoTag references the tag
+  // by id). Omitted = group unchanged.
+  tagGroupId?: string;
 }
 
 export interface MergeTagsRequest {
