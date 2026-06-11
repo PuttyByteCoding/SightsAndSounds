@@ -20,6 +20,8 @@ public sealed class VideoOrganizerDbContext : DbContext
     public DbSet<TagPropertyValue> TagPropertyValues => Set<TagPropertyValue>();
     public DbSet<VideoPropertyValue> VideoPropertyValues => Set<VideoPropertyValue>();
 
+    public DbSet<DuplicateCandidate> DuplicateCandidates => Set<DuplicateCandidate>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(VideoOrganizerDbContext).Assembly);

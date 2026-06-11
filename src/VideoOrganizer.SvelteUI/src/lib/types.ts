@@ -350,6 +350,26 @@ export interface PlaylistFilterRequest {
   searchQuery?: string;
 }
 
+// --- Duplicates -------------------------------------------------------------
+
+export type DuplicateStatus = 'pending' | 'confirmed' | 'rejected';
+
+// One flagged "these two might be the same content" pair, with both
+// sides fully projected so the review page can compare properties
+// without extra fetches. Mirrors Shared.Dto.DuplicateCandidateDto.
+export interface DuplicateCandidate {
+  id: string;
+  status: DuplicateStatus;
+  createdAt: string;
+  videoA: Video;
+  videoB: Video;
+}
+
+export interface CreateDuplicateCandidateRequest {
+  videoAId: string;
+  videoBId: string;
+}
+
 // --- Logs / workers / imports ---------------------------------------------
 
 export interface LogEvent {

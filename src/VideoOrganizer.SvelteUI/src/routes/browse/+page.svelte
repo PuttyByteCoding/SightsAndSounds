@@ -779,6 +779,79 @@
     playingVideo = v;
   }
 
+  // --- Duplicate hunt ----------------------------------------------------
+  // Flow (issue #6): pin the currently-playing video as the "anchor"
+  // (the video you suspect has copies), keep arrow-navigating through
+  // the grid, and press "Mark as duplicate" on anything that looks like
+  // the same content. Pairs land on the /duplicates review page as
+  // Pending. An optional one-shot filter narrows the grid to videos
+  // within ±N seconds of the anchor's duration.
+  let dupAnchor = $state<Video | null>(null);
+  let dupMessage = $state<string | null>(null);
+  let dupMessageIsError = $state(false);
+  let dupToleranceSeconds = $state(10);
+  let dupMarking = $state(false);
+
+  // ".NET TimeSpan: [d.]hh:mm:ss[.fffffff]" → total seconds (0 when
+  // unparseable, which keeps the comparison safe for odd rows).
+  function tsToSeconds(ts: string | null | undefined): number {
+    if (!ts) return 0;
+    const m = ts.match(/^(?:(\d+)\.)?(\d+):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+    if (!m) return 0;
+    const days = m[1] ? parseInt(m[1], 10) : 0;
+    return ((days * 24 + parseInt(m[2], 10)) * 60 + parseInt(m[3], 10)) * 60
+      + parseInt(m[4], 10);
+  }
+
+  function setDupAnchor() {
+    if (!playingVideo) return;
+    dupAnchor = playingVideo;
+    dupMessage = null;
+    dupMessageIsError = false;
+  }
+
+  function clearDupAnchor() {
+    dupAnchor = null;
+    dupMessage = null;
+    dupMessageIsError = false;
+  }
+
+  async function markCurrentAsDuplicate() {
+    if (!dupAnchor || !playingVideo || dupMarking) return;
+    if (playingVideo.id === dupAnchor.id) {
+      dupMessage = 'This IS the anchor video — navigate to a different video first.';
+      dupMessageIsError = true;
+      return;
+    }
+    dupMarking = true;
+    try {
+      await api.createDuplicate(dupAnchor.id, playingVideo.id);
+      dupMessage = `Marked "${playingVideo.fileName}" as a possible duplicate.`;
+      dupMessageIsError = false;
+    } catch (e: any) {
+      dupMessage = e?.message ?? 'Failed to mark duplicate';
+      dupMessageIsError = true;
+    } finally {
+      dupMarking = false;
+    }
+  }
+
+  // One-shot narrowing of the current grid to videos whose duration is
+  // within ±tolerance of the anchor's. Deliberately not a live filter:
+  // it transforms the list in place (anchor always kept) and the next
+  // filter-store change or "Show all" click re-fetches the full set.
+  function filterSimilarDuration() {
+    if (!dupAnchor) return;
+    const anchorSeconds = tsToSeconds(dupAnchor.duration);
+    const tol = Math.max(0, dupToleranceSeconds);
+    videos = videos.filter(v =>
+      v.id === dupAnchor!.id
+      || Math.abs(tsToSeconds(v.duration) - anchorSeconds) <= tol);
+    visibleResetSeed++;
+    dupMessage = `Narrowed to ${videos.length} video${videos.length === 1 ? '' : 's'} within ±${tol}s of the anchor.`;
+    dupMessageIsError = false;
+  }
+
   // Move to the next/previous video in the current grid order. Wired into
   // VideoPlayer's arrow-key handlers; the player gates by `tagsPanelOpen`
   // so plain arrows nav when the panel is closed and Shift+arrows do when
@@ -1479,6 +1552,65 @@
             </div>
           {/if}
 
+          {#if dupAnchor}
+            <!-- Duplicate-hunt bar. Lives in the sticky wrapper so the
+                 anchor context stays visible while the user navigates
+                 the grid looking for copies. -->
+            <div class="bg-base-100 border border-warning/50 rounded-box px-3 py-2 mb-2 flex items-center gap-2 flex-wrap text-sm">
+              <span class="badge badge-warning badge-sm uppercase tracking-wide shrink-0">Dup hunt</span>
+              <span class="text-base-content/60 shrink-0">Anchor:</span>
+              <button
+                type="button"
+                class="link link-hover truncate max-w-[18rem]"
+                title="Jump back to the anchor video"
+                onclick={() => { if (dupAnchor) playingVideo = dupAnchor; }}
+              >{dupAnchor.fileName}</button>
+              <button
+                type="button"
+                class="btn btn-warning btn-xs"
+                disabled={dupMarking || !playingVideo || playingVideo.id === dupAnchor.id}
+                onclick={markCurrentAsDuplicate}
+                title="Flag the currently playing video as a possible duplicate of the anchor"
+              >
+                {#if dupMarking}<span class="loading loading-spinner loading-xs"></span>{/if}
+                Mark current as duplicate
+              </button>
+              <label class="flex items-center gap-1 text-xs text-base-content/60" title="Narrow the grid to videos with a similar duration">
+                ±
+                <input
+                  type="number"
+                  class="input input-bordered input-xs w-16 tabular-nums"
+                  min="0"
+                  bind:value={dupToleranceSeconds}
+                />
+                s
+              </label>
+              <button
+                type="button"
+                class="btn btn-xs"
+                onclick={filterSimilarDuration}
+                title="Filter the grid to videos within ±{dupToleranceSeconds}s of the anchor's duration"
+              >Similar length</button>
+              <button
+                type="button"
+                class="btn btn-xs"
+                onclick={() => refreshVideos()}
+                title="Re-fetch the full filtered list (undoes Similar length)"
+              >Show all</button>
+              <a class="btn btn-xs btn-ghost" href="/duplicates" title="Review flagged pairs">Review →</a>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs ml-auto"
+                onclick={clearDupAnchor}
+                aria-label="End duplicate hunt"
+                title="End duplicate hunt"
+              >✕</button>
+              {#if dupMessage}
+                <span class="basis-full {dupMessageIsError ? 'text-error' : 'text-success'} text-xs">{dupMessage}</span>
+              {/if}
+            </div>
+          {/if}
+
           {#if playingVideo}
             <!-- Player area — `min-height` tracks the divider so
                  dragging down enlarges the card (and lets the video
@@ -1575,6 +1707,15 @@
             <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current"><rect x="2" y="2" width="20" height="20" rx="2"/></svg>
           </label>
           {#if videosLoading}<span class="loading loading-dots loading-sm"></span>{/if}
+          {#if !dupAnchor}
+            <button
+              type="button"
+              class="btn btn-sm"
+              disabled={!playingVideo}
+              onclick={setDupAnchor}
+              title="Start a duplicate hunt: pin the playing video as the anchor, then navigate and mark look-alikes"
+            >🎯 Find duplicates</button>
+          {/if}
           <button
             type="button"
             class="btn btn-sm"
