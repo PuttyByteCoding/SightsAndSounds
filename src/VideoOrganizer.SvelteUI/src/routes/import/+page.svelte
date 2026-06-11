@@ -5,9 +5,11 @@
   import type {
     ImportBrowseDirectory,
     DirectoryImportRequest,
+    Tag,
     VideoSet
   } from '$lib/types';
   import { breadcrumbs } from '$lib/pathHelpers';
+  import TagEditModal from '$lib/components/TagEditModal.svelte';
 
   // --- State ----------------------------------------------------------------
 
@@ -43,6 +45,26 @@
   let initialTagSuggestions = $state<{ tagId: string; name: string; tagGroupName: string }[]>([]);
   let initialTagLabels = $state<Record<string, string>>({});
   let importNotes = $state('');
+
+  // Create-tag modal (TagEditModal in create mode, with its Group select)
+  // launched from the picker's "+ New Tag" button or the dropdown's
+  // "+ Create" row. On save the new tag is auto-applied to the import.
+  let showCreateTagModal = $state(false);
+  let createTagInitialName = $state('');
+
+  function openCreateTag(prefill: string) {
+    createTagInitialName = prefill;
+    initialTagSuggestions = [];
+    showCreateTagModal = true;
+  }
+
+  function onTagCreated(saved: Tag) {
+    if (!initialTagIds.includes(saved.id)) {
+      initialTagIds = [...initialTagIds, saved.id];
+    }
+    initialTagLabels = { ...initialTagLabels, [saved.id]: saved.name };
+    initialTagPickerInput = '';
+  }
 
   // File list — keyed by folder path so the right pane can aggregate
   // across the full multi-selection. Each entry is what the API
@@ -1095,38 +1117,60 @@
                    imported video. Uses /api/tags/search for autocomplete. -->
               <div class="form-control">
                 <span class="label-text font-medium">Tags to apply</span>
-                <div class="relative mt-1">
-                  <input
-                    class="input input-bordered input-sm w-full"
-                    placeholder="Type to search tags…"
-                    value={initialTagPickerInput}
-                    oninput={async (e) => {
-                      initialTagPickerInput = (e.target as HTMLInputElement).value;
-                      const q = initialTagPickerInput.trim();
-                      initialTagSuggestions = q
-                        ? (await api.searchTags(q)).filter(h => !initialTagIds.includes(h.tagId))
-                        : [];
-                    }}
-                  />
-                  {#if initialTagSuggestions.length > 0}
-                    <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow max-h-60 overflow-y-auto">
-                      {#each initialTagSuggestions as h (h.tagId)}
-                        <button
-                          type="button"
-                          class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm flex justify-between"
-                          onmousedown={() => {
-                            initialTagIds = [...initialTagIds, h.tagId];
-                            initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
-                            initialTagPickerInput = '';
-                            initialTagSuggestions = [];
-                          }}
-                        >
-                          <span>{h.name}</span>
-                          <span class="text-xs text-base-content/50">{h.tagGroupName}</span>
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
+                <div class="mt-1 flex gap-2">
+                  <div class="relative flex-1">
+                    <input
+                      class="input input-bordered input-sm w-full"
+                      placeholder="Type to search tags…"
+                      value={initialTagPickerInput}
+                      oninput={async (e) => {
+                        initialTagPickerInput = (e.target as HTMLInputElement).value;
+                        const q = initialTagPickerInput.trim();
+                        initialTagSuggestions = q
+                          ? (await api.searchTags(q)).filter(h => !initialTagIds.includes(h.tagId))
+                          : [];
+                      }}
+                    />
+                    {#if initialTagSuggestions.length > 0 || initialTagPickerInput.trim().length > 0}
+                      <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow max-h-60 overflow-y-auto">
+                        {#each initialTagSuggestions as h (h.tagId)}
+                          <button
+                            type="button"
+                            class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm flex justify-between"
+                            onmousedown={() => {
+                              initialTagIds = [...initialTagIds, h.tagId];
+                              initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
+                              initialTagPickerInput = '';
+                              initialTagSuggestions = [];
+                            }}
+                          >
+                            <span>{h.name}</span>
+                            <span class="text-xs text-base-content/50">{h.tagGroupName}</span>
+                          </button>
+                        {/each}
+                        {#if initialTagPickerInput.trim().length > 0}
+                          <!-- Create-from-search escape hatch: typed text
+                               that doesn't exist yet (or that the user
+                               wants in a different group) becomes a new
+                               tag via TagEditModal, where the Group
+                               select offers every tag group. -->
+                          <button
+                            type="button"
+                            class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm text-primary {initialTagSuggestions.length > 0 ? 'border-t border-base-300' : ''}"
+                            onmousedown={() => openCreateTag(initialTagPickerInput.trim())}
+                          >
+                            + Create new tag “{initialTagPickerInput.trim()}”…
+                          </button>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-soft btn-primary btn-cta shrink-0"
+                    onclick={() => openCreateTag(initialTagPickerInput.trim())}
+                    title="Create a new tag in any tag group and apply it to this import"
+                  >+ New Tag</button>
                 </div>
                 {#if initialTagIds.length > 0}
                   <div class="flex flex-wrap gap-1 mt-2">
@@ -1218,6 +1262,16 @@
     <span>Import More</span>
   </label>
 </div>
+
+<!-- Create-tag modal — TagEditModal in create mode (tag=null, no fixed
+     tagGroupId) shows a Group select over every tag group. onSaved
+     auto-applies the new tag to this import's "Tags to apply" list. -->
+<TagEditModal
+  bind:show={showCreateTagModal}
+  tag={null}
+  initialName={createTagInitialName}
+  onSaved={onTagCreated}
+/>
 
 {#if showAddSetDialog}
   <div class="modal modal-open" role="presentation" onclick={closeAddSetDialog}>
