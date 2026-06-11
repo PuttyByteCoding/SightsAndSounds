@@ -21,12 +21,17 @@ public record CreateTagRequest(
     int SortOrder = 0,
     string Notes = "");
 
+// TagGroupId moves the tag to another group when it differs from the
+// tag's current group. Existing VideoTag rows reference the tag by id,
+// so every video keeps its tagging across the move. Null / omitted
+// (the pre-move wire shape) leaves the group unchanged.
 public record UpdateTagRequest(
     string Name,
     IReadOnlyList<string> Aliases,
     bool IsFavorite,
     int SortOrder,
-    string Notes);
+    string Notes,
+    Guid? TagGroupId = null);
 
 // Merge sources into target. All Videos referencing any source tag are
 // re-pointed at target; sources are then deleted. Target must not appear

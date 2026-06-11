@@ -8,7 +8,7 @@
   //   tag is null + tagGroupId -> create new tag in that group
   //                              (initialName preseeds the name field)
   import { api, ApiError } from '$lib/api';
-  import type { Tag } from '$lib/types';
+  import type { Tag, TagGroup } from '$lib/types';
 
   // Portal action lives in $lib/portal — same one is used by the
   // FfprobeResultModal and the inline clip-preview modal in
@@ -47,6 +47,26 @@
 
   const isEdit = $derived(tag !== null && tag !== undefined);
 
+  // Edit-mode group select — lets the user move the tag to another
+  // group while keeping every video tagging (the server re-points
+  // TagGroupId; VideoTag rows reference the tag by id). Groups are
+  // lazy-loaded the first time the modal opens in edit mode.
+  let groups = $state<TagGroup[]>([]);
+  let groupsLoading = false;
+  let selectedGroupId = $state<string | undefined>(undefined);
+
+  $effect(() => {
+    if (!show || !tag) return;
+    if (groups.length > 0 || groupsLoading) return;
+    groupsLoading = true;
+    api.listTagGroups()
+      .then(gs => { groups = gs; })
+      .catch(e => {
+        error = e instanceof Error ? e.message : 'Failed to load tag groups';
+      })
+      .finally(() => { groupsLoading = false; });
+  });
+
   $effect(() => {
     if (!show) return;
     if (tag) {
@@ -54,6 +74,7 @@
       aliases = [...tag.aliases];
       isFavorite = tag.isFavorite;
       notes = tag.notes;
+      selectedGroupId = tag.tagGroupId;
     } else {
       name = initialName;
       aliases = [];
@@ -95,7 +116,8 @@
           aliases,
           isFavorite,
           sortOrder: tag.sortOrder,
-          notes
+          notes,
+          tagGroupId: selectedGroupId
         });
         saved = await api.getTag(tag.id);
       } else if (tagGroupId) {
@@ -202,6 +224,28 @@
         <div class="alert alert-error text-sm mb-3">
           <span>{error}</span>
         </div>
+      {/if}
+
+      {#if isEdit && groups.length > 0}
+        <!-- Edit-mode group select. Picking a different group moves the
+             tag there on Save — every video keeps its tagging (the
+             move re-points the tag row; video↔tag links are by id). -->
+        <div class="flex items-center gap-2 mb-1">
+          <span class="label-text w-20 shrink-0">Group</span>
+          <select class="select select-bordered flex-1" bind:value={selectedGroupId}>
+            {#each groups as g (g.id)}
+              <option value={g.id}>{g.name}</option>
+            {/each}
+          </select>
+        </div>
+        {#if tag && selectedGroupId !== tag.tagGroupId}
+          <p class="text-xs text-info mb-3 ml-22">
+            Saving moves this tag to the selected group — all videos
+            tagged with it stay tagged.
+          </p>
+        {:else}
+          <div class="mb-3"></div>
+        {/if}
       {/if}
 
       <!-- Name + Favorite star inline. Labels share a fixed width so Name,
