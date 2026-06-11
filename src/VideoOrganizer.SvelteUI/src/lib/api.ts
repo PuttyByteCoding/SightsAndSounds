@@ -40,7 +40,9 @@ import type {
   Md5Candidate,
   SearchRequestOpts,
   SearchResponse,
-  Md5CheckResult
+  Md5CheckResult,
+  DuplicateCandidate,
+  DuplicateStatus
 } from './types';
 
 const BASE = '';
@@ -356,6 +358,26 @@ export const api = {
     request<void>(`/api/properties/${id}`, { method: 'PUT', body: JSON.stringify(req) }),
   deleteProperty: (id: string) =>
     request<void>(`/api/properties/${id}`, { method: 'DELETE' }),
+
+  // --- Duplicates ------------------------------------------------------------
+
+  // Flag a pair as possible duplicates. Idempotent — re-flagging an
+  // existing pair (either order) returns the existing candidate.
+  createDuplicate: (videoAId: string, videoBId: string) =>
+    request<DuplicateCandidate>('/api/duplicates', {
+      method: 'POST',
+      body: JSON.stringify({ videoAId, videoBId })
+    }),
+  listDuplicates: (status?: DuplicateStatus | 'all') =>
+    request<DuplicateCandidate[]>(`/api/duplicates${status ? `?status=${status}` : ''}`),
+  confirmDuplicate: (id: string) =>
+    request<DuplicateCandidate>(`/api/duplicates/${id}/confirm`, { method: 'POST' }),
+  rejectDuplicate: (id: string) =>
+    request<DuplicateCandidate>(`/api/duplicates/${id}/reject`, { method: 'POST' }),
+  reopenDuplicate: (id: string) =>
+    request<DuplicateCandidate>(`/api/duplicates/${id}/reopen`, { method: 'POST' }),
+  deleteDuplicate: (id: string) =>
+    request<void>(`/api/duplicates/${id}`, { method: 'DELETE' }),
 
   // --- Playlists -----------------------------------------------------------
 
