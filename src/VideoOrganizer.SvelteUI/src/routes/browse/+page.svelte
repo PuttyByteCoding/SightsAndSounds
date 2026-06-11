@@ -154,6 +154,10 @@
     for (const k of SECTION_KEYS) {
       sectionCollapsed[k] = localStorage.getItem(`browseSection_${k}_collapsed`) === '1';
     }
+    const storedSort = localStorage.getItem('browseSortMode');
+    if (storedSort && SORT_MODES.some(m => m.value === storedSort)) {
+      sortMode = storedSort as SortMode;
+    }
   });
 
   // Save on each change. Cheap (a few writes per drag) and keeps the
@@ -205,11 +209,100 @@
 
   // User-triggered reshuffle of the current grid into a new random order
   // and jump to the new first video. Resets the infinite-scroll window
-  // so the user starts at the top of the new playlist.
+  // so the user starts at the top of the new playlist. Also drops any
+  // explicit sort back to Shuffle — a random order IS the shuffle mode,
+  // and leaving the select on e.g. "File size" while showing a random
+  // grid would lie about the current order.
   function reshufflePlaylist() {
     if (videos.length === 0) return;
+    setSortMode('shuffle');
     videos = shuffleInPlace(videos);
     playingVideo = videos[0];
+    visibleResetSeed++;
+  }
+
+  // --- Sorting -----------------------------------------------------------
+  // Explicit grid orderings beyond the default random playlist. Applied
+  // client-side over whatever the filter returned, so switching modes
+  // never costs a round-trip. Persisted to localStorage so the choice
+  // survives navigation away and back.
+  type SortMode = 'shuffle' | 'fileName' | 'fileSize' | 'duration' | 'folderFile';
+  const SORT_MODES: ReadonlyArray<{ value: SortMode; label: string }> = [
+    { value: 'shuffle',    label: 'Shuffle' },
+    { value: 'fileName',   label: 'File name' },
+    { value: 'fileSize',   label: 'File size' },
+    { value: 'duration',   label: 'Duration' },
+    { value: 'folderFile', label: 'Folder, then file name' }
+  ];
+  let sortMode = $state<SortMode>('shuffle');
+  // false = ascending (A→Z / smallest / shortest first). Reset to the
+  // mode's natural default when the mode changes; the ↑↓ button flips it.
+  let sortDescending = $state(false);
+
+  // ".NET TimeSpan: [d.]hh:mm:ss[.fffffff]" → total seconds. Returns 0
+  // for unparseable values so they sink to the short end of the sort.
+  function durationSeconds(ts: string | null | undefined): number {
+    if (!ts) return 0;
+    const m = ts.match(/^(?:(\d+)\.)?(\d+):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+    if (!m) return 0;
+    const days = m[1] ? parseInt(m[1], 10) : 0;
+    return ((days * 24 + parseInt(m[2], 10)) * 60 + parseInt(m[3], 10)) * 60
+      + parseInt(m[4], 10);
+  }
+
+  // Directory part of the absolute file path — the "folder" key for the
+  // folder-then-file-name mode. Handles both separator styles.
+  function folderOf(path: string): string {
+    const i = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    return i >= 0 ? path.slice(0, i) : '';
+  }
+
+  function compareVideos(a: Video, b: Video, mode: SortMode): number {
+    switch (mode) {
+      case 'fileName':
+        return a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base', numeric: true });
+      case 'fileSize':
+        return a.fileSize - b.fileSize;
+      case 'duration':
+        return durationSeconds(a.duration) - durationSeconds(b.duration);
+      case 'folderFile':
+        return folderOf(a.filePath).localeCompare(folderOf(b.filePath), undefined, { sensitivity: 'base', numeric: true })
+          || a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base', numeric: true });
+      default:
+        return 0;
+    }
+  }
+
+  // Order a result set according to the current mode. Shuffle mode
+  // randomizes; explicit modes sort (with direction applied).
+  function orderVideos(list: Video[]): Video[] {
+    if (sortMode === 'shuffle') return shuffleInPlace(list);
+    const sorted = [...list].sort((a, b) => compareVideos(a, b, sortMode));
+    if (sortDescending) sorted.reverse();
+    return sorted;
+  }
+
+  function setSortMode(mode: SortMode) {
+    sortMode = mode;
+    if (typeof localStorage !== 'undefined') localStorage.setItem('browseSortMode', mode);
+  }
+
+  // Select-change handler: re-order the current grid in place. Picking
+  // an explicit sort keeps the playing video as-is (its x-position just
+  // changes); picking Shuffle behaves like the Reshuffle button.
+  function onSortModeChange(mode: SortMode) {
+    setSortMode(mode);
+    sortDescending = false;
+    if (videos.length === 0) return;
+    videos = orderVideos(videos);
+    if (sortMode === 'shuffle' && videos.length > 0) playingVideo = videos[0];
+    visibleResetSeed++;
+  }
+
+  function toggleSortDirection() {
+    if (sortMode === 'shuffle') return;
+    sortDescending = !sortDescending;
+    videos = [...videos].reverse();
     visibleResetSeed++;
   }
 
@@ -232,21 +325,25 @@
         searchQuery: searchQuery.length > 0 ? searchQuery : undefined
       };
       const fetched = await api.filterVideos(filter);
-      // First load: shuffle into a random playlist and auto-play the
-      // first. Subsequent filter changes leave the order alone and
-      // don't disrupt whatever video is currently playing.
+      // First load: order per the persisted sort mode (random playlist
+      // in the default Shuffle mode) and auto-play the first. Subsequent
+      // filter changes keep the fetched order in Shuffle mode (so the
+      // playing video isn't disrupted) but re-apply an explicit sort —
+      // the user asked for that ordering, so new result sets should
+      // honor it too.
       //
       // Search-driven loads (?searchQuery=…) skip the shuffle: the
       // server already returned hits in relevance order (exact
       // filename match first, then filename substring, then path,
       // etc.), and randomizing would defeat the ranking the user
-      // expected from the palette.
+      // expected from the palette. An explicit sort still wins over
+      // relevance — it's a deliberate choice the user made.
       if (initialAutoplayPending && fetched.length > 0) {
-        videos = filter.searchQuery ? fetched : shuffleInPlace(fetched);
+        videos = filter.searchQuery && sortMode === 'shuffle' ? fetched : orderVideos(fetched);
         playingVideo = videos[0];
         initialAutoplayPending = false;
       } else {
-        videos = fetched;
+        videos = sortMode === 'shuffle' ? fetched : orderVideos(fetched);
       }
       // Filter change → reset the infinite-scroll window so the new
       // result set starts from the top.
@@ -1587,6 +1684,32 @@
             <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current"><rect x="2" y="2" width="20" height="20" rx="2"/></svg>
           </label>
           {#if videosLoading}<span class="loading loading-dots loading-sm"></span>{/if}
+          <!-- Sort mode select + direction toggle. Shuffle is the default
+               random-playlist behavior; explicit modes re-order the grid
+               client-side. The ↑↓ button flips ascending/descending and
+               is hidden in Shuffle mode (direction is meaningless for a
+               random order). -->
+          <label class="flex items-center gap-1 text-xs text-base-content/60" title="Sort order">
+            <span>Sort</span>
+            <select
+              class="select select-bordered select-sm"
+              value={sortMode}
+              onchange={(e) => onSortModeChange((e.currentTarget as HTMLSelectElement).value as SortMode)}
+            >
+              {#each SORT_MODES as m (m.value)}
+                <option value={m.value}>{m.label}</option>
+              {/each}
+            </select>
+          </label>
+          {#if sortMode !== 'shuffle'}
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost px-2"
+              onclick={toggleSortDirection}
+              title={sortDescending ? 'Descending — click for ascending' : 'Ascending — click for descending'}
+              aria-label={sortDescending ? 'Sort descending, click to sort ascending' : 'Sort ascending, click to sort descending'}
+            >{sortDescending ? '↓' : '↑'}</button>
+          {/if}
           <button
             type="button"
             class="btn btn-sm"
