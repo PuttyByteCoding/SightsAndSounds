@@ -7,6 +7,7 @@
   import { api } from '$lib/api';
   import type { Tag, TagGroup, Video, VideoTagSummary } from '$lib/types';
   import { pillClass } from '$lib/tagColors';
+  import { tagFlash } from '$lib/tagFlash.svelte';
   import TagEditModal from './TagEditModal.svelte';
 
   interface Props {
@@ -246,6 +247,8 @@
     } else {
       video.tags = [...video.tags, summary];
     }
+    // Float the tag name over the player as immediate apply feedback.
+    tagFlash.show(tag.name);
     // Applying any tag implies the user has reviewed the video, so
     // clear "Needs Review" if it's set. The change rides along on
     // the next save (Shift+arrow nav, Save button, etc.) — saveIfDirty
@@ -257,7 +260,11 @@
 
   function removeTag(_groupId: string, tagId: string) {
     if (!video) return;
+    const removed = video.tags.find(t => t.id === tagId);
     video.tags = video.tags.filter(t => t.id !== tagId);
+    // Mirror the apply feedback so a toggle-off is also confirmed
+    // over the picture (rendered struck-through with a minus).
+    if (removed) tagFlash.showRemoved(removed.name);
   }
 
   function toggleTag(group: TagGroup, tag: Tag) {

@@ -14,6 +14,7 @@
   import type { Tag, Video, FfprobeResult, ClipSummary } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
+  import { tagFlash } from '$lib/tagFlash.svelte';
   import { pillClass } from '$lib/tagColors';
   import { runtimeStore } from '$lib/runtimeStore.svelte';
   import { tagKeyBindings, type TagKeyBinding } from '$lib/tagKeyBindings.svelte';
@@ -187,6 +188,11 @@
       tags: optimisticTags,
       needsReview: shouldClearReview ? false : video.needsReview
     };
+    // Float the tag name over the video as immediate confirmation —
+    // fires with the optimistic update, not the server round-trip, so
+    // the feedback is at keypress time.
+    if (has) tagFlash.showRemoved(tag.name);
+    else tagFlash.show(tag.name);
 
     try {
       await api.setVideoTags(videoId, { tagIds: nextTagIds });
@@ -2068,6 +2074,24 @@
         </div>
       </div>
     {/if}
+    <!-- Tag-applied flash overlay. Each tagFlash entry floats over the
+         picture for ~1.4s (rise + fade via the keyframes below) so the
+         user gets immediate confirmation a tag landed without looking
+         away from the video. Stacked vertically so rapid-fire applies
+         (Alt+1, Alt+2, …) each stay readable. pointer-events:none so
+         click-to-pause still goes through. -->
+    {#if tagFlash.entries.length > 0}
+      <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 pointer-events-none overflow-hidden">
+        {#each tagFlash.entries as entry (entry.id)}
+          <span
+            class="tag-flash px-4 py-1.5 rounded-full text-xl font-semibold shadow-lg
+                   {entry.kind === 'added'
+                     ? 'bg-success/85 text-success-content'
+                     : 'bg-neutral/85 text-neutral-content line-through'}"
+          >{entry.kind === 'removed' ? '− ' : ''}{entry.text}</span>
+        {/each}
+      </div>
+    {/if}
     </div>
 
     <!-- Scrubber: persistent (in-flow) row directly under the video so
@@ -2951,3 +2975,18 @@
     ></button>
   </div>
 {/if}
+
+<style>
+  /* Tag-applied flash: pop in fast, hold briefly, then rise and fade.
+     Total runtime stays just under the store's 1.5s entry lifetime so
+     the element unmounts after the fade completes (no end-pop). */
+  .tag-flash {
+    animation: tag-flash 1.4s ease-out forwards;
+  }
+  @keyframes tag-flash {
+    0%   { opacity: 0; transform: translateY(8px) scale(0.9); }
+    10%  { opacity: 1; transform: translateY(0) scale(1); }
+    70%  { opacity: 1; transform: translateY(0); }
+    100% { opacity: 0; transform: translateY(-24px); }
+  }
+</style>
