@@ -2647,7 +2647,20 @@ public static class ApiEndpoints
             var t = await db.Tags.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (t is null) return Results.NotFound();
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
-            if (await db.Tags.AnyAsync(x => x.TagGroupId == t.TagGroupId && x.Name == req.Name && x.Id != id, ct))
+
+            // Optional group move. VideoTag rows reference the tag by id, so
+            // re-pointing TagGroupId carries every existing video tagging
+            // into the new group untouched — exactly the contract a "I made
+            // this tag in the wrong group" fix needs. The name-uniqueness
+            // check below runs against the TARGET group so the move can't
+            // land on a name collision.
+            var targetGroupId = req.TagGroupId ?? t.TagGroupId;
+            if (targetGroupId != t.TagGroupId
+                && !await db.TagGroups.AnyAsync(g => g.Id == targetGroupId, ct))
+            {
+                return Results.BadRequest(new { error = "Target TagGroup not found." });
+            }
+            if (await db.Tags.AnyAsync(x => x.TagGroupId == targetGroupId && x.Name == req.Name && x.Id != id, ct))
                 return Results.Conflict(new { error = "A tag with that name already exists in this group." });
 
             // Capture before-state so the log can show what actually changed —
@@ -2656,14 +2669,23 @@ public static class ApiEndpoints
             // renamed".
             var oldName = t.Name;
             var oldAliasCount = t.Aliases.Count;
+            var oldGroupId = t.TagGroupId;
 
             t.Name = req.Name;
             t.Aliases = req.Aliases.ToList();
             t.IsFavorite = req.IsFavorite;
             t.SortOrder = req.SortOrder;
             t.Notes = req.Notes;
+            t.TagGroupId = targetGroupId;
             await db.SaveChangesAsync(ct);
 
+            if (oldGroupId != t.TagGroupId)
+            {
+                var attachedVideos = await db.VideoTags.CountAsync(vt => vt.TagId == id, ct);
+                logger.LogInformation(
+                    "Moved Tag {TagId} '{Name}' from TagGroup {OldGroupId} to {NewGroupId} ({AttachedVideos} video taggings preserved)",
+                    t.Id, t.Name, oldGroupId, t.TagGroupId, attachedVideos);
+            }
             if (!string.Equals(oldName, t.Name, StringComparison.Ordinal))
             {
                 logger.LogInformation(
