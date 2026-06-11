@@ -65,140 +65,140 @@ public class ThumbnailGenerator : IThumbnailGenerator
 
             _logger.LogInformation("Generating thumbnails for video {VideoId} at {VideoPath}", videoId, videoPath);
 
-        var mediaInfo = await FFmpeg.GetMediaInfo(videoPath, ct);
-        var duration = mediaInfo.Duration;
+            var mediaInfo = await FFmpeg.GetMediaInfo(videoPath, ct);
+            var duration = mediaInfo.Duration;
 
-        // Pick interval so we target TargetFrameCount frames, but no tighter than MinIntervalSeconds.
-        if (intervalSeconds <= 0)
-        {
-            intervalSeconds = Math.Max(MinIntervalSeconds, (int)Math.Ceiling(duration.TotalSeconds / TargetFrameCount));
-        }
-        var thumbnailCount = (int)(duration.TotalSeconds / intervalSeconds);
-
-        if (thumbnailCount == 0)
-        {
-            _logger.LogWarning("Video too short to generate thumbnails: {Duration}s", duration.TotalSeconds);
-            return (string.Empty, "WEBVTT\n\n");
-        }
-
-        // Hard ceiling — defends against a short MinInterval producing too many
-        // frames if the override kicks in with a pathological value.
-        thumbnailCount = Math.Min(thumbnailCount, TargetFrameCount);
-
-        var thumbnailPaths = new List<string>();
-        var vttBuilder = new System.Text.StringBuilder();
-        vttBuilder.AppendLine("WEBVTT");
-        vttBuilder.AppendLine();
-
-        // Track partial-success scenarios so the completion log can flag
-        // a sprite that was generated with gaps. Without these counters
-        // a video with half its frames missing looks identical to a
-        // clean run in Seq.
-        var extractionFailures = 0;
-        var assemblyFailures = 0;
-        var assemblyMissingFiles = 0;
-
-        // Extract thumbnails
-        for (int i = 0; i < thumbnailCount; i++)
-        {
-            var timestamp = TimeSpan.FromSeconds(i * intervalSeconds);
-            var thumbnailPath = Path.Combine(videoDir, $"thumb_{i:D4}.jpg");
-            thumbnailPaths.Add(thumbnailPath);
-
-            try
+            // Pick interval so we target TargetFrameCount frames, but no tighter than MinIntervalSeconds.
+            if (intervalSeconds <= 0)
             {
-                var conversion = await FFmpeg.Conversions.FromSnippet.Snapshot(
-                    videoPath,
-                    thumbnailPath,
-                    timestamp);
-
-                // Pass `ct` so cancellation (timeout / user skip) actually
-                // kills the ffmpeg process. Without this, a hung ffmpeg
-                // ignored CancelAfter and ran forever.
-                await conversion
-                    .AddParameter($"-s {thumbnailWidth}x{thumbnailHeight}")
-                    .Start(ct);
-
-                _logger.LogDebug("Generated thumbnail {Index}/{Total} at {Timestamp}", i + 1, thumbnailCount, timestamp);
+                intervalSeconds = Math.Max(MinIntervalSeconds, (int)Math.Ceiling(duration.TotalSeconds / TargetFrameCount));
             }
-            catch (OperationCanceledException)
+            var thumbnailCount = (int)(duration.TotalSeconds / intervalSeconds);
+
+            if (thumbnailCount == 0)
             {
-                // Bubble out of the loop so the outer service's catch can
-                // attribute this to timeout vs user-skip.
-                throw;
+                _logger.LogWarning("Video too short to generate thumbnails: {Duration}s", duration.TotalSeconds);
+                return (string.Empty, "WEBVTT\n\n");
             }
-            catch (Exception ex)
+
+            // Hard ceiling — defends against a short MinInterval producing too many
+            // frames if the override kicks in with a pathological value.
+            thumbnailCount = Math.Min(thumbnailCount, TargetFrameCount);
+
+            var thumbnailPaths = new List<string>();
+            var vttBuilder = new System.Text.StringBuilder();
+            vttBuilder.AppendLine("WEBVTT");
+            vttBuilder.AppendLine();
+
+            // Track partial-success scenarios so the completion log can flag
+            // a sprite that was generated with gaps. Without these counters
+            // a video with half its frames missing looks identical to a
+            // clean run in Seq.
+            var extractionFailures = 0;
+            var assemblyFailures = 0;
+            var assemblyMissingFiles = 0;
+
+            // Extract thumbnails
+            for (int i = 0; i < thumbnailCount; i++)
             {
-                _logger.LogError(ex, "Failed to generate thumbnail {Index}/{Total} at {Timestamp} for video {VideoId}",
-                    i + 1, thumbnailCount, timestamp, videoId);
-                extractionFailures++;
-            }
-        }
-
-        // Create sprite image
-        var rows = (int)Math.Ceiling((double)thumbnailCount / columns);
-        var spriteWidth = thumbnailWidth * columns;
-        var spriteHeight = thumbnailHeight * rows;
-
-        using (var spriteImage = new Image<Rgb24>(spriteWidth, spriteHeight))
-        {
-            spriteImage.Mutate(ctx => ctx.BackgroundColor(Color.Black));
-
-            for (int i = 0; i < thumbnailPaths.Count; i++)
-            {
-                if (!File.Exists(thumbnailPaths[i]))
-                {
-                    // ffmpeg said success but the output isn't on disk —
-                    // rare but worth knowing about because the sprite will
-                    // have a black tile here.
-                    assemblyMissingFiles++;
-                    continue;
-                }
+                var timestamp = TimeSpan.FromSeconds(i * intervalSeconds);
+                var thumbnailPath = Path.Combine(videoDir, $"thumb_{i:D4}.jpg");
+                thumbnailPaths.Add(thumbnailPath);
 
                 try
                 {
-                    using (var thumbnail = await Image.LoadAsync<Rgb24>(thumbnailPaths[i], ct))
-                    {
-                        var col = i % columns;
-                        var row = i / columns;
-                        var x = col * thumbnailWidth;
-                        var y = row * thumbnailHeight;
+                    var conversion = await FFmpeg.Conversions.FromSnippet.Snapshot(
+                        videoPath,
+                        thumbnailPath,
+                        timestamp);
 
-                        spriteImage.Mutate(ctx => ctx.DrawImage(thumbnail, new Point(x, y), 1f));
+                    // Pass `ct` so cancellation (timeout / user skip) actually
+                    // kills the ffmpeg process. Without this, a hung ffmpeg
+                    // ignored CancelAfter and ran forever.
+                    await conversion
+                        .AddParameter($"-s {thumbnailWidth}x{thumbnailHeight}")
+                        .Start(ct);
 
-                        // Generate VTT entry
-                        var startTime = TimeSpan.FromSeconds(i * intervalSeconds);
-                        var endTime = TimeSpan.FromSeconds((i + 1) * intervalSeconds);
-
-                        vttBuilder.AppendLine($"{FormatVttTime(startTime)} --> {FormatVttTime(endTime)}");
-                        vttBuilder.AppendLine($"sprite.jpg#xywh={x},{y},{thumbnailWidth},{thumbnailHeight}");
-                        vttBuilder.AppendLine();
-                    }
-
-                    // Clean up individual thumbnail. A delete failure here
-                    // (file in use, AV scan, etc.) doesn't break the sprite,
-                    // but it leaks a temp file — log so disk-bloat is debuggable.
-                    try
-                    {
-                        File.Delete(thumbnailPaths[i]);
-                    }
-                    catch (Exception delEx)
-                    {
-                        _logger.LogWarning(delEx,
-                            "Failed to delete temp thumbnail {Path} for video {VideoId} (sprite still generated correctly)",
-                            thumbnailPaths[i], videoId);
-                    }
+                    _logger.LogDebug("Generated thumbnail {Index}/{Total} at {Timestamp}", i + 1, thumbnailCount, timestamp);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Bubble out of the loop so the outer service's catch can
+                    // attribute this to timeout vs user-skip.
+                    throw;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to process thumbnail {Index} ({Path}) for video {VideoId}",
-                        i, thumbnailPaths[i], videoId);
-                    assemblyFailures++;
+                    _logger.LogError(ex, "Failed to generate thumbnail {Index}/{Total} at {Timestamp} for video {VideoId}",
+                        i + 1, thumbnailCount, timestamp, videoId);
+                    extractionFailures++;
                 }
             }
 
-            await spriteImage.SaveAsJpegAsync(spriteImagePath, ct);
-        }
+            // Create sprite image
+            var rows = (int)Math.Ceiling((double)thumbnailCount / columns);
+            var spriteWidth = thumbnailWidth * columns;
+            var spriteHeight = thumbnailHeight * rows;
+
+            using (var spriteImage = new Image<Rgb24>(spriteWidth, spriteHeight))
+            {
+                spriteImage.Mutate(ctx => ctx.BackgroundColor(Color.Black));
+
+                for (int i = 0; i < thumbnailPaths.Count; i++)
+                {
+                    if (!File.Exists(thumbnailPaths[i]))
+                    {
+                        // ffmpeg said success but the output isn't on disk —
+                        // rare but worth knowing about because the sprite will
+                        // have a black tile here.
+                        assemblyMissingFiles++;
+                        continue;
+                    }
+
+                    try
+                    {
+                        using (var thumbnail = await Image.LoadAsync<Rgb24>(thumbnailPaths[i], ct))
+                        {
+                            var col = i % columns;
+                            var row = i / columns;
+                            var x = col * thumbnailWidth;
+                            var y = row * thumbnailHeight;
+
+                            spriteImage.Mutate(ctx => ctx.DrawImage(thumbnail, new Point(x, y), 1f));
+
+                            // Generate VTT entry
+                            var startTime = TimeSpan.FromSeconds(i * intervalSeconds);
+                            var endTime = TimeSpan.FromSeconds((i + 1) * intervalSeconds);
+
+                            vttBuilder.AppendLine($"{FormatVttTime(startTime)} --> {FormatVttTime(endTime)}");
+                            vttBuilder.AppendLine($"sprite.jpg#xywh={x},{y},{thumbnailWidth},{thumbnailHeight}");
+                            vttBuilder.AppendLine();
+                        }
+
+                        // Clean up individual thumbnail. A delete failure here
+                        // (file in use, AV scan, etc.) doesn't break the sprite,
+                        // but it leaks a temp file — log so disk-bloat is debuggable.
+                        try
+                        {
+                            File.Delete(thumbnailPaths[i]);
+                        }
+                        catch (Exception delEx)
+                        {
+                            _logger.LogWarning(delEx,
+                                "Failed to delete temp thumbnail {Path} for video {VideoId} (sprite still generated correctly)",
+                                thumbnailPaths[i], videoId);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to process thumbnail {Index} ({Path}) for video {VideoId}",
+                            i, thumbnailPaths[i], videoId);
+                        assemblyFailures++;
+                    }
+                }
+
+                await spriteImage.SaveAsJpegAsync(spriteImagePath, ct);
+            }
 
             var vttContent = vttBuilder.ToString();
             await File.WriteAllTextAsync(vttFilePath, vttContent, ct);

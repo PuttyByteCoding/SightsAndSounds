@@ -48,8 +48,8 @@ public sealed class ThumbnailWarmingService : BackgroundService
             : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "video-thumbnails");
         var t = workerOptions.ThumbnailWarming;
         _perVideoCooldown = TimeSpan.FromSeconds(Math.Max(0, t.PerVideoCooldownSeconds));
-        _perVideoTimeout  = TimeSpan.FromSeconds(Math.Max(10, t.PerVideoTimeoutSeconds));
-        _importGrace      = TimeSpan.FromSeconds(Math.Max(0, t.ImportGraceSeconds));
+        _perVideoTimeout = TimeSpan.FromSeconds(Math.Max(10, t.PerVideoTimeoutSeconds));
+        _importGrace = TimeSpan.FromSeconds(Math.Max(0, t.ImportGraceSeconds));
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

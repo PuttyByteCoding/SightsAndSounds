@@ -9,6 +9,7 @@ using VideoOrganizer.Domain.Models;
 using VideoOrganizer.Infrastructure.Data;
 using VideoOrganizer.API.Services;
 using VideoOrganizer.Shared;
+using VideoOrganizer.Shared.Helpers;
 using VideoOrganizer.Shared.Configuration;
 using VideoOrganizer.Shared.Dto;
 using Xabe.FFmpeg;
@@ -87,18 +88,9 @@ public static class ApiEndpoints
         return ip != null && IPAddress.IsLoopback(ip);
     }
 
-    // Escape the three Postgres LIKE/ILIKE metacharacters so a raw user
-    // query like "50%_off" matches the literal string instead of being
-    // interpreted as wildcards. Backslash also needs escaping because
-    // we use it as the escape character (Npgsql's default).
-    //
-    // Shared by /api/search and POST /api/videos/filter (when its
-    // SearchQuery field is set) — both wrap the result in %…% for a
-    // substring match against trigram-indexed columns.
-    private static string EscapeLikePattern(string s) => s
-        .Replace("\\", "\\\\")
-        .Replace("%",  "\\%")
-        .Replace("_",  "\\_");
+    // EscapeLikePattern lives in VideoOrganizer.API.Helpers.SqlHelpers
+    // now so it can be unit-tested. The endpoints below call it via
+    // its fully-qualified name (or `using static`) instead.
 
     // (command, args[]) pair describing one terminal-launch attempt.
     // Consumed by /api/videos/{id}/open-terminal.
@@ -126,9 +118,9 @@ public static class ApiEndpoints
             yield return new("wt.exe", new[] { "-d", dir });
             // PowerShell -NoExit keeps the window open; -WorkingDirectory
             // is honored by both Windows PowerShell and PowerShell 7+.
-            yield return new("pwsh.exe",       new[] { "-NoExit", "-WorkingDirectory", dir });
+            yield return new("pwsh.exe", new[] { "-NoExit", "-WorkingDirectory", dir });
             yield return new("powershell.exe", new[] { "-NoExit", "-WorkingDirectory", dir });
-            yield return new("cmd.exe",        new[] { "/K", "cd", "/D", dir });
+            yield return new("cmd.exe", new[] { "/K", "cd", "/D", dir });
             yield break;
         }
         if (OperatingSystem.IsMacOS())
@@ -138,20 +130,20 @@ public static class ApiEndpoints
         }
         // Linux + other Unixes
         yield return new("x-terminal-emulator", new[] { "--working-directory", dir });
-        yield return new("gnome-terminal",      new[] { $"--working-directory={dir}" });
-        yield return new("konsole",             new[] { "--workdir", dir });
-        yield return new("xfce4-terminal",      new[] { $"--working-directory={dir}" });
-        yield return new("mate-terminal",       new[] { $"--working-directory={dir}" });
-        yield return new("tilix",               new[] { $"--working-directory={dir}" });
-        yield return new("terminator",          new[] { "--working-directory", dir });
-        yield return new("kitty",               new[] { "--directory", dir });
-        yield return new("alacritty",           new[] { "--working-directory", dir });
-        yield return new("wezterm",             new[] { "start", "--cwd", dir });
+        yield return new("gnome-terminal", new[] { $"--working-directory={dir}" });
+        yield return new("konsole", new[] { "--workdir", dir });
+        yield return new("xfce4-terminal", new[] { $"--working-directory={dir}" });
+        yield return new("mate-terminal", new[] { $"--working-directory={dir}" });
+        yield return new("tilix", new[] { $"--working-directory={dir}" });
+        yield return new("terminator", new[] { "--working-directory", dir });
+        yield return new("kitty", new[] { "--directory", dir });
+        yield return new("alacritty", new[] { "--working-directory", dir });
+        yield return new("wezterm", new[] { "start", "--cwd", dir });
         // xterm has no --working-directory flag. It DOES inherit CWD
         // from its parent process, and the endpoint already sets
         // ProcessStartInfo.WorkingDirectory, so a bare xterm invocation
         // opens in `dir` automatically.
-        yield return new("xterm",               Array.Empty<string>());
+        yield return new("xterm", Array.Empty<string>());
     }
 
     // Reload a Video from the DB with all DTO-shaped navigation
@@ -683,7 +675,7 @@ public static class ApiEndpoints
 
             // Build the ILIKE pattern via the shared escape helper so a
             // stray % or _ in the user input doesn't act as a wildcard.
-            var pat = $"%{EscapeLikePattern(query)}%";
+            var pat = $"%{SqlHelpers.EscapeLikePattern(query)}%";
 
             // Base predicate: OR across the four indexed string fields +
             // matching tag names via the VideoTags join. Aliases skipped
@@ -723,7 +715,7 @@ public static class ApiEndpoints
                 var matched = new List<string>(4);
                 if (v.FileName.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("fileName");
                 if (v.FilePath.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("filePath");
-                if (v.Notes.Contains(query, StringComparison.OrdinalIgnoreCase))    matched.Add("notes");
+                if (v.Notes.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("notes");
                 if (v.Md5 != null && v.Md5.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("md5");
                 foreach (var vt in v.VideoTags)
                 {
@@ -772,8 +764,8 @@ public static class ApiEndpoints
         api.MapGet("/runtime-info", (HttpContext http) =>
         {
             var os = OperatingSystem.IsWindows() ? "windows"
-                   : OperatingSystem.IsMacOS()   ? "macos"
-                   : OperatingSystem.IsLinux()   ? "linux"
+                   : OperatingSystem.IsMacOS() ? "macos"
+                   : OperatingSystem.IsLinux() ? "linux"
                    : "other";
             return Results.Ok(new RuntimeInfoDto(IsLocalRequest(http), os));
         }).WithName("GetRuntimeInfo");
@@ -1313,7 +1305,11 @@ public static class ApiEndpoints
                 .ToListAsync(ct);
             var result = sets.Select(s => new
             {
-                s.Id, s.Name, s.Path, s.Enabled, s.SortOrder,
+                s.Id,
+                s.Name,
+                s.Path,
+                s.Enabled,
+                s.SortOrder,
                 PathExists = TryDirectoryExists(s.Path, logger)
             }).ToList();
             return Results.Ok(result);
@@ -1506,7 +1502,7 @@ public static class ApiEndpoints
             var searchQuery = filter?.SearchQuery?.Trim();
             if (!string.IsNullOrEmpty(searchQuery))
             {
-                var pat = $"%{EscapeLikePattern(searchQuery)}%";
+                var pat = $"%{SqlHelpers.EscapeLikePattern(searchQuery)}%";
                 candidatesQuery = candidatesQuery.Where(v =>
                     EF.Functions.ILike(v.FileName, pat) ||
                     EF.Functions.ILike(v.FilePath, pat) ||

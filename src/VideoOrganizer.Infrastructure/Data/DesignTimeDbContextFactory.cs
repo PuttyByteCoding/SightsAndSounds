@@ -45,12 +45,12 @@ public sealed class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Vid
         // we'd just emit the placeholder fallback. Host / port / db
         // have safe defaults that mirror Program.cs.
         var user = Environment.GetEnvironmentVariable("POSTGRES_USER");
-        var pw   = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+        var pw = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
         if (string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pw)) return null;
 
         var host = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "localhost";
         var port = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
-        var db   = Environment.GetEnvironmentVariable("POSTGRES_DB")   ?? "videoorganizer";
+        var db = Environment.GetEnvironmentVariable("POSTGRES_DB") ?? "videoorganizer";
 
         return string.Join(';',
             $"Host={host}",
