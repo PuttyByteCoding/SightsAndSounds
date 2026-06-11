@@ -4,6 +4,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/api';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
+  import { runtimeStore } from '$lib/runtimeStore.svelte';
+  import SearchPalette from '$lib/components/SearchPalette.svelte';
 
   let { children } = $props();
 
@@ -56,26 +58,33 @@
     { href: '/logs', label: 'Logs', icon: 'M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 4v2h12V7H6zm0 4v2h12v-2H6zm0 4v2h8v-2H6z' },
     { href: '/api-docs', label: 'API', icon: 'M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6-1.4-1.4z' },
     { href: '/style-guide', label: 'Style Guide', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.18-.64-1.61-.4-.43-.61-.99-.61-1.59 0-1.38 1.12-2.5 2.5-2.5H17c2.76 0 5-2.24 5-5 0-4.96-4.49-9-10-9zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 8 6.5 8 8 8.67 8 9.5 7.33 11 6.5 11zm3-4C8.67 7 8 6.33 8 5.5S8.67 4 9.5 4s1.5.67 1.5 1.5S10.33 7 9.5 7zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 4 14.5 4s1.5.67 1.5 1.5S15.33 7 14.5 7zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 8 17.5 8s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z' },
-    { href: '/purge', label: 'Purge Deleted', icon: 'M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z' }
+    { href: '/playback-issues', label: 'Playback Issues', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.32 12.9L7.1 5.68A8 8 0 0112 4zM5.68 7.1l11.22 11.22A8 8 0 015.68 7.1z' },
+    { href: '/purge', label: 'Purge Deleted', icon: 'M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z' },
+    // Diagnostic tooling — surfaces drift between the DB and the
+    // filesystem (missing files, un-imported leftovers, unreachable
+    // sources). Sits next to Purge / Playback Issues since all three
+    // are "library health" pages.
+    { href: '/data-validation', label: 'Data Validation', icon: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z' }
   ];
 
   // Most-used shortcuts — the full reference lives on the Config page.
   // Seek keys live in their own 3x2 numpad-style grid below.
   const shortcuts = [
+    { keys: ['⌃K'],      label: 'Search everything' },
     { keys: ['␣'],       label: 'Play / pause' },
     { keys: ['←', '→'],  label: 'Save & prev/next' },
     { keys: ['T'],       label: 'Edit Tags' },
     { keys: ['I'],       label: 'File Info' },
-    { keys: ['W'],       label: "Won't Play + advance" },
+    { keys: ['W'],       label: "Playback Issue + advance" },
     { keys: ['D'],       label: 'Delete + advance' },
-    { keys: ['U'],       label: 'Undo W/D' },
-    { keys: ['R'],       label: 'Clear Needs Review' },
+    { keys: ['U'],       label: 'Undo' },
+    { keys: ['R'],       label: 'Toggle Needs Review' },
     { keys: ['F'],       label: 'Toggle Favorite' },
     { keys: ['K'],       label: 'Add bookmark' },
-    { keys: ['C'],       label: 'Mark clip start/end' },
-    { keys: ['['],       label: 'Start block' },
-    { keys: [']'],       label: 'End block' },
-    { keys: ['M'],       label: 'Toggle mark mode' },
+    // The bracket cluster shares the [/] keys; modifiers pick the layer.
+    { keys: ['⇧+[', '⇧+]'],   label: 'Start / End block' },
+    { keys: ['⌃⇧+[', '⌃⇧+]'], label: 'Start / End clip' },
+    { keys: ['[', ']'],   label: 'Shrink / Enlarge video' },
     { keys: ['\\'],      label: 'Fit video to column' }
   ];
 
@@ -87,12 +96,47 @@
   let collapsed = $state(false);
   onMount(() => {
     collapsed = localStorage.getItem('sidebarCollapsed') === '1';
+    // Boot the runtime-info fetch — drives the host-machine banner
+    // below + gates the local-only diagnostic buttons elsewhere.
+    void runtimeStore.load();
   });
   function toggleCollapsed() {
     collapsed = !collapsed;
     localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0');
   }
+
+  // --- Global Ctrl+K / Cmd+K command palette -----------------------------
+  // Mounted once at the layout level so it's available from every
+  // route. Hotkey works anywhere on the page — including while
+  // typing in inputs/textareas — because every other interactive
+  // form on the site reserves their text-only Ctrl key combos for
+  // browser defaults (Ctrl+A, Ctrl+C, etc.). Ctrl+K isn't taken.
+  //
+  // The palette itself is bind:open={searchOpen} so it can flip
+  // itself closed on Esc / result-pick.
+  let searchOpen = $state(false);
+  function onGlobalKeyDown(e: KeyboardEvent) {
+    // Ctrl+K on Win/Linux, Cmd+K on macOS. Ignore when a modifier
+    // combo we don't expect is also pressed so users with Karabiner
+    // / AutoHotKey remappings don't get a surprise palette.
+    const isToggle =
+      (e.key === 'k' || e.key === 'K') &&
+      (e.ctrlKey || e.metaKey) &&
+      !e.altKey && !e.shiftKey;
+    if (!isToggle) return;
+    e.preventDefault();
+    searchOpen = !searchOpen;
+  }
 </script>
+
+<!-- Global Ctrl+K / Cmd+K listener — single window-level handler so
+     the palette opens regardless of where focus currently is. -->
+<svelte:window onkeydown={onGlobalKeyDown} />
+
+<!-- Global search palette. Mounted once at the layout level so every
+     route gets it. bind:open lets the palette flip itself closed on
+     Esc / result pick. -->
+<SearchPalette bind:open={searchOpen} />
 
 <div class="drawer lg:drawer-open min-h-screen">
   <input id="main-drawer" type="checkbox" class="drawer-toggle" />
@@ -110,7 +154,12 @@
       <div class="mx-2 flex-1 px-2 font-semibold">Video Organizer</div>
     </div>
 
-    <!-- Page content -->
+    <!-- Page content. The "must be on host machine" warning banner
+         used to live here, but it's only relevant on pages that
+         actually expose local-only buttons (reveal in folder,
+         ffprobe). Each such page renders <RemoteHostBanner /> at
+         its top instead, so the warning is contextual rather than
+         globally nagging. -->
     <main class="flex-1 p-4 lg:p-6">
       {@render children()}
     </main>

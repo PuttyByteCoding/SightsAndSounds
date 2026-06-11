@@ -9,7 +9,7 @@ public class Video
     public string FilePath { get; set; } = string.Empty; // Absolute path the API reads from (always a child of some VideoSet.Path)
     // Null while the background Md5BackfillService hasn't computed it yet.
     // Postgres treats multiple NULLs as distinct in a unique index, so the
-    // uniqueness constraint still catches real-MD5 duplicates once filled in.
+    // uniqueness constraint still catches real-Md5 duplicates once filled in.
     public string? Md5 { get; set; }
     // Set by Md5BackfillService when hashing fails or the user manually skips.
     // Stops the worker from re-trying the same broken file every scan.
@@ -31,7 +31,7 @@ public class Video
     // truth for the worker's IsAlreadyWarmed check.
     public bool ThumbnailsGenerated { get; set; }
     // Stamped by DirectoryImportService on every Video it creates so the
-    // Background Tasks page can group thumbnail/MD5 progress by import
+    // Background Tasks page can group thumbnail/Md5 progress by import
     // (each import panel queries Videos with this JobId). Null on rows
     // imported before this column existed or via other means.
     public Guid? ImportJobId { get; set; }
@@ -61,16 +61,21 @@ public class Video
     // managed:
     //   NeedsReview        — auto-set true on import; cleared by the user
     //                        once they've reviewed. Re-set by Md5BackfillService
-    //                        when an MD5 duplicate is detected.
-    //   WontPlay           — set when the user marks a file unplayable.
-    //                        Triggers a move into `<set>/_WontPlay/...`.
+    //                        when an Md5 duplicate is detected.
+    //   PlaybackIssue      — set when the user marks a file as not playing
+    //                        cleanly in the browser (could be codec, encoding,
+    //                        container, or genuine corruption — name avoids
+    //                        claiming a cause). Triggers a move into
+    //                        `<set>/_PlaybackIssue/...`. Was previously named
+    //                        WontPlay; renamed to read more honestly given
+    //                        many such files do play in external players.
     //   MarkedForDeletion  — set when the user marks for deletion. Triggers
     //                        a move into `<set>/_ToDelete/...`. The purge
     //                        endpoints key off this field.
     //   IsFavorite         — user-set "starred" flag. Plain boolean (no file
     //                        move side effect); rendered as ★ everywhere.
     public bool NeedsReview { get; set; } = true;
-    public bool WontPlay { get; set; }
+    public bool PlaybackIssue { get; set; }
     public bool MarkedForDeletion { get; set; }
     public bool IsFavorite { get; set; }
 
@@ -95,7 +100,6 @@ public enum CameraTypes
 {
     Unknown,
     CellPhone,
-    HiddenCamera,
     Camcorder,
     ProfessionalCamera,
     NotChecked

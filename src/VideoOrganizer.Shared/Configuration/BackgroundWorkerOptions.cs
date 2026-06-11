@@ -1,6 +1,6 @@
 namespace VideoOrganizer.Shared.Configuration;
 
-// Tunables for the background workers (Thumbnail warming + MD5 backfill).
+// Tunables for the background workers (Thumbnail warming + Md5 backfill).
 // Defaults match the original hard-coded constants so behavior is unchanged
 // when the BackgroundWorkers section is missing from appsettings.json.
 public sealed class BackgroundWorkerOptions

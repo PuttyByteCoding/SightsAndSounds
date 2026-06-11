@@ -2,7 +2,7 @@ namespace VideoOrganizer.Shared.Dto;
 
 // Wire shape for a Video. Tags are flattened from the VideoTag join so the
 // frontend doesn't have to traverse it. PropertyValues are typed via the
-// embedded PropertyDataType from the definition. WontPlay and
+// embedded PropertyDataType from the definition. PlaybackIssue and
 // MarkedForDeletion remain structural (file-system behavior); IsClip is
 // derived from ParentVideoId.
 public record VideoDto(
@@ -35,7 +35,7 @@ public record VideoDto(
     int WatchCount,
     string Notes,
     bool NeedsReview,
-    bool WontPlay,
+    bool PlaybackIssue,
     bool MarkedForDeletion,
     Guid? ParentVideoId,
     double? ClipStartSeconds,
@@ -56,7 +56,7 @@ public record VideoTagSummaryDto(
 // PUT /api/videos/{id} body — full update. Drops file/codec/structural
 // metadata that the client shouldn't be rewriting from this endpoint
 // (those are managed by the import + worker pipeline). NeedsReview and
-// IsFavorite are included so the user can flip them inline; WontPlay /
+// IsFavorite are included so the user can flip them inline; PlaybackIssue /
 // MarkedForDeletion are not — those have file-move side effects and live
 // on dedicated endpoints.
 public record UpdateVideoRequest(

@@ -14,11 +14,20 @@ cp .env.example .env       # then edit .env (set POSTGRES_PASSWORD at minimum)
 ./start.sh                 # postgres + API + UI
 ```
 
+On Windows, equivalent PowerShell scripts ship alongside the bash ones:
+
+```powershell
+Copy-Item .env.example .env   # then edit .env (set POSTGRES_PASSWORD at minimum)
+.\start.ps1                   # postgres + API + UI
+```
+
 UI:        <http://localhost:5173>
 API:       <http://localhost:5098>
-Swagger:   <http://localhost:5098/swagger>
+Scalar:    <http://localhost:5098/swagger>     (interactive API reference)
+OpenAPI:   <http://localhost:5098/openapi/v1.json>  (raw spec)
+Seq:       <http://localhost:5341>             (structured log viewer — dev only)
 
-Stop everything with `./stop.sh`.
+Stop everything with `./stop.sh` (or `.\stop.ps1` on Windows).
 
 ---
 
@@ -68,7 +77,7 @@ To re-apply the seed, wipe the database with `./start-fresh.sh` — EF Core re-c
 
 ## Startup scripts
 
-Three bash scripts at the repo root, plus a shared library. They work in Git Bash on Windows and on macOS/Linux. State (PIDs + logs) lives in `.run/` (gitignored).
+Three bash scripts at the repo root, plus a shared library. They work in Git Bash on Windows and on macOS/Linux. PowerShell equivalents (`start.ps1`, `start-fresh.ps1`, `stop.ps1`, `_lib.ps1`) sit next to them and behave the same way for native Windows shells. State (PIDs + logs) lives in `.run/` (gitignored).
 
 ### `start.sh`
 Standard "everything up, keep my data":
@@ -99,6 +108,17 @@ Sourced by the three scripts. Holds shared helpers: `is_windows`, `kill_tree`, `
 tail -f .run/api.log     # API output
 tail -f .run/ui.log      # SvelteKit dev server output
 ```
+
+For structured browsing — filter by level, source context, or any logged property — point a browser at <http://localhost:5341>. The API ships logs to the dockerized Seq container whenever `Logging:Seq:ServerUrl` is set AND the host is running in the Development environment; both gates fire in `Program.cs`, so production builds never ship logs off-host. The in-memory `/logs` page (48-hour retention) keeps working in both environments.
+
+The Seq config lives in `appsettings.Development.json` (gitignored — same per-developer convention as the log levels). On a fresh checkout, copy `appsettings.Development.example.json` next to it:
+
+```bash
+cp src/VideoOrganizer.API/appsettings.Development.example.json \
+   src/VideoOrganizer.API/appsettings.Development.json
+```
+
+To turn Seq off without ripping it out, blank `Logging:Seq:ServerUrl` in your `appsettings.Development.json` and the API stops shipping logs on next restart. The container can keep running or be removed from `docker-compose.yml`.
 
 ---
 

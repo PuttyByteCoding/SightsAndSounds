@@ -18,6 +18,11 @@ export interface Breadcrumb {
   name: string;
   // null means "navigate back to the sets root" (empty-path browse response).
   path: string | null;
+  // Only set on the crumb that represents a source root — true when
+  // that source is disabled. Lets the template render the standard
+  // strikethrough + "(Disabled)" treatment without the rendering
+  // code having to re-resolve the set on every keystroke.
+  disabled?: boolean;
 }
 
 export function breadcrumbs(currentPath: string, sets: VideoSet[]): Breadcrumb[] {
@@ -29,7 +34,7 @@ export function breadcrumbs(currentPath: string, sets: VideoSet[]): Breadcrumb[]
   if (!set) return crumbs;
 
   const setRoot = set.path.replace(/[/\\]+$/, '');
-  crumbs.push({ name: set.name, path: setRoot });
+  crumbs.push({ name: set.name, path: setRoot, disabled: !set.enabled });
 
   if (current.toLowerCase() === setRoot.toLowerCase()) return crumbs;
 

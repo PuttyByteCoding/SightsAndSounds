@@ -11,6 +11,12 @@ export interface FilterTag {
   label: string;
   // Optional display hint for tag-type refs.
   tagGroupName?: string;
+  // Set when the tag click originated from a specific video's tag
+  // pill (VideoCard / VideoPlayer). Lets FilterDialog offer the
+  // "Remove from this video" action — without it the dialog can
+  // only filter / rename / delete the tag itself. Untouched on tag
+  // clicks from the browse sidebar / search box (no video context).
+  videoId?: string;
 }
 
 function keyOf(t: FilterTag) {
@@ -38,10 +44,13 @@ function _FilterStore() {
     pending = tag;
   }
 
-  function applyPending(kind: 'required' | 'optional' | 'excluded') {
-    if (!pending) return;
-    const tag = pending;
-    pending = null;
+  // Direct route into a specific bucket. Used by surfaces that
+  // already know which bucket they want (e.g. the Flags tree's
+  // True/False sub-items, which map to Required/Excluded without
+  // needing the picker dialog). Idempotent: existing entries with
+  // the same key are removed from every bucket first so the tag
+  // ends up in exactly one place.
+  function apply(tag: FilterTag, kind: 'required' | 'optional' | 'excluded') {
     const k = keyOf(tag);
     required = required.filter((t) => keyOf(t) !== k);
     optional = optional.filter((t) => keyOf(t) !== k);
@@ -49,6 +58,13 @@ function _FilterStore() {
     if (kind === 'required') required = [...required, tag];
     else if (kind === 'optional') optional = [...optional, tag];
     else excluded = [...excluded, tag];
+  }
+
+  function applyPending(kind: 'required' | 'optional' | 'excluded') {
+    if (!pending) return;
+    const tag = pending;
+    pending = null;
+    apply(tag, kind);
   }
 
   function cancelPending() { pending = null; }
@@ -76,6 +92,7 @@ function _FilterStore() {
     has,
     requestAdd,
     applyPending,
+    apply,
     cancelPending,
     remove,
     clear

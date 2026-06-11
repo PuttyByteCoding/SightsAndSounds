@@ -107,6 +107,17 @@
     void ensureVtt();
   });
 
+  // When the currently-playing video changes (Shift+←/→ nav, auto-
+  // advance, programmatic open), scroll the new active card into the
+  // viewport so the user can see the highlight ring. `nearest` block
+  // alignment + `smooth` behavior keeps small adjustments tidy and
+  // doesn't yank the page on hover-to-play within an already-visible
+  // row.
+  $effect(() => {
+    if (!active || !cardEl) return;
+    cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  });
+
   async function onEnter() {
     hovering = true;
     // Pre-warm has usually fired already; this is a no-op unless the card
@@ -149,7 +160,10 @@
 
 <div
   bind:this={cardEl}
-  class="group text-left overflow-hidden rounded bg-base-200 hover:ring-2 hover:ring-primary transition w-full"
+  class="group text-left overflow-hidden rounded bg-base-200 transition w-full
+         {active
+            ? 'ring-2 ring-primary ring-offset-2 ring-offset-base-100 shadow-lg shadow-primary/30'
+            : 'hover:ring-2 hover:ring-primary'}"
   onmouseenter={onEnter}
   onmousemove={onMove}
   onmouseleave={onLeave}
@@ -166,6 +180,8 @@
       bind:this={imgWrapEl}
       bind:clientWidth={imgWidth}
       class="relative bg-base-300 aspect-video w-full"
+      class:grayscale={video.markedForDeletion || video.playbackIssue}
+      class:opacity-60={video.markedForDeletion || video.playbackIssue}
     >
       <img
         src={posterUrl}
@@ -177,6 +193,41 @@
       />
       {#if hovering && currentFrame !== null}
         <div class="absolute inset-0" style={scrubStyle()}></div>
+      {/if}
+      <!-- State overlays sit on top of the (already grayscaled +
+           dimmed) thumbnail so the row reads at a glance as "this
+           is in a non-playable state". Marked-for-deletion wins
+           when both flags are set (it's the destructive end-state).
+           pointer-events-none so the underlying thumbnail still
+           handles click + hover scrubbing for navigation back into
+           the player overlay (where the user can Undelete / Undo). -->
+      {#if video.markedForDeletion}
+        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            class="w-1/3 h-1/3 fill-current text-error drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
+            aria-label="Marked for deletion"
+          >
+            <title>Marked for deletion</title>
+            <path d="M9 3a1 1 0 00-1 1v1H5a1 1 0 100 2h14a1 1 0 100-2h-3V4a1 1 0 00-1-1H9zm-2 6v11a2 2 0 002 2h6a2 2 0 002-2V9H7zm2 2h2v8H9v-8zm4 0h2v8h-2v-8z"/>
+          </svg>
+        </div>
+      {:else if video.playbackIssue}
+        <!-- Won't-Play overlay: prohibition symbol (orange) so the
+             user can scan the grid and tell unwatchable rows apart
+             from rows headed for permanent deletion at a glance. -->
+        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            class="w-1/3 h-1/3 fill-current text-warning drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
+            aria-label="Playback issue"
+          >
+            <title>Playback issue</title>
+            <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.32 12.9L7.1 5.68A8 8 0 0112 4zM5.68 7.1l11.22 11.22A8 8 0 015.68 7.1z"/>
+          </svg>
+        </div>
       {/if}
       {#if warmState === 'warming' || warmState === 'pending'}
         <div
@@ -214,9 +265,12 @@
           {/if}
         </div>
       {/if}
-      {#if video.isClip || video.isFavorite}
-        <!-- Top-right indicator stack: scissor for clip rows, ★ for favorites.
-             Both can apply to the same video, so render in a flex row. -->
+      {#if video.isClip || video.isFavorite || video.needsReview}
+        <!-- Top-right indicator stack: scissor for clip rows, eye for
+             needs-review, ★ for favorites. All three can apply to the
+             same video, so render in a flex row. Eye sits between the
+             clip and favorite icons so it falls in a stable position
+             regardless of which neighbors are present. -->
         <div class="absolute top-1 right-1 flex items-start gap-1 pointer-events-none drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
           {#if video.isClip}
             <svg
@@ -227,6 +281,20 @@
             >
               <title>Clip</title>
               <path d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm0 12c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3z" />
+            </svg>
+          {/if}
+          {#if video.needsReview}
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              class="h-4 w-4 text-sky-400 fill-current"
+              aria-label="Needs Review"
+            >
+              <title>Needs Review</title>
+              <!-- Material-style eye icon. Sky-400 sits opposite the
+                   yellow-400 clip and the warning-gold star so each
+                   status reads as its own thing at a glance. -->
+              <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" />
             </svg>
           {/if}
           {#if video.isFavorite}
@@ -261,24 +329,37 @@
     {#if video.tags.length > 0}
       <div class="flex flex-wrap gap-1">
         {#each video.tags as t (t.id)}
-          <span class="badge badge-sm {pillClass(t.id, t.tagGroupName)} gap-1">
+          <!-- Tag pill — caps width via min(12rem, 100%) so a long
+               tag name truncates inside the pill with an ellipsis
+               instead of wrapping the badge to two lines OR
+               overflowing the thumbnail card. The 100% term is what
+               keeps the chip from spilling past the card's right
+               edge when the card is narrower than 12rem (small
+               grid columns); the 12rem term keeps the chip from
+               becoming absurdly wide on a very wide card.
+               flex-nowrap keeps the name and ✎ on one row; the
+               inner button uses `truncate min-w-0` for the actual
+               ellipsis. Same pattern is reused on the player, the
+               edit-tags panel, and the filter chips. -->
+          <span class="badge badge-sm {pillClass(t.id, t.tagGroupName)} gap-1 max-w-[min(12rem,100%)] flex-nowrap">
             <button
               type="button"
-              class="cursor-pointer"
+              class="cursor-pointer truncate min-w-0"
               onclick={(e) => {
                 e.stopPropagation();
                 filterStore.requestAdd({
                   type: 'tag',
                   value: t.id,
                   label: t.name,
-                  tagGroupName: t.tagGroupName
+                  tagGroupName: t.tagGroupName,
+                  videoId: video.id
                 });
               }}
               title="Filter by {t.tagGroupName}: {t.name}"
             >{t.name}</button>
             <button
               type="button"
-              class="opacity-70 hover:opacity-100"
+              class="opacity-70 hover:opacity-100 shrink-0"
               onclick={(e) => openEditTag(t.id, e)}
               title="Edit tag"
               aria-label="Edit {t.name}"

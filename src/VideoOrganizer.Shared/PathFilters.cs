@@ -3,9 +3,11 @@ namespace VideoOrganizer.Shared;
 /// <summary>
 /// Folders the app manages internally and doesn't want to appear in browse
 /// trees or import scans. The app creates these as children of VideoSet roots:
-///   _Thumbnails — scrub-sprite cache (if the user points the ThumbnailsDirectory under a set root)
-///   _ToDelete   — videos the user has flagged for deletion (files moved here, never auto-deleted)
-///   _WontPlay   — videos the user has flagged as unplayable
+///   _Thumbnails       — scrub-sprite cache (if the user points the ThumbnailsDirectory under a set root)
+///   _ToDelete         — videos the user has flagged for deletion (files moved here, never auto-deleted)
+///   _PlaybackIssue    — videos the user has flagged as not playing cleanly
+///   _WontPlay         — legacy name for _PlaybackIssue (kept so leftover files
+///                       from before the rename stay hidden from browse / import)
 /// </summary>
 public static class PathFilters
 {
@@ -13,6 +15,7 @@ public static class PathFilters
     {
         "_Thumbnails",
         "_ToDelete",
+        "_PlaybackIssue",
         "_WontPlay"
     };
 

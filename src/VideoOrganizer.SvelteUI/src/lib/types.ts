@@ -51,6 +51,9 @@ export interface TagGroup {
   sortOrder: number;
   notes: string;
   tagCount: number;
+  // Number of videos with no tag from this group. Used for the
+  // "Missing / None" badge under each group in the browse sidebar.
+  videosMissingCount: number;
 }
 
 export interface Tag {
@@ -109,6 +112,51 @@ export interface TagSearchHit {
   tagGroupName: string;
   name: string;
   aliases: string[];
+}
+
+// --- Global search (Ctrl+K palette) ----------------------------------------
+//
+// Mirrors src/VideoOrganizer.Shared/Dto/SearchDto.cs. The server uses
+// [JsonPolymorphic] with discriminator "kind", so every result carries a
+// `kind` field that lets the client pattern-match on result type without
+// runtime type sniffing.
+//
+// v1 only emits VideoSearchResult; v2 will add `kind: 'tag' | 'source' | …`.
+// New shapes layer in as additional union members below — no change needed
+// to the API call site.
+
+export interface VideoSearchResult {
+  kind: 'video';
+  id: string;
+  title: string;             // file name
+  subtitle: string;          // file path
+  fileSize: number;
+  duration: string;          // TimeSpan, ISO 8601 string (e.g. "00:03:42.1230000")
+  isClip: boolean;
+  tags: string[];            // ordered tag names (group-sort, then name-sort)
+  matchedFields: string[];   // which fields the query matched, e.g.
+                             //   ["fileName"], ["filePath", "tag:Performer/Bob Marley"]
+}
+
+export type SearchResult = VideoSearchResult;
+//                       | TagSearchResult | SourceSearchResult …   ← v2
+
+export interface SearchResponse {
+  query: string;
+  totalCount: number;
+  truncated: boolean;        // true when totalCount > limit + offset
+  results: SearchResult[];
+}
+
+export interface SearchRequestOpts {
+  /** The query string. Treated as a single case-insensitive substring in v1. */
+  q: string;
+  /** Page size, clamped server-side to [1, 200]. Defaults to 50. */
+  limit?: number;
+  /** Page offset, defaults to 0. */
+  offset?: number;
+  /** CSV allow-list of result kinds to include. v1 only honors "video". */
+  kinds?: string;
 }
 
 export interface PropertyDefinition {
@@ -210,7 +258,7 @@ export interface Video {
   watchCount: number;
   notes: string;
   needsReview: boolean;
-  wontPlay: boolean;
+  playbackIssue: boolean;
   markedForDeletion: boolean;
   isFavorite: boolean;
   parentVideoId: string | null;
@@ -253,6 +301,17 @@ export interface CreateClipRequest {
   name?: string;
 }
 
+// GET /api/videos/{parentId}/clips. Minimal projection used by the
+// VideoPlayer scrubber to paint green-tinted bands at each clip range
+// so the viewer can see at a glance which slices of the parent file
+// have been clipped out.
+export interface ClipSummary {
+  id: string;
+  fileName: string;
+  clipStartSeconds: number;
+  clipEndSeconds: number;
+}
+
 // --- Filtering -------------------------------------------------------------
 
 // Wire enum from VideoOrganizer.Shared.Dto.FilterRefType.
@@ -262,7 +321,7 @@ export type FilterRefType = 'tag' | 'folder' | 'missing' | 'status';
 //   tag       -> Tag.id
 //   folder    -> absolute folder path
 //   missing   -> "tagGroup:<groupId>"
-//   status    -> "needsReview" | "wontPlay" | "markedForDeletion"
+//   status    -> "needsReview" | "playbackIssue" | "markedForDeletion"
 export interface FilterRef {
   type: FilterRefType;
   value: string;
@@ -277,10 +336,18 @@ export interface FilterTag extends FilterRef {
 }
 
 // POST body for /api/videos/filter and /api/playlists/random.
+//
+// searchQuery is a free-text substring (case-insensitive). When set,
+// it ANDs with the tag filter — only videos whose fileName, filePath,
+// notes, md5, or any tag name contains the substring are returned.
+// Backed by Postgres trigram indexes so it stays subsecond at 100k+
+// rows. Used by /browse's ?searchQuery= deep-link to turn search-
+// palette results into a playable playlist.
 export interface PlaylistFilterRequest {
   required: FilterRef[];
   optional: FilterRef[];
   excluded: FilterRef[];
+  searchQuery?: string;
 }
 
 // --- Logs / workers / imports ---------------------------------------------
@@ -420,6 +487,38 @@ export interface ImportJobSummary {
   md5: ImportTaskProgress;
 }
 
+// --- Runtime / Diagnostics -------------------------------------------------
+
+// GET /api/runtime-info. `isLocal` is true when the inbound request
+// is loopback (i.e. the browser is on the same machine as the API);
+// the layout uses this to decide whether to show the "must be on
+// host" banner and whether to render local-only diagnostic buttons.
+export interface RuntimeInfo {
+  isLocal: boolean;
+  os: 'windows' | 'macos' | 'linux' | 'other';
+}
+
+// GET /api/videos/{id}/ffprobe.
+export interface FfprobeResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  filePath: string;
+}
+
+// GET /api/videos/flag-counts. Drives the per-flag count badges on
+// the Flags tree in the browse sidebar — number of videos whose
+// boolean flag is set, scoped to enabled VideoSets. `isClip` is
+// structural (true iff ParentVideoId is non-null) but exposed
+// through the same Flags-tree UI as the toggleable flags.
+export interface FlagCounts {
+  favorite: number;
+  needsReview: number;
+  playbackIssue: number;
+  markedForDeletion: number;
+  isClip: number;
+}
+
 // --- VideoSet --------------------------------------------------------------
 
 export interface VideoSet {
@@ -432,3 +531,57 @@ export interface VideoSet {
 }
 
 export type VideoSetInput = Omit<VideoSet, 'pathExists'>;
+
+// --- Data validation -------------------------------------------------------
+
+// GET /api/validation/missing-files. A Video row whose FilePath no
+// longer exists on disk. SourceId/Name come from the longest-prefix
+// match against configured VideoSets; null when no source covers
+// the path (an orphan path or a deleted source).
+export interface MissingVideoFile {
+  videoId: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  ingestDate: string;
+  sourceId: string | null;
+  sourceName: string | null;
+  sourceEnabled: boolean;
+}
+
+// GET /api/validation/extra-files. A video file on disk under a
+// configured source that has no matching Video row in the DB.
+export interface ExtraDiskFile {
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  sourceId: string;
+  sourceName: string;
+}
+
+// GET /api/validation/md5-candidates. Eligibility list the client
+// walks through one-by-one, POSTing each id to /md5-check.
+export interface Md5Candidate {
+  videoId: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  sourceId: string | null;
+  sourceName: string | null;
+  sourceEnabled: boolean;
+  storedMd5: string;
+}
+
+// POST /api/validation/md5-check/{id}. Per-file result.
+// match=false with error=null means the content drifted; with a
+// non-null error means the hash couldn't be computed (file vanished
+// mid-scan, IO error, etc.).
+export interface Md5CheckResult {
+  videoId: string;
+  computedMd5: string;
+  storedMd5: string;
+  match: boolean;
+  fileSize: number;
+  fileExists: boolean;
+  error: string | null;
+}

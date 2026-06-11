@@ -126,9 +126,13 @@
   {#if values.length > 0}
     <div class="flex flex-wrap gap-1 mt-2">
       {#each values as v, i (i + '-' + v.type + '-' + v.value)}
-        <span class="badge {pillClass(v.value, v.tagGroupName)} gap-1">
-          {v.label}
-          <button class="btn btn-ghost btn-xs px-1 leading-none" onclick={() => remove(i)} aria-label="Remove {v.label}">×</button>
+        <!-- Filter chip — same min(14rem, 100%) / truncate / flex-
+             nowrap pattern as the tag pills throughout the app.
+             Caps the chip so a long label ellipsizes instead of
+             wrapping the badge OR overflowing the dialog. -->
+        <span class="badge {pillClass(v.value, v.tagGroupName)} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={v.label}>
+          <span class="truncate min-w-0">{v.label}</span>
+          <button class="btn btn-ghost btn-xs px-1 leading-none shrink-0" onclick={() => remove(i)} aria-label="Remove {v.label}">×</button>
         </span>
       {/each}
     </div>

@@ -1,12 +1,15 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api';
   import type {
     ImportBrowseDirectory,
     DirectoryImportRequest,
+    Tag,
     VideoSet
   } from '$lib/types';
   import { breadcrumbs } from '$lib/pathHelpers';
+  import TagEditModal from '$lib/components/TagEditModal.svelte';
 
   // --- State ----------------------------------------------------------------
 
@@ -23,7 +26,17 @@
   let treeInitialLoading = $state(true);
 
   // Form
+  // Multi-select state.
+  // - selectedPath is the "primary" — drives the right-pane file list,
+  //   breadcrumbs, and default import name. Always the last clicked
+  //   path (and a member of selectedPaths) when anything is selected.
+  // - selectedPaths is the canonical selection set; size > 1 when the
+  //   user Ctrl- or Shift-clicked.
+  // - selectionAnchor is the Shift-click range origin. Reset to the
+  //   clicked row on plain or Ctrl click.
   let selectedPath = $state('');
+  let selectedPaths = $state<Set<string>>(new Set());
+  let selectionAnchor: string | null = null;
   let includeSubdirectories = $state(true);
   let importName = $state('');
   // Generic tag picker — IDs of tags to apply to every newly-imported video.
@@ -33,10 +46,54 @@
   let initialTagLabels = $state<Record<string, string>>({});
   let importNotes = $state('');
 
-  // File list
-  let fileList = $state<string[]>([]);
-  let nonImportableFileList = $state<string[]>([]);
-  let importedFilesSet = $state<Set<string>>(new Set());
+  // Create-tag modal (TagEditModal in create mode, with its Group select)
+  // launched from the picker's "+ New Tag" button or the dropdown's
+  // "+ Create" row. On save the new tag is auto-applied to the import.
+  let showCreateTagModal = $state(false);
+  let createTagInitialName = $state('');
+
+  function openCreateTag(prefill: string) {
+    createTagInitialName = prefill;
+    initialTagSuggestions = [];
+    showCreateTagModal = true;
+  }
+
+  function onTagCreated(saved: Tag) {
+    if (!initialTagIds.includes(saved.id)) {
+      initialTagIds = [...initialTagIds, saved.id];
+    }
+    initialTagLabels = { ...initialTagLabels, [saved.id]: saved.name };
+    initialTagPickerInput = '';
+  }
+
+  // File list — keyed by folder path so the right pane can aggregate
+  // across the full multi-selection. Each entry is what the API
+  // returned for that single folder; the table below derives totals
+  // (Will Import / Already Imported / Other) by walking the map. A
+  // single-folder selection collapses to one entry, behaving exactly
+  // like the pre-multi-select implementation did.
+  type FolderFiles = { files: string[]; nonImportable: string[]; imported: string[] };
+  let filesByFolder = $state<Map<string, FolderFiles>>(new Map());
+  // Aggregated views — what the existing template binds against.
+  // Replaced direct assignments with deriveds so any flip in
+  // selectedPaths or filesByFolder propagates automatically.
+  const fileList = $derived.by<string[]>(() => {
+    const out: string[] = [];
+    for (const v of filesByFolder.values()) out.push(...v.files);
+    return out;
+  });
+  const nonImportableFileList = $derived.by<string[]>(() => {
+    const out: string[] = [];
+    for (const v of filesByFolder.values()) out.push(...v.nonImportable);
+    return out;
+  });
+  const importedFilesSet = $derived.by<Set<string>>(() => {
+    const s = new Set<string>();
+    for (const v of filesByFolder.values()) {
+      for (const f of v.imported) s.add(f);
+    }
+    return s;
+  });
   let folderSelected = $state(false);
   let filesLoading = $state(false);
 
@@ -64,7 +121,13 @@
     depth: number;
     expanded: boolean;
     loading: boolean;
+    // Primary selection — the row that drives the right-pane
+    // detail view. There is always at most one.
     selected: boolean;
+    // Member of the multi-selection set (Ctrl/Shift-click). The
+    // primary row is also `inSelection`; rows can be `inSelection`
+    // without being `selected` when the user has multi-selected.
+    inSelection: boolean;
   }
 
   const treeRows = $derived.by(() => {
@@ -77,7 +140,8 @@
           depth,
           expanded,
           loading: treeLoadingPaths.has(d.fullPath),
-          selected: selectedPath === d.fullPath
+          selected: selectedPath === d.fullPath,
+          inSelection: selectedPaths.has(d.fullPath)
         });
         if (expanded) {
           const children = treeChildrenByPath.get(d.fullPath);
@@ -117,9 +181,52 @@
   const importableCount = $derived(pendingFiles.length);
   const hasImportableFiles = $derived(importableCount > 0);
 
+  // "Import More" checkbox under the floating Import button. Checked
+  // = stay on the import tool after kicking off a job so the user
+  // can queue up another folder. Unchecked (default) = navigate to
+  // /background-tasks afterwards so they can watch progress. Stored
+  // in localStorage so the choice persists across sessions — most
+  // users settle into one of the two workflows.
+  let importMore = $state(false);
+
+  // Paths whose import job is still running (server-side). Polled
+  // from /api/import/jobs so the tree can show a "this folder is
+  // currently being imported" spinner on any row whose fullPath
+  // matches an in-flight job — long-running visual feedback
+  // beyond the brief in-flight click flash that the `importing`
+  // flag tracks. Includes whatever the user just clicked Import on
+  // (selectedPath, while `importing` is true) for the moment between
+  // the click and the next poll picking the job up.
+  let activeImportPaths = $state<Set<string>>(new Set());
+  let importPollTimer: ReturnType<typeof setTimeout> | null = null;
+  async function pollActiveImports() {
+    try {
+      const jobs = await api.listImportJobs();
+      activeImportPaths = new Set(
+        jobs.filter(j => !j.isCompleted).map(j => j.directoryPath)
+      );
+    } catch {
+      // Non-fatal — keep the previous set so the spinners don't
+      // flicker off on a transient failure.
+    }
+    // Tighter cadence while there's anything running so the
+    // spinner clears promptly when the job finishes; relaxed when
+    // idle so we don't hammer the API on a quiet page.
+    const interval = activeImportPaths.size > 0 ? 3000 : 10000;
+    importPollTimer = setTimeout(pollActiveImports, interval);
+  }
+  // True for rows whose fullPath has an active job, OR for the row
+  // the user just clicked Import on (covers the gap between the
+  // click and the poll picking it up).
+  function isImportingPath(path: string): boolean {
+    return activeImportPaths.has(path) || (importing && selectedPath === path);
+  }
+
   // --- Lifecycle ------------------------------------------------------------
 
   onMount(async () => {
+    importMore = localStorage.getItem('importMore') === '1';
+
     try {
       sets = await api.listVideoSets();
     } catch (e) {
@@ -133,6 +240,23 @@
     }
 
     await loadTreeRoot();
+    // Kick off the active-import poll. Self-reschedules; cleared
+    // on destroy.
+    void pollActiveImports();
+  });
+
+  onDestroy(() => {
+    if (importPollTimer) {
+      clearTimeout(importPollTimer);
+      importPollTimer = null;
+    }
+  });
+
+  // Cheap on every flip; keeps localStorage in sync without a save
+  // gesture.
+  $effect(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem('importMore', importMore ? '1' : '0');
   });
 
   // --- Add-dataset modal ----------------------------------------------------
@@ -246,6 +370,40 @@
     }
   }
 
+  // Per-id busy gate so the toggle can show a spinner without
+  // disabling the whole sidebar, and so a rapid double-click can't
+  // fire two updateVideoSet calls on the same source.
+  let setEnabledBusy = $state<Set<string>>(new Set());
+
+  // Flip a source's enabled flag from inside the import tree.
+  // Optimistic update — the toggle visibly slides immediately, the
+  // API call runs in the background, and we roll back on failure.
+  // Saves a context-switch to the Configuration page for the very
+  // common "I just disabled this and want to re-enable it" flow.
+  async function toggleSourceEnabled(s: VideoSet) {
+    if (setEnabledBusy.has(s.id)) return;
+    setEnabledBusy.add(s.id);
+    setEnabledBusy = new Set(setEnabledBusy);
+    const next = !s.enabled;
+    sets = sets.map(x => x.id === s.id ? { ...x, enabled: next } : x);
+    try {
+      await api.updateVideoSet(s.id, {
+        id: s.id,
+        name: s.name,
+        path: s.path,
+        enabled: next,
+        sortOrder: s.sortOrder
+      });
+    } catch (e) {
+      // Roll back the optimistic flip and surface the error.
+      sets = sets.map(x => x.id === s.id ? { ...x, enabled: s.enabled } : x);
+      formError = toMessage('Failed to update source', e);
+    } finally {
+      setEnabledBusy.delete(s.id);
+      setEnabledBusy = new Set(setEnabledBusy);
+    }
+  }
+
   async function fetchChildren(path: string) {
     if (treeChildrenByPath.has(path)) return;
     treeLoadingPaths = new Set(treeLoadingPaths).add(path);
@@ -275,23 +433,90 @@
     }
   }
 
-  async function selectFolder(dir: ImportBrowseDirectory) {
-    selectedPath = dir.fullPath;
-    folderSelected = true;
-    // Auto-fill the import name as "{source} - {folder leaf}" — best
-    // first guess for what to call the job. The user can edit before
-    // clicking Import.
-    importName = computeDefaultImportName(dir.fullPath);
+  async function selectFolder(dir: ImportBrowseDirectory, e?: MouseEvent) {
+    const path = dir.fullPath;
+    const ctrl = !!(e && (e.ctrlKey || e.metaKey));
+    const shift = !!(e?.shiftKey);
 
-    // Auto-expand on select so the user sees descent structure.
-    if (dir.hasSubdirectories && !treeExpandedPaths.has(dir.fullPath)) {
-      const expanded = new Set(treeExpandedPaths);
-      expanded.add(dir.fullPath);
-      treeExpandedPaths = expanded;
-      await fetchChildren(dir.fullPath);
+    if (shift && selectionAnchor) {
+      // Shift-click: range-select between the anchor and the clicked
+      // row, replacing the current selection. Walks `treeRows` so
+      // the range follows the visible (expanded) rendering — invisible
+      // children of collapsed parents are excluded, matching the
+      // user's intent of "everything I can see between A and B".
+      const rows = treeRows;
+      const anchorIdx = rows.findIndex(r => r.dir.fullPath === selectionAnchor);
+      const clickIdx = rows.findIndex(r => r.dir.fullPath === path);
+      if (anchorIdx >= 0 && clickIdx >= 0) {
+        const [lo, hi] = anchorIdx < clickIdx
+          ? [anchorIdx, clickIdx]
+          : [clickIdx, anchorIdx];
+        const range = new Set<string>();
+        for (let i = lo; i <= hi; i++) range.add(rows[i].dir.fullPath);
+        selectedPaths = range;
+      } else {
+        // Anchor not visible (collapsed parent). Fall back to plain
+        // click semantics.
+        selectedPaths = new Set([path]);
+        selectionAnchor = path;
+      }
+      selectedPath = path;
+    } else if (ctrl) {
+      // Ctrl/Cmd-click: toggle this row's membership in the selection
+      // set. The primary follows the click (added) or falls back to
+      // any remaining member (removed and was primary).
+      const next = new Set(selectedPaths);
+      if (next.has(path)) {
+        next.delete(path);
+        if (selectedPath === path) {
+          selectedPath = next.size > 0 ? [...next][0] : '';
+        }
+      } else {
+        next.add(path);
+        selectedPath = path;
+      }
+      selectedPaths = next;
+      selectionAnchor = path;
+    } else {
+      // Plain click: replace the selection. Same single-select behavior
+      // the import tool has always had.
+      selectedPaths = new Set([path]);
+      selectedPath = path;
+      selectionAnchor = path;
     }
 
-    await loadFiles();
+    folderSelected = selectedPath !== '';
+
+    if (selectedPath) {
+      // Auto-fill the import name from the primary path. For multi-
+      // selections, handleImport ignores this and generates a name per
+      // path so the user doesn't have to disambiguate manually.
+      importName = computeDefaultImportName(selectedPath);
+
+      // Auto-expand only on plain click — Ctrl/Shift gestures are about
+      // selection, not drilling into the tree, so we leave expansion
+      // state alone.
+      if (!ctrl && !shift && dir.hasSubdirectories && !treeExpandedPaths.has(selectedPath)) {
+        const expanded = new Set(treeExpandedPaths);
+        expanded.add(selectedPath);
+        treeExpandedPaths = expanded;
+        await fetchChildren(selectedPath);
+      }
+
+      await loadFiles();
+    } else {
+      // Selection emptied via Ctrl-deselect — clear the per-folder
+      // map so the aggregated derived views drop back to empty.
+      filesByFolder = new Map();
+    }
+  }
+
+  function clearSelection() {
+    selectedPaths = new Set();
+    selectedPath = '';
+    selectionAnchor = null;
+    folderSelected = false;
+    filesByFolder = new Map();
   }
 
   // "{source name} - {folder leaf}" if the path is inside a known VideoSet;
@@ -314,34 +539,80 @@
     return `${set.name} - ${leaf}`;
   }
 
+  // Sync filesByFolder with selectedPaths:
+  //   · drop entries for paths that have been deselected,
+  //   · fetch entries for paths that are newly in the set.
+  // Cached entries are reused across selection changes so a Ctrl-
+  // click that adds one folder doesn't re-fetch the four already
+  // listed. The toggle of `includeSubdirectories` invalidates the
+  // entire cache (separate $effect below) since recursion changes
+  // every folder's file list, not just the primary's.
   async function loadFiles() {
-    if (!selectedPath) return;
+    const paths = [...selectedPaths];
+    if (paths.length === 0) {
+      filesByFolder = new Map();
+      return;
+    }
     filesLoading = true;
+    formError = null;
     try {
-      fileList = [];
-      nonImportableFileList = [];
-      importedFilesSet = new Set();
-      formError = null;
-      const res = await api.getImportFiles(selectedPath, includeSubdirectories);
-      fileList = res.files;
-      nonImportableFileList = res.nonImportableFiles;
-      importedFilesSet = new Set(res.importedFiles);
-    } catch (e) {
-      formError = toMessage('Failed to list files', e);
+      const next = new Map<string, FolderFiles>();
+      // Carry forward cached entries that are still selected.
+      for (const [k, v] of filesByFolder.entries()) {
+        if (selectedPaths.has(k)) next.set(k, v);
+      }
+      // Fetch missing ones. Per-folder try/catch so one slow / dead
+      // network share doesn't kill the whole batch — partial results
+      // are better than nothing for a user trying to figure out which
+      // folder is broken.
+      for (const p of paths) {
+        if (next.has(p)) continue;
+        try {
+          const res = await api.getImportFiles(p, includeSubdirectories);
+          next.set(p, {
+            files: res.files,
+            nonImportable: res.nonImportableFiles,
+            imported: res.importedFiles
+          });
+        } catch (e) {
+          formError = toMessage(`Failed to list files for ${p}`, e);
+        }
+      }
+      filesByFolder = next;
     } finally {
       filesLoading = false;
     }
   }
 
+  // Manual file-list refresh — invalidates the per-folder cache and
+  // re-fetches every selected path. Useful when the user has just
+  // dropped new files into a folder on disk and wants the Will
+  // Import / Already Imported / Not a Video counts to reflect what's
+  // actually there now without changing the selection. No-op when
+  // nothing is selected; `loadFiles()` handles the empty case.
+  async function refreshFiles() {
+    filesByFolder = new Map();
+    await loadFiles();
+  }
+
   // Refresh the file list when the user toggles "Include subdirectories"
   // so the table immediately reflects what would actually be imported.
-  // Skip while no folder is selected to avoid a needless 4xx on mount.
+  // Invalidates the entire cache because recursion changes every
+  // folder's listing (not just the primary's). Skip while nothing is
+  // selected to avoid needless 4xx churn on mount.
+  //
+  // The check on `selectedPaths.size` lives inside `untrack` so the
+  // effect's only reactive dep is `includeSubdirectories` — without
+  // that wrap it would also fire on every selection change, racing
+  // with the loadFiles() call in selectFolder.
   $effect(() => {
-    // Track both deps so $effect picks up the toggle.
-    void includeSubdirectories;
-    if (selectedPath) {
-      void loadFiles();
-    }
+    void includeSubdirectories; // dependency
+    untrack(() => {
+      if (selectedPaths.size > 0) {
+        filesByFolder = new Map();
+        void loadFiles();
+      }
+    });
   });
 
   // (Alt+Numpad flag toggles removed — flags are now generic tags.)
@@ -352,7 +623,8 @@
   // Background Tasks page — we don't poll here anymore.
   let successClearTimer: ReturnType<typeof setTimeout> | null = null;
   async function handleImport() {
-    if (!selectedPath.trim()) {
+    const paths = [...selectedPaths];
+    if (paths.length === 0) {
       formError = 'Pick a folder from the tree first.';
       return;
     }
@@ -362,22 +634,54 @@
     formSuccess = null;
     if (successClearTimer) { clearTimeout(successClearTimer); successClearTimer = null; }
 
-    const request: DirectoryImportRequest = {
-      directoryPath: selectedPath,
-      includeSubdirectories,
-      name: importName.trim().length > 0 ? importName.trim() : null,
-      initialTagIds: initialTagIds.length > 0 ? initialTagIds : null,
-      notes: importNotes.trim().length > 0 ? importNotes.trim() : null
-    };
-
+    // For a single-path selection the user's edited importName wins.
+    // For a multi-path selection we ignore the field entirely and
+    // generate "{source} - {leaf}" per folder, since the field can
+    // only hold one value and forcing the user to edit it 5 times
+    // before clicking Import isn't worth it.
+    const isMulti = paths.length > 1;
+    const userName = importName.trim();
+    const failures: string[] = [];
+    let started = 0;
     try {
-      await api.startImport(request);
-      formSuccess = `Import started: "${request.name ?? selectedPath}". Running in the background — view progress on Background Tasks.`;
+      for (const path of paths) {
+        const name = !isMulti && userName.length > 0
+          ? userName
+          : computeDefaultImportName(path);
+        const request: DirectoryImportRequest = {
+          directoryPath: path,
+          includeSubdirectories,
+          name,
+          initialTagIds: initialTagIds.length > 0 ? initialTagIds : null,
+          notes: importNotes.trim().length > 0 ? importNotes.trim() : null
+        };
+        try {
+          await api.startImport(request);
+          started++;
+        } catch (e) {
+          failures.push(`${name}: ${toMessage('start failed', e).replace(/^start failed: /, '')}`);
+        }
+      }
+
+      if (failures.length === 0) {
+        formSuccess = isMulti
+          ? `Started ${started} import jobs. Running in the background — view progress on Background Tasks.`
+          : `Import started: "${userName.length > 0 ? userName : computeDefaultImportName(paths[0])}". Running in the background — view progress on Background Tasks.`;
+      } else {
+        formError = `Started ${started} of ${paths.length}. Failures: ${failures.join('; ')}`;
+      }
       // Auto-clear so chained imports don't pile up stale messages.
       successClearTimer = setTimeout(() => { formSuccess = null; }, 6000);
       // Refresh the totals counter; the file list is intentionally NOT
       // reloaded since the import is still in flight server-side.
       void refreshVideoCount();
+      // "Import More" unchecked → user is done queuing jobs and wants
+      // to watch them run. Hand them off to Background Tasks so they
+      // don't have to navigate manually. Checked (default) keeps them
+      // on this page to queue up another folder.
+      if (!importMore && started > 0) {
+        await goto('/background-tasks');
+      }
     } catch (e) {
       formError = toMessage('Import failed', e);
     } finally {
@@ -409,6 +713,25 @@
           <button type="button" class="btn btn-ghost btn-xs" onclick={loadTreeRoot} title="Reload">↻</button>
         </div>
       </div>
+      <!-- Hint + multi-selection summary. The hint stays muted on
+           single-select; once the user has multi-selected the bar
+           foregrounds with a count and a Clear-all link. Saves a
+           "how do I deselect?" round of fiddling. -->
+      {#if selectedPaths.size > 1}
+        <div class="flex items-center justify-between gap-2 mb-2 px-1 py-1 rounded bg-primary/15 text-primary-content border border-primary/40 text-xs">
+          <span class="tabular-nums font-medium">{selectedPaths.size} folders selected</span>
+          <button
+            type="button"
+            class="link link-hover"
+            onclick={clearSelection}
+          >Clear</button>
+        </div>
+      {:else}
+        <div class="text-[10px] text-base-content/50 mb-2 px-1">
+          <kbd class="kbd kbd-xs">Ctrl</kbd>+click to add ·
+          <kbd class="kbd kbd-xs">Shift</kbd>+click for range
+        </div>
+      {/if}
 
       {#if treeInitialLoading}
         <div class="flex items-center gap-2 text-base-content/70 p-2">
@@ -425,10 +748,28 @@
         <ul class="space-y-0.5 text-sm">
           {#each treeRows as row (row.dir.fullPath)}
             {@const isFullyImported = row.dir.videoCount > 0 && row.dir.importedCount >= row.dir.videoCount}
+            {@const rowSet = row.depth === 0
+              ? sets.find(s => s.path === row.dir.fullPath || s.name === row.dir.name)
+              : undefined}
+            {@const rowSetDisabled = rowSet ? !rowSet.enabled : false}
             <li>
+              <!-- Three-tier row tint:
+                     primary selected (drives detail pane) →
+                       bg-primary/30 + ring-2 ring-primary inset
+                     other multi-selected rows                 →
+                       bg-primary/15
+                     unselected                                →
+                       hover:bg-base-300
+                   ring-inset keeps the indicator inside the row's
+                   bounds so layout doesn't shift between selected
+                   and not-selected; same trick used elsewhere
+                   throughout the app. -->
               <div
-                class="flex items-center gap-1 rounded hover:bg-base-300 pr-1"
-                class:bg-base-300={row.selected}
+                class="flex items-center gap-1 rounded pr-1 transition-colors {row.selected
+                  ? 'bg-primary/30 ring-2 ring-primary ring-inset'
+                  : row.inSelection
+                    ? 'bg-primary/15'
+                    : 'hover:bg-base-300'}"
                 style="padding-left: {row.depth * 12}px"
               >
                 <button
@@ -456,26 +797,79 @@
                   type="button"
                   class="flex-1 min-w-0 text-left py-1 px-1"
                   class:opacity-60={isFullyImported}
-                  onclick={() => selectFolder(row.dir)}
-                  title={row.dir.fullPath}
+                  onclick={(e) => selectFolder(row.dir, e)}
+                  title={rowSetDisabled
+                    ? `${row.dir.fullPath} — disabled (videos hidden from the grid)`
+                    : row.dir.fullPath}
                 >
-                  <div class="truncate">{row.dir.name}</div>
+                  <div class="truncate">
+                    <span class={rowSetDisabled ? 'line-through text-base-content/60' : ''}>{row.dir.name}</span>
+                    {#if rowSetDisabled}
+                      <span class="text-xs italic text-base-content/50 ml-1 no-underline">(Disabled)</span>
+                    {/if}
+                  </div>
                   {#if row.depth === 0}
                     <div class="truncate text-xs text-base-content/55 font-normal leading-tight">
                       {row.dir.fullPath}
                     </div>
                   {/if}
                 </button>
-                {#if row.dir.videoCount > 0}
+                {#if isImportingPath(row.dir.fullPath)}
+                  <!-- Long-running import in flight on this folder.
+                       Replaces the count text so the user gets an
+                       unmistakable "this is being processed" cue;
+                       the count is stale during the import anyway. -->
                   <span
-                    class="badge badge-xs shrink-0 font-bold tabular-nums {isFullyImported
-                      ? 'bg-success/25 text-success border-success/30'
-                      : row.dir.importedCount > 0
-                        ? 'badge-warning'
-                        : 'badge-ghost'}"
-                    title="{row.dir.importedCount} of {row.dir.videoCount} imported"
+                    class="text-xs shrink-0 flex items-center gap-1.5 text-info italic"
+                    title="Importing — track progress on Background Tasks"
                   >
-                    {row.dir.importedCount}/{row.dir.videoCount}
+                    <span class="loading loading-spinner loading-xs"></span>
+                    Importing
+                  </span>
+                {:else if row.dir.videoCount > 0}
+                  <!-- "5 / 10 imported" — compact slash form (eye
+                       lands on the imported count first, then the
+                       total) plus the verb so the meaning is
+                       unambiguous without a tooltip. Color-tinted
+                       by progress: success green when fully in the
+                       library, warning orange while partial, muted
+                       otherwise. -->
+                  <span
+                    class="text-xs shrink-0 tabular-nums {isFullyImported
+                      ? 'text-success'
+                      : row.dir.importedCount > 0
+                        ? 'text-warning'
+                        : 'text-base-content/55'}"
+                  >
+                    {row.dir.importedCount} / {row.dir.videoCount} imported
+                  </span>
+                {/if}
+                {#if row.depth === 0 && rowSet}
+                  <!-- Enable / disable toggle for source-root rows.
+                       Lives inline so the user can flip a source's
+                       state without leaving the Import Tool — the
+                       common "I disabled this for testing and want
+                       it back" workflow. Optimistic update; the
+                       previous busy state shows a spinner over the
+                       toggle's track to stop double-clicks. The
+                       click is stopPropagation'd so flipping the
+                       toggle doesn't also select the source folder
+                       in the right-pane breadcrumb. -->
+                  {@const setBusy = setEnabledBusy.has(rowSet.id)}
+                  <span class="shrink-0 flex items-center gap-1">
+                    {#if setBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
+                    <input
+                      type="checkbox"
+                      class="toggle toggle-xs toggle-primary"
+                      checked={rowSet.enabled}
+                      disabled={setBusy}
+                      onchange={() => toggleSourceEnabled(rowSet)}
+                      onclick={(e) => e.stopPropagation()}
+                      title={rowSet.enabled
+                        ? 'Disable this source — videos will be hidden from the player grid'
+                        : 'Enable this source — videos will appear in the player grid'}
+                      aria-label={rowSet.enabled ? `Disable ${rowSet.name}` : `Enable ${rowSet.name}`}
+                    />
                   </span>
                 {/if}
               </div>
@@ -492,10 +886,17 @@
         {#if crumbs.length > 0}
           <div class="text-sm">
             {#each crumbs as crumb, ci (ci)}
-              {#if ci === crumbs.length - 1}
-                <span class="font-semibold">{crumb.name}</span>
-              {:else}
-                <span class="text-base-content/60">{crumb.name}</span>
+              {@const isLast = ci === crumbs.length - 1}
+              <!-- crumb.disabled is only set on the source-root
+                   crumb (index 1). For other crumbs it's
+                   undefined and the strikethrough span just
+                   collapses to plain text. -->
+              <span class="{isLast ? 'font-semibold' : 'text-base-content/60'} {crumb.disabled ? 'line-through text-base-content/60' : ''}"
+              >{crumb.name}</span>
+              {#if crumb.disabled}
+                <span class="text-xs italic text-base-content/50 ml-1 no-underline">(Disabled)</span>
+              {/if}
+              {#if !isLast}
                 <span class="text-base-content/50 mx-1">/</span>
               {/if}
             {/each}
@@ -556,7 +957,19 @@
               <span class="loading loading-spinner loading-sm"></span> Loading files...
             </div>
           {:else if fileList.length === 0 && nonImportableFileList.length === 0}
-            <div class="text-base-content/60 text-sm italic">Folder is empty.</div>
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-base-content/60 text-sm italic">Folder is empty.</span>
+              <!-- Still expose the refresh affordance in the empty
+                   state — common workflow is "I just dropped files
+                   into the folder, re-scan." -->
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs"
+                onclick={refreshFiles}
+                title="Re-scan folder(s) for new or removed files"
+                aria-label="Refresh file list"
+              >↻ Refresh</button>
+            </div>
           {:else}
             <div role="tablist" class="tabs tabs-boxed bg-base-100">
               <button
@@ -617,6 +1030,23 @@
                  : activeFileTab === 'imported' ? alreadyImportedFiles.length
                  : nonImportableFileList.length}
               </span>
+              <!-- Manual refresh — invalidates the per-folder cache
+                   and re-fetches every currently-selected path.
+                   Useful when files have been added or removed on
+                   disk since the selection was made. Disabled while
+                   a load is already in flight so a frantic click
+                   can't fire overlapping requests. -->
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs"
+                onclick={refreshFiles}
+                disabled={filesLoading}
+                title="Re-scan folder(s) for new or removed files"
+                aria-label="Refresh file list"
+              >
+                {#if filesLoading}<span class="loading loading-spinner loading-xs"></span>{:else}↻{/if}
+                Refresh
+              </button>
             </div>
 
             {#if visibleFiles.length === 0}
@@ -687,38 +1117,60 @@
                    imported video. Uses /api/tags/search for autocomplete. -->
               <div class="form-control">
                 <span class="label-text font-medium">Tags to apply</span>
-                <div class="relative mt-1">
-                  <input
-                    class="input input-bordered input-sm w-full"
-                    placeholder="Type to search tags…"
-                    value={initialTagPickerInput}
-                    oninput={async (e) => {
-                      initialTagPickerInput = (e.target as HTMLInputElement).value;
-                      const q = initialTagPickerInput.trim();
-                      initialTagSuggestions = q
-                        ? (await api.searchTags(q)).filter(h => !initialTagIds.includes(h.tagId))
-                        : [];
-                    }}
-                  />
-                  {#if initialTagSuggestions.length > 0}
-                    <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow max-h-60 overflow-y-auto">
-                      {#each initialTagSuggestions as h (h.tagId)}
-                        <button
-                          type="button"
-                          class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm flex justify-between"
-                          onmousedown={() => {
-                            initialTagIds = [...initialTagIds, h.tagId];
-                            initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
-                            initialTagPickerInput = '';
-                            initialTagSuggestions = [];
-                          }}
-                        >
-                          <span>{h.name}</span>
-                          <span class="text-xs text-base-content/50">{h.tagGroupName}</span>
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
+                <div class="mt-1 flex gap-2">
+                  <div class="relative flex-1">
+                    <input
+                      class="input input-bordered input-sm w-full"
+                      placeholder="Type to search tags…"
+                      value={initialTagPickerInput}
+                      oninput={async (e) => {
+                        initialTagPickerInput = (e.target as HTMLInputElement).value;
+                        const q = initialTagPickerInput.trim();
+                        initialTagSuggestions = q
+                          ? (await api.searchTags(q)).filter(h => !initialTagIds.includes(h.tagId))
+                          : [];
+                      }}
+                    />
+                    {#if initialTagSuggestions.length > 0 || initialTagPickerInput.trim().length > 0}
+                      <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow max-h-60 overflow-y-auto">
+                        {#each initialTagSuggestions as h (h.tagId)}
+                          <button
+                            type="button"
+                            class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm flex justify-between"
+                            onmousedown={() => {
+                              initialTagIds = [...initialTagIds, h.tagId];
+                              initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
+                              initialTagPickerInput = '';
+                              initialTagSuggestions = [];
+                            }}
+                          >
+                            <span>{h.name}</span>
+                            <span class="text-xs text-base-content/50">{h.tagGroupName}</span>
+                          </button>
+                        {/each}
+                        {#if initialTagPickerInput.trim().length > 0}
+                          <!-- Create-from-search escape hatch: typed text
+                               that doesn't exist yet (or that the user
+                               wants in a different group) becomes a new
+                               tag via TagEditModal, where the Group
+                               select offers every tag group. -->
+                          <button
+                            type="button"
+                            class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm text-primary {initialTagSuggestions.length > 0 ? 'border-t border-base-300' : ''}"
+                            onmousedown={() => openCreateTag(initialTagPickerInput.trim())}
+                          >
+                            + Create new tag “{initialTagPickerInput.trim()}”…
+                          </button>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-soft btn-primary btn-cta shrink-0"
+                    onclick={() => openCreateTag(initialTagPickerInput.trim())}
+                    title="Create a new tag in any tag group and apply it to this import"
+                  >+ New Tag</button>
                 </div>
                 {#if initialTagIds.length > 0}
                   <div class="flex flex-wrap gap-1 mt-2">
@@ -736,7 +1188,15 @@
 
               <label class="form-control">
                 <span class="label-text font-medium">Notes</span>
-                <textarea class="textarea textarea-bordered" rows="2" bind:value={importNotes}></textarea>
+                <!-- Single-line input (was a 2-row textarea). Multi-line
+                     notes via paste still flow through; the field just
+                     scrolls horizontally to match the height of every
+                     other one-line input in this form. -->
+                <input
+                  type="text"
+                  class="input input-bordered input-sm w-full"
+                  bind:value={importNotes}
+                />
               </label>
             </div>
           {/if}
@@ -754,13 +1214,22 @@
   </div>
 </div>
 
-<!-- Floating Import button — always visible on the bottom-right of the
-     viewport, regardless of scroll position. Disabled states explain in the
-     tooltip why it isn't clickable yet. -->
-<div class="fixed bottom-6 right-6 z-30">
+<!-- Floating CTA cluster — always visible on the bottom-right of the
+     viewport, regardless of scroll position. Stacked column with the
+     Import button on top and an "Import More" checkbox below.
+     Checked (default) keeps the user on this page after kicking off
+     a job so they can queue another folder; unchecked navigates to
+     Background Tasks afterwards. Right-aligned (items-end) so the
+     checkbox label and button trail share the same right edge. -->
+<div class="fixed bottom-6 right-6 z-30 flex flex-col items-end gap-2">
+  <!-- min-w sized empirically so the Import button is a touch wider
+       than the "Import More" checkbox pill below it (which is
+       content-sized around the label + checkbox). Keeps the two
+       chrome elements visually anchored as a vertical stack rather
+       than reading as two unrelated widths. -->
   <button
     type="button"
-    class="btn btn-lg btn-soft btn-primary btn-cta shadow-lg"
+    class="btn btn-lg btn-soft btn-primary btn-cta shadow-lg min-w-56"
     disabled={!folderSelected || !hasImportableFiles || importing}
     onclick={handleImport}
     title={!folderSelected
@@ -772,9 +1241,37 @@
         : ''}
   >
     {#if importing}<span class="loading loading-spinner loading-sm"></span>{/if}
-    Import{folderSelected && hasImportableFiles ? ` (${importableCount})` : ''}
+    {#if selectedPaths.size > 1}
+      <!-- Multi-import branch: button operates on every selected
+           folder. The right-pane file list still mirrors the primary
+           selection's contents (single-folder count of importable
+           files), so we don't quote a count here — the multi-import
+           summary in the success toast covers it post-click. -->
+      Import {selectedPaths.size} folders
+    {:else}
+      Import{folderSelected && hasImportableFiles ? ` (${importableCount})` : ''}
+    {/if}
   </button>
+  <!-- Solid-bg pill so the label is readable against any thumbnail
+       grid that scrolls behind the floating cluster. -->
+  <label
+    class="flex items-center gap-2 cursor-pointer bg-base-100/95 border border-base-300 rounded-full px-3 py-1 shadow text-sm"
+    title="Checked: stay on the import tool after the job starts. Unchecked: jump to Background Tasks to watch progress."
+  >
+    <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" bind:checked={importMore} />
+    <span>Import More</span>
+  </label>
 </div>
+
+<!-- Create-tag modal — TagEditModal in create mode (tag=null, no fixed
+     tagGroupId) shows a Group select over every tag group. onSaved
+     auto-applies the new tag to this import's "Tags to apply" list. -->
+<TagEditModal
+  bind:show={showCreateTagModal}
+  tag={null}
+  initialName={createTagInitialName}
+  onSaved={onTagCreated}
+/>
 
 {#if showAddSetDialog}
   <div class="modal modal-open" role="presentation" onclick={closeAddSetDialog}>

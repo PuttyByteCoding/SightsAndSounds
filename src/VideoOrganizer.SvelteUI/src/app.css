@@ -60,3 +60,101 @@
   background-color: rgb(148 163 184 / 0.30);
   border-color: rgb(148 163 184 / 0.60);
 }
+
+/*
+ * Resizable / sortable data tables.
+ *
+ * Every table that uses tableUtils.svelte.ts (loadColumnWidths /
+ * startColumnResize / use:resizable) gets `class="resizable-table"`
+ * on the <table>. The rule below clips cell overflow, which is the
+ * fix for "I can drag the column wider but it never gets narrower":
+ * with table-layout: fixed, dragging the handle DOES shrink the
+ * <td> / <th>, but cells with whitespace-nowrap content (badges,
+ * timestamps, MD5 hashes, etc.) let their text bleed past the cell
+ * boundary into the next column's visual space, so the user can't
+ * tell the column changed at all. overflow: hidden makes the shrink
+ * visible — the text gets clipped (or ellipsized when paired with
+ * the `truncate` Tailwind class).
+ *
+ * The handle itself is absolutely positioned inside the <th> at
+ * right:0 / top:0 / bottom:0, which sits inside the th's box, so
+ * overflow:hidden doesn't clip it. Sticky theads also continue to
+ * work — overflow:hidden on the cell doesn't affect position:sticky
+ * applied to its parent <tr> / <thead>.
+ */
+.resizable-table > thead > tr > th,
+.resizable-table > tbody > tr > td {
+  overflow: hidden;
+}
+
+/* While a resize is in progress, give the whole page a col-resize
+ * cursor so the user gets unambiguous feedback even after their
+ * pointer drifts off the 8px-wide handle. Also disable text
+ * selection so a slow drag doesn't accidentally select the cell
+ * contents to the left. Set by the resizable action via a data
+ * attribute on <html> when the mousemove listener attaches and
+ * cleared on mouseup. */
+html[data-table-resizing="true"],
+html[data-table-resizing="true"] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/*
+ * Resize handle (the absolute-positioned <button> on the right edge of
+ * each resizable <th>). The class is added by the `use:resizable`
+ * action so every call-site renders an identical handle without each
+ * page having to remember the exact Tailwind utility chain.
+ *
+ * Baseline:    faint slate stripe so the handle is visible (and
+ *              discoverable) on every column without hover.
+ * th-hover:    while the column header is hovered anywhere — not just
+ *              the 8px strip — the stripe gets more contrast so the
+ *              user can clearly see "this is where I drag to resize
+ *              this column".
+ * self-hover:  when the pointer is specifically on the handle, switch
+ *              to primary tint so the user knows they're on the
+ *              grabbable surface and the cursor change to col-resize
+ *              isn't an accident.
+ * active:      darker primary while the drag is in progress.
+ *
+ * !important on the colored states is necessary because the call-sites
+ * still have the older `hover:bg-primary/40` / `active:bg-primary/60`
+ * Tailwind classes; those resolve to plain `background-color` rules
+ * that would otherwise win on specificity ties. The override lets us
+ * upgrade the look without editing every page.
+ */
+.resize-handle {
+  background-color: color-mix(in oklab, var(--color-base-content) 12%, transparent);
+  transition: background-color 0.1s ease-in-out;
+}
+.resizable-table thead tr th:hover .resize-handle {
+  background-color: color-mix(in oklab, var(--color-base-content) 28%, transparent);
+}
+.resize-handle:hover {
+  background-color: color-mix(in oklab, var(--color-primary) 50%, transparent) !important;
+}
+.resize-handle:active {
+  background-color: color-mix(in oklab, var(--color-primary) 70%, transparent) !important;
+}
+
+/*
+ * Resizable tables: extra cell rules layered on top of
+ * `.resizable-table > thead > tr > th, .resizable-table > tbody > tr > td`
+ * (which sets overflow:hidden).
+ *
+ * `min-width: 0` is the second half of the "make column 1 actually
+ * shrink" fix. Table cells default to min-width:auto, which under
+ * `table-layout: fixed` resolves to the cell's content min-content size.
+ * For a cell with an unbreakable string ("VeryLongFileName.mp4") that
+ * was 300px+ — wider than the colgroup width — the browser silently
+ * widened the *first* column to fit, even though the colgroup said
+ * smaller. Forcing min-width:0 lets every column honor its declared
+ * width regardless of content. Paired with the explicit
+ * `width: {totalWidth}px` on the <table> (instead of `max-content`),
+ * the first-column-won't-shrink behavior goes away entirely.
+ */
+.resizable-table > thead > tr > th,
+.resizable-table > tbody > tr > td {
+  min-width: 0;
+}

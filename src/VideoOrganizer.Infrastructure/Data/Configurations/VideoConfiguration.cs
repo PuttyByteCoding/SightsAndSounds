@@ -47,7 +47,7 @@ public sealed class VideoConfiguration : IEntityTypeConfiguration<Video>
         // NeedsReview defaults to true so any insert path (UI, importer, raw
         // SQL) gets it automatically.
         builder.Property(v => v.NeedsReview).IsRequired().HasDefaultValue(true);
-        builder.Property(v => v.WontPlay).IsRequired().HasDefaultValue(false);
+        builder.Property(v => v.PlaybackIssue).IsRequired().HasDefaultValue(false);
         builder.Property(v => v.MarkedForDeletion).IsRequired().HasDefaultValue(false);
         builder.Property(v => v.IsFavorite).IsRequired().HasDefaultValue(false);
 

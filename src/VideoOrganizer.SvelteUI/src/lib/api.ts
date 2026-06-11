@@ -30,7 +30,17 @@ import type {
   UpdateVideoRequest,
   Video,
   VideoSet,
-  VideoSetInput
+  VideoSetInput,
+  RuntimeInfo,
+  FfprobeResult,
+  FlagCounts,
+  ClipSummary,
+  MissingVideoFile,
+  ExtraDiskFile,
+  Md5Candidate,
+  SearchRequestOpts,
+  SearchResponse,
+  Md5CheckResult
 } from './types';
 
 const BASE = '';
@@ -124,6 +134,9 @@ export const api = {
   // --- Videos --------------------------------------------------------------
 
   getVideoCount: () => request<number>('/api/videos/count'),
+  // Per-flag aggregate counts — drives the count badges on the
+  // browse-page Flags tree.
+  getFlagCounts: () => request<FlagCounts>('/api/videos/flag-counts'),
   getVideo: (id: string) => request<Video | null>(`/api/videos/${id}`),
 
   // POST the three-way filter (Required / Optional / Excluded). Empty filter
@@ -167,10 +180,10 @@ export const api = {
     request<Video>(`/api/videos/${id}/mark-for-deletion`, { method: 'POST' }),
   unmarkForDeletion: (id: string) =>
     request<Video>(`/api/videos/${id}/unmark-for-deletion`, { method: 'POST' }),
-  markWontPlay: (id: string) =>
-    request<Video>(`/api/videos/${id}/mark-wont-play`, { method: 'POST' }),
-  unmarkWontPlay: (id: string) =>
-    request<Video>(`/api/videos/${id}/unmark-wont-play`, { method: 'POST' }),
+  markPlaybackIssue: (id: string) =>
+    request<Video>(`/api/videos/${id}/mark-playback-issue`, { method: 'POST' }),
+  unmarkPlaybackIssue: (id: string) =>
+    request<Video>(`/api/videos/${id}/unmark-playback-issue`, { method: 'POST' }),
   markReviewed: (id: string) =>
     request<void>(`/api/videos/${id}/mark-reviewed`, { method: 'POST' }),
   unmarkReviewed: (id: string) =>
@@ -186,6 +199,41 @@ export const api = {
       body: JSON.stringify(req)
     }),
 
+  // Minimal list of clips of a parent video. Used by VideoPlayer to
+  // paint green-tinted bands on the scrubber so the viewer can see
+  // at a glance which slices have been clipped out. Returns [] for
+  // a video that itself is a clip (it has no children).
+  listClipsOfVideo: (parentId: string) =>
+    request<ClipSummary[]>(`/api/videos/${parentId}/clips`),
+
+  // --- Data validation ---------------------------------------------------
+  // Video rows whose FilePath no longer resolves on disk. By default
+  // hides files under disabled sources — pass includeDisabled=true
+  // to include them too.
+  getMissingFiles: (includeDisabled = false) =>
+    request<MissingVideoFile[]>(
+      `/api/validation/missing-files?includeDisabled=${includeDisabled ? 'true' : 'false'}`
+    ),
+  // Video files on disk under a configured source that have no
+  // matching Video row. sourceId optional — omit to scan every
+  // enabled source (or every source if includeDisabled=true).
+  getExtraFiles: (sourceId?: string, includeDisabled = false) => {
+    const qs = new URLSearchParams();
+    if (sourceId) qs.set('sourceId', sourceId);
+    qs.set('includeDisabled', includeDisabled ? 'true' : 'false');
+    return request<ExtraDiskFile[]>(`/api/validation/extra-files?${qs.toString()}`);
+  },
+  // Videos eligible for MD5 re-validation. Client iterates this
+  // list and POSTs each id to validateMd5() so progress / cancel
+  // happens in the browser instead of holding a long-running
+  // request open.
+  getMd5Candidates: (includeDisabled = false) =>
+    request<Md5Candidate[]>(
+      `/api/validation/md5-candidates?includeDisabled=${includeDisabled ? 'true' : 'false'}`
+    ),
+  validateMd5: (videoId: string) =>
+    request<Md5CheckResult>(`/api/validation/md5-check/${videoId}`, { method: 'POST' }),
+
   deleteVideo: (id: string) =>
     request<void>(`/api/videos/${id}`, { method: 'DELETE' }),
 
@@ -197,6 +245,33 @@ export const api = {
       '/api/videos/purge-all',
       { method: 'POST' }
     ),
+
+  // Triage list — videos the user has flagged with PlaybackIssue.
+  // Powers the /playback-issues page (parallel to /purge).
+  getPlaybackIssues: () => request<Video[]>('/api/videos/playback-issues'),
+  // Bulk-purge every PlaybackIssue row in one shot. Same response
+  // shape as purgeAllMarkedForDeletion so the page's bulk-progress
+  // modal can consume both interchangeably.
+  purgeAllPlaybackIssues: () =>
+    request<{ purged: number; failed: Array<{ id: string; fileName: string; error: string }> }>(
+      '/api/videos/purge-all-playback-issues',
+      { method: 'POST' }
+    ),
+
+  // Diagnostic affordances — both gated server-side on a loopback
+  // request, so calling them from a remote browser returns 403.
+  // Frontend reads /api/runtime-info and hides the buttons when not
+  // local so the failure isn't surprising.
+  revealVideo: (id: string) =>
+    request<void>(`/api/videos/${id}/reveal`, { method: 'POST' }),
+  // Opens a terminal at the video's parent directory. Same loopback +
+  // VideoSet path-prefix guards as revealVideo — the API hides which
+  // emulator it actually used (it tries a fallback chain), but on
+  // success the call returns 204 and a window pops up on the host.
+  openTerminalAtVideo: (id: string) =>
+    request<void>(`/api/videos/${id}/open-terminal`, { method: 'POST' }),
+  ffprobeVideo: (id: string) =>
+    request<FfprobeResult>(`/api/videos/${id}/ffprobe`),
 
   streamUrl: (id: string) => `${BASE}/api/videos/${id}/stream`,
   thumbnailsVttUrl: (id: string) => `${BASE}/api/videos/${id}/thumbnails.vtt`,
@@ -246,6 +321,23 @@ export const api = {
     if (!q.trim()) return [];
     return request<TagSearchHit[]>(`/api/tags/search?q=${enc(q.trim())}`);
   },
+
+  // Global search — powers the Ctrl+K command palette. Returns a
+  // discriminated SearchResponse so the caller can pattern-match on
+  // result.kind. Empty / whitespace queries short-circuit to an empty
+  // response without a network round-trip.
+  search: async (opts: SearchRequestOpts): Promise<SearchResponse> => {
+    const q = opts.q.trim();
+    if (!q) {
+      return { query: '', totalCount: 0, truncated: false, results: [] };
+    }
+    const qs = new URLSearchParams();
+    qs.set('q', q);
+    if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts.offset !== undefined) qs.set('offset', String(opts.offset));
+    if (opts.kinds !== undefined) qs.set('kinds', opts.kinds);
+    return request<SearchResponse>(`/api/search?${qs.toString()}`);
+  },
   setTagProperties: (id: string, body: SetPropertyValuesRequest) =>
     request<void>(`/api/tags/${id}/properties`, {
       method: 'PUT',
@@ -282,7 +374,18 @@ export const api = {
 
   // --- Logs / Imports ------------------------------------------------------
 
-  getLogs: () => request<LogEvent[]>('/api/logs'),
+  // Windowed snapshot of the in-memory log buffer. Defaults to the
+  // last 5 minutes capped at 1000 entries — matches the server-side
+  // defaults so omitting the opts is safe. Older / wider queries
+  // should go through Seq.
+  getLogs: (opts?: { sinceMinutes?: number; take?: number }) => {
+    const qs = new URLSearchParams();
+    if (opts?.sinceMinutes !== undefined) qs.set('sinceMinutes', String(opts.sinceMinutes));
+    if (opts?.take !== undefined) qs.set('take', String(opts.take));
+    const s = qs.toString();
+    return request<LogEvent[]>(`/api/logs${s ? `?${s}` : ''}`);
+  },
+  getRuntimeInfo: () => request<RuntimeInfo>('/api/runtime-info'),
 
   browseImport: (path?: string | null) => {
     const url = path && path.trim().length > 0

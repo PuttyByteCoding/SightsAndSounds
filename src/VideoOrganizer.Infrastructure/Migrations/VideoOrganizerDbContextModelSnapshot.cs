@@ -270,6 +270,11 @@ namespace VideoOrganizer.Infrastructure.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<bool>("PlaybackIssue")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("Ratio")
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)");
@@ -316,11 +321,6 @@ namespace VideoOrganizer.Infrastructure.Migrations
 
                     b.Property<int>("Width")
                         .HasColumnType("integer");
-
-                    b.Property<bool>("WontPlay")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
 
                     b.HasKey("Id");
 

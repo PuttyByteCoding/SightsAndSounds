@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Tracked pre-commit hook. Activated by setting:
+#   git config core.hooksPath .githooks
+#
+# Runs ci/check.sh — svelte-check + dotnet format + ef migrations
+# smoke. Targets ~10–20s so commits don't feel sluggish. The full
+# pipeline (build, test) is reserved for ci/all.sh which runs on
+# demand.
+#
+# Bypass with `git commit --no-verify` when you know the check would
+# fail but want to commit anyway (WIP, fixup commits, etc.).
+
+set -euo pipefail
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HOOK_DIR/.." && pwd)"
+
+exec "$REPO_ROOT/ci/check.sh"

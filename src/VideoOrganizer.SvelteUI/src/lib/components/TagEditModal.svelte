@@ -5,10 +5,20 @@
   //
   // Modes:
   //   tag is non-null         -> edit existing tag
-  //   tag is null + tagGroupId -> create new tag in that group
+  //   tag is null              -> create new tag. A Group select lets the
+  //                              user pick any tag group; tagGroupId (when
+  //                              provided) preselects it, otherwise the
+  //                              first group is preselected.
   //                              (initialName preseeds the name field)
+  import { untrack } from 'svelte';
   import { api, ApiError } from '$lib/api';
-  import type { Tag } from '$lib/types';
+  import type { Tag, TagGroup } from '$lib/types';
+
+  // Portal action lives in $lib/portal — same one is used by the
+  // FfprobeResultModal and the inline clip-preview modal in
+  // VideoPlayer. See that file for the rationale on why a fixed-
+  // position modal needs to escape its ancestor stacking context.
+  import { portal } from '$lib/portal';
 
   interface Props {
     tag?: Tag | null;
@@ -39,6 +49,13 @@
   let aliasInputEl: HTMLInputElement | null = $state(null);
   let modalEl: HTMLDivElement | null = $state(null);
 
+  // Create-mode Group select. Lazy-loaded on first create-mode open;
+  // tagGroupId (when the host passes one) preselects its option,
+  // otherwise the first group wins.
+  let groups = $state<TagGroup[]>([]);
+  let groupsLoading = false;
+  let selectedGroupId = $state<string | undefined>(undefined);
+
   const isEdit = $derived(tag !== null && tag !== undefined);
 
   $effect(() => {
@@ -53,12 +70,38 @@
       aliases = [];
       isFavorite = false;
       notes = '';
+      selectedGroupId = tagGroupId;
     }
     error = null;
     aliasInput = '';
     // Always land on the Name input — Enter then accepts the (pre-filled or
     // typed) name with default aliases/favorite/notes. Tab to reach those.
     queueMicrotask(() => nameInputEl?.focus());
+  });
+
+  // Load the group list the first time the modal opens in create mode.
+  // Separate effect (with the groups read untracked) so the reset effect
+  // above doesn't re-fire — and clobber in-progress typing — when the
+  // async load lands.
+  $effect(() => {
+    if (!show || tag) return;
+    untrack(() => {
+      if (groups.length > 0) {
+        if (!selectedGroupId) selectedGroupId = groups[0]?.id;
+        return;
+      }
+      if (groupsLoading) return;
+      groupsLoading = true;
+      api.listTagGroups()
+        .then(gs => {
+          groups = gs;
+          if (!selectedGroupId) selectedGroupId = gs[0]?.id;
+        })
+        .catch(e => {
+          error = e instanceof Error ? e.message : 'Failed to load tag groups';
+        })
+        .finally(() => { groupsLoading = false; });
+    });
   });
 
   function addAlias() {
@@ -92,16 +135,16 @@
           notes
         });
         saved = await api.getTag(tag.id);
-      } else if (tagGroupId) {
+      } else if (selectedGroupId) {
         saved = await api.createTag({
-          tagGroupId,
+          tagGroupId: selectedGroupId,
           name: trimmed,
           aliases,
           isFavorite,
           notes
         });
       } else {
-        error = 'Internal error: no tag and no tagGroupId.';
+        error = 'Pick a tag group first.';
         saving = false;
         return;
       }
@@ -178,13 +221,39 @@
 
 {#if show}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div bind:this={modalEl} class="modal modal-open" role="dialog" aria-modal="true" tabindex="-1">
+  <!-- use:portal moves this node to <body> so the modal renders over
+       everything regardless of where the component is instantiated.
+       Without it, when this component lives inside the /browse hover
+       tags-strip (sticky + overflow-hidden) the modal would render
+       clipped or behind the video.
+       Inline z-index forces it above the daisyUI default (999); the
+       sticky+z parents on /browse (player z-10, sidebar z-20) sit in
+       the same root stacking context after the portal moves us to
+       body, but some browsers still get the layering wrong without a
+       big-numbered hint. -->
+  <div bind:this={modalEl} use:portal class="modal modal-open" role="dialog" aria-modal="true" tabindex="-1" style="z-index: 9999;">
     <div class="modal-box max-w-md">
       <h3 class="font-bold text-lg mb-3">{isEdit ? 'Edit Tag' : 'New Tag'}</h3>
 
       {#if error}
         <div class="alert alert-error text-sm mb-3">
           <span>{error}</span>
+        </div>
+      {/if}
+
+      {#if !isEdit}
+        <!-- Create mode: the new tag can go into any group. Preselected
+             from the host's tagGroupId when one was passed (e.g. the
+             per-group composer in EditTagsPanel), otherwise the first
+             group. Edit mode hides this — moving a tag between groups
+             is a Tags-page operation, not a rename. -->
+        <div class="flex items-center gap-2 mb-3">
+          <span class="label-text w-20 shrink-0">Group</span>
+          <select class="select select-bordered flex-1" bind:value={selectedGroupId}>
+            {#each groups as g (g.id)}
+              <option value={g.id}>{g.name}</option>
+            {/each}
+          </select>
         </div>
       {/if}
 
@@ -261,7 +330,7 @@
           type="button"
           class="btn btn-soft btn-primary btn-cta"
           onclick={save}
-          disabled={saving || !name.trim()}
+          disabled={saving || !name.trim() || (!isEdit && !selectedGroupId)}
         >
           {saving ? 'Saving…' : (isEdit ? 'Save' : 'Create')}
         </button>

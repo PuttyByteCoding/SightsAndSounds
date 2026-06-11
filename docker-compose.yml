@@ -17,6 +17,30 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Structured log viewer for development. The API ships logs here when
+  # Logging:Seq:ServerUrl is set (configured in appsettings.Development.json).
+  # UI + ingestion both live on http://localhost:5341.
+  seq:
+    image: datalust/seq:latest
+    container_name: sights-and-sounds-seq
+    environment:
+      ACCEPT_EULA: "Y"
+      # Dev-only sink — no auth wall in front of the local UI. Seq 2024+
+      # refuses to start without either an admin password or this opt-out.
+      SEQ_FIRSTRUN_NOAUTHENTICATION: "true"
+      # Allow the SvelteKit dev server (a different port on localhost) to
+      # embed the Seq UI in an iframe on /logs. Default is `'none'`, which
+      # blocks all embedding. `*` is fine here — the container only listens
+      # on localhost.
+      SEQ_API_FRAMEANCESTORS: "*"
+    ports:
+      - "5341:80"
+    volumes:
+      - seq_data:/data
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+    driver: local
+  seq_data:
     driver: local

@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <!-- Tests aren't packaged; mark explicit so a stray `dotnet pack`
+             doesn't try to ship them. IsTestProject helps dotnet test
+             auto-discovery on some IDEs. -->
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- Microsoft.NET.Test.Sdk is the marker ci/test.sh greps for
+             when discovering test projects. Don't remove this even if
+             you swap test frameworks later. -->
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+        <PackageReference Include="xunit" Version="2.9.2" />
+        <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="FluentAssertions" Version="6.12.2" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Reference Shared (NOT API) so tests can run while the API
+             process is up. Pulling in API would force a rebuild of
+             Infrastructure / API DLLs that the running web host has
+             locked. Pure helpers belong in Shared/Helpers and the
+             tests live here.
+             If a future test needs API-only types, either move that
+             logic to Shared or add an internal `InternalsVisibleTo`
+             from API to this project. -->
+        <ProjectReference Include="..\VideoOrganizer.Shared\VideoOrganizer.Shared.csproj" />
+    </ItemGroup>
+</Project>

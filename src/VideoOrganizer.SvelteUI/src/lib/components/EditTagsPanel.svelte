@@ -3,7 +3,7 @@
   // dynamically) plus structural fields (Year, NeedsReview, Notes). Saves
   // tag set + scalar fields via /api/videos/{id} and /api/videos/{id}/tags.
 
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { api } from '$lib/api';
   import type { Tag, TagGroup, Video, VideoTagSummary } from '$lib/types';
   import { pillClass } from '$lib/tagColors';
@@ -13,9 +13,19 @@
     video: Video | null;
     show: boolean;
     onAfterSave?: () => void | Promise<void>;
+    // Fires whenever a tag is created or updated via the panel's
+    // autocomplete + TagEditModal flow. The host uses this to refresh
+    // its own copies of allTags / tagsByGroup / groups so the sidebar
+    // tag tree picks up the change without waiting for a route reload.
+    onTagSaved?: (saved: Tag) => void | Promise<void>;
   }
 
-  let { video = $bindable(), show = $bindable(), onAfterSave }: Props = $props();
+  let {
+    video = $bindable(),
+    show = $bindable(),
+    onAfterSave,
+    onTagSaved: onTagSavedExternal
+  }: Props = $props();
 
   let groups = $state<TagGroup[]>([]);
   // Tag list per group, lazy-loaded on first focus.
@@ -35,19 +45,76 @@
   // focus [0] on Shift+arrow nav so the user can start typing into the
   // first tag group immediately.
   let composerInputs: HTMLInputElement[] = $state([]);
+  // DOM refs for each group's fieldset, indexed by render order. Used by
+  // the open-panel focus effect — for checkbox-mode groups (e.g. Flags)
+  // there is no composer input, so we fall back to the first focusable
+  // element inside the fieldset (typically the first checkbox).
+  let groupFieldsets: HTMLFieldSetElement[] = $state([]);
 
   function ensureComposer(groupId: string) {
     if (!composer[groupId]) composer[groupId] = { input: '', open: false, highlighted: -1 };
   }
 
-  // Focus the first tag-group composer whenever the video changes (Shift+
-  // arrow nav swaps videos) or the panel opens. Reads composerInputs[0]
-  // inside the effect so $state catches the bind:this write that lands
-  // after the groups load and re-fires us once the input exists.
+  // Focus the first tag-group's input/checkbox whenever
+  //   (a) the panel transitions from closed to open, OR
+  //   (b) the panel is open and the user navigates to a different
+  //       video (e.g. ←/→ in VideoPlayer).
+  // Case (b) lets the user immediately keep typing into the first
+  // tag autocomplete (typically Performer) on each new video without
+  // having to click back into the field.
+  //
+  // Two-phase focus is needed because groups load async after mount:
+  //   1. the trigger (open or video change) arms `pendingFocus`
+  //   2. once `groups` populates and the fieldsets render, the second
+  //      effect performs the focus and disarms the flag
+  //
+  // Resolution order:
+  //   1. first defined composer input        — first autocomplete
+  //      tag group, typically "Performer"; checkbox-only groups
+  //      like "Flags" leave their slot in composerInputs undefined
+  //      so we skip past them
+  //   2. first focusable inside fieldset[0]  — fallback only when
+  //      every group is checkbox-mode (no autocomplete to type into)
+  // Skipping checkbox groups is intentional: the user can't "type"
+  // into a checkbox, so landing focus there on every nav doesn't
+  // help with rapid tag entry — they'd have to Tab past it anyway.
+  let prevShow = false;
+  let prevVideoId: string | null = null;
+  let pendingFocus = $state(false);
   $effect(() => {
-    if (!video?.id || !show) return;
-    const first = composerInputs[0];
-    if (first) queueMicrotask(() => first.focus());
+    if (!show || !video?.id) {
+      prevShow = show;
+      prevVideoId = video?.id ?? null;
+      return;
+    }
+    const opened = !prevShow;
+    const videoChanged = prevVideoId !== null && prevVideoId !== video.id;
+    prevShow = show;
+    prevVideoId = video.id;
+    if (opened || videoChanged) pendingFocus = true;
+  });
+  $effect(() => {
+    if (!pendingFocus) return;
+    if (groups.length === 0) return;
+    pendingFocus = false;
+    // Wait for the rendered fieldsets / composer inputs to land in the
+    // DOM after the groups assignment, otherwise the bound refs may
+    // still be empty.
+    tick().then(() => {
+      // Find the first autocomplete input — composerInputs is sparse
+      // (checkbox-mode groups don't bind a slot), so [0] may be a
+      // hole. .find() walks past undefined entries.
+      const composer = composerInputs.find(el => el != null);
+      if (composer) { composer.focus(); return; }
+      // Pure-checkbox panel fallback: focus the first focusable in
+      // the first group's fieldset (typically the first checkbox).
+      const fs = groupFieldsets[0];
+      if (!fs) return;
+      const firstFocusable = fs.querySelector<HTMLElement>(
+        'input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      firstFocusable?.focus();
+    });
   });
 
   // Edits live-mutate `video.*` directly (no staged copy). That way
@@ -179,6 +246,12 @@
     } else {
       video.tags = [...video.tags, summary];
     }
+    // Applying any tag implies the user has reviewed the video, so
+    // clear "Needs Review" if it's set. The change rides along on
+    // the next save (Shift+arrow nav, Save button, etc.) — saveIfDirty
+    // in VideoPlayer diffs the bound video and includes needsReview
+    // in the UpdateVideoRequest payload.
+    if (video.needsReview) video.needsReview = false;
     composer[group.id] = { input: '', open: false, highlighted: -1 };
   }
 
@@ -289,6 +362,10 @@
       }
     }
 
+    // Notify the host so its sidebar (allTags / tagsByGroup / group
+    // counts) picks up the new or renamed tag without a route reload.
+    if (onTagSavedExternal) await onTagSavedExternal(saved);
+
     // After saving (or applying via autocomplete), return focus to the
     // composer input the user was on so they can keep typing more tags.
     returnFocus();
@@ -299,12 +376,17 @@
   }
 
   function suggestionsFor(group: TagGroup): Tag[] {
-    const all = tagsByGroup[group.id] ?? [];
+    // No query → no dropdown. The user wants the field to look like
+    // a clean text input until they actually type; surfacing the full
+    // tag inventory on focus was overwhelming and meant the suggestion
+    // list mostly lived in the way of typing.
     const q = (composer[group.id]?.input ?? '').toLowerCase().trim();
+    if (!q) return [];
+    const all = tagsByGroup[group.id] ?? [];
     const selectedIds = new Set((video?.tags ?? []).map(t => t.id));
     return all
       .filter(t => !selectedIds.has(t.id))
-      .filter(t => !q ||
+      .filter(t =>
         t.name.toLowerCase().includes(q) ||
         t.aliases.some(a => a.toLowerCase().includes(q)))
       .slice(0, 12);
@@ -345,9 +427,30 @@
         }
         break;
       case 'Escape':
-        composer[group.id] = { ...c, open: false, highlighted: -1 };
+        // If the suggestion dropdown is open, Esc closes it but does
+        // NOT close the panel — stop propagation so the panel-level
+        // handler below doesn't also fire. If the dropdown is already
+        // closed, let Esc bubble so the panel handler closes the panel.
+        if (c.open || c.highlighted >= 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          composer[group.id] = { ...c, open: false, highlighted: -1 };
+        }
         break;
     }
+  }
+
+  // Panel-level Esc: close the panel when focus is anywhere inside it
+  // and Esc isn't being consumed by something else (open suggestion
+  // dropdown, drag-reorder mode). The TagEditModal portals itself to
+  // <body> and handles its own Esc at the window level, so events from
+  // inside the modal don't bubble through us — we won't accidentally
+  // close the panel when the user is dismissing the modal.
+  function onPanelKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return;
+    if (editingPanel) return; // drag-reorder mode has its own Cancel button
+    e.preventDefault();
+    show = false;
   }
 
   async function save() {
@@ -386,7 +489,8 @@
 </script>
 
 {#if show && video}
-  <div class="card bg-base-200 p-4 space-y-4">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="card bg-base-200 p-4 space-y-4" onkeydown={onPanelKeyDown}>
     <header class="flex items-center justify-between">
       <h2 class="text-lg font-semibold">Tags</h2>
       <div class="flex gap-2">
@@ -417,6 +521,7 @@
     {#each renderItems as item, idx (item.group.id)}
       {@const group = item.group}
         <fieldset
+          bind:this={groupFieldsets[idx]}
           class="rounded px-3 pb-3 pt-1 transition-opacity {editingPanel ? 'cursor-grab border-2 border-base-300' : 'border border-base-300'} {dragIdx !== null && dragIdx !== idx ? 'opacity-40' : ''} {dragIdx === idx ? 'border-primary' : ''}"
           draggable={editingPanel}
           ondragstart={editingPanel ? (e) => onDragStart(idx, e) : undefined}
@@ -467,22 +572,28 @@
             {#if tagsAppliedInGroup(group.id).length > 0}
               <div class="flex flex-wrap gap-1 mb-2">
                 {#each tagsAppliedInGroup(group.id) as t (t.id)}
-                  <span class="badge {pillClass(t.id, group.name)} gap-1">
+                  <!-- Tag pill — same min(14rem, 100%) / truncate /
+                       flex-nowrap pattern as VideoCard / VideoPlayer.
+                       Caps each chip so a long tag name ellipsizes
+                       instead of wrapping the badge OR overflowing
+                       the panel column. -->
+                  <span class="badge {pillClass(t.id, group.name)} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
                     <button
                       type="button"
-                      class="cursor-pointer"
+                      class="cursor-pointer truncate min-w-0"
                       onclick={() => openEditModal(t, group.id)}
                       title="Edit tag"
                     >{t.name}</button>
                     <button
                       type="button"
-                      class="opacity-70 hover:opacity-100"
+                      class="opacity-70 hover:opacity-100 shrink-0"
                       onclick={() => openEditModal(t, group.id)}
                       title="Edit tag"
                       aria-label="Edit {t.name}"
                     >✎</button>
                     <button
                       type="button"
+                      class="shrink-0"
                       onclick={() => removeTag(group.id, t.id)}
                       title="Remove from video"
                       aria-label="Remove {t.name}"
@@ -521,8 +632,28 @@
               {/if}
 
               {#if composer[group.id]?.open && suggestionsFor(group).length > 0}
-                <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow-lg max-h-64 overflow-auto">
-                  <div class="px-3 py-1 text-xs uppercase tracking-wider text-base-content/60 border-b border-base-300">
+                <!-- Heavy-handed lift so the popover unmistakably
+                     reads as "above the page":
+                       bg-base-300        — a full step away from the
+                                            panel's bg-base-200, so the
+                                            shade contrast is one step
+                                            in the opposite direction
+                                            from the input field
+                                            (input sits on bg-base-100
+                                            inside this panel)
+                       border-2 +         — solid primary border at
+                       border-primary       full opacity (was /50)
+                       ring-4 +           — wide primary halo around
+                       ring-primary/30      the border so the popover
+                                            visibly glows away from
+                                            its surroundings
+                       shadow-2xl         — heavy drop shadow so the
+                                            popover lifts out of the
+                                            panel surface
+                     Together these produce a floating-card look
+                     close to a command-palette popover. -->
+                <div class="absolute z-20 mt-1 w-full bg-base-300 border-2 border-primary rounded-md shadow-2xl ring-4 ring-primary/30 max-h-64 overflow-auto">
+                  <div class="px-3 py-1 text-xs uppercase tracking-wider text-primary-content bg-primary border-b border-primary sticky top-0">
                     Existing {group.name}
                   </div>
                   {#each suggestionsFor(group) as t, i (t.id)}
@@ -530,17 +661,33 @@
                     {@const matchedAlias = q && !t.name.toLowerCase().includes(q)
                       ? t.aliases.find(a => a.toLowerCase().includes(q))
                       : undefined}
+                    {@const isActive = composer[group.id]?.highlighted === i}
+                    <!-- Mouse hover writes `highlighted = i` (see
+                         onmouseenter), so hover and keyboard-arrow
+                         selection share the same active style — there's
+                         no separate "hovered but not highlighted"
+                         state. Active row uses bg-primary +
+                         text-primary-content for unmistakable contrast
+                         (the previous bg-base-200 was identical to the
+                         old hover color and easy to miss while arrowing
+                         through a long list). -->
                     <button
                       type="button"
-                      class="w-full text-left px-3 py-2 hover:bg-base-200 {composer[group.id]?.highlighted === i ? 'bg-base-200' : ''}"
+                      class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
                       onmousedown={() => addTag(group, t)}
                       onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
                     >
                       {t.name}
                       {#if matchedAlias}
-                        <span class="text-xs text-base-content/50 ml-2">matched: {matchedAlias}</span>
+                        <!-- Use opacity-70 instead of an explicit
+                             muted color so the alias text inherits
+                             whichever foreground (default vs
+                             primary-content) the parent button is
+                             using. text-base-content/50 against
+                             bg-primary was nearly invisible. -->
+                        <span class="text-xs opacity-70 ml-2">matched: {matchedAlias}</span>
                       {:else if t.aliases.length > 0}
-                        <span class="text-xs text-base-content/50 ml-2">({t.aliases.join(', ')})</span>
+                        <span class="text-xs opacity-70 ml-2">({t.aliases.join(', ')})</span>
                       {/if}
                     </button>
                   {/each}

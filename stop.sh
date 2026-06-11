@@ -10,7 +10,7 @@ cd "$REPO_ROOT"
 stop_pidfile ui
 stop_pidfile api
 
-log compose "stopping postgres container"
-docker compose stop postgres
+log compose "stopping postgres + seq containers"
+docker compose stop postgres seq
 
 log done "all stopped"

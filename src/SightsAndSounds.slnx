@@ -11,4 +11,7 @@
     <Project Path="VideoOrganizer.Infrastructure/VideoOrganizer.Infrastructure.csproj" />
     <Project Path="VideoOrganizer.Shared/VideoOrganizer.Shared.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="../tests/VideoOrganizer.Tests/VideoOrganizer.Tests.csproj" />
+  </Folder>
 </Solution>

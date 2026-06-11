@@ -10,12 +10,13 @@
   import type { Video } from '$lib/types';
   import {
     applySortClick,
+    ariaSort,
     compareBySortStack,
+    resizable,
     sortDir,
     sortPosition,
     loadColumnWidths,
     saveColumnWidths,
-    startColumnResize,
     type SortEntry,
   } from '$lib/tableUtils.svelte';
 
@@ -47,6 +48,14 @@
   function getWidth(col: string, fallback: number): number {
     return widths[col] ?? fallback;
   }
+  // Explicit table width. See DataTableModal for why this beats
+  // `width: max-content` — that value gets resolved from cells' min-
+  // content, not from the colgroup, so a long unbreakable filename
+  // in a `whitespace-nowrap` cell can pin its column wider than the
+  // colgroup declared. Summing the column widths bypasses it.
+  const totalWidth = $derived(
+    getWidth('plays', 96) + getWidth('title', 480) + getWidth('flags', 160)
+  );
 
   async function load() {
     loading = true;
@@ -66,7 +75,7 @@
     return [
       v.isClip ? 'C' : 'c',
       v.needsReview ? 'R' : 'r',
-      v.wontPlay ? 'W' : 'w',
+      v.playbackIssue ? 'P' : 'p',
       v.markedForDeletion ? 'D' : 'd',
     ].join('');
   }
@@ -173,7 +182,7 @@
            the user can drag them. No min-width:100% — with sum-of-cols
            < container, that triggers redistribution and the leftmost
            column appears not to shrink. -->
-      <table class="table table-zebra" style="table-layout: fixed; width: max-content;">
+      <table class="table table-zebra resizable-table" style="table-layout: fixed; width: {totalWidth}px;">
         <colgroup>
           <col style="width: {getWidth('plays', 96)}px" />
           <col style="width: {getWidth('title', 480)}px" />
@@ -182,18 +191,22 @@
         <thead>
           <tr>
             {#each [
-              { key: 'plays', label: 'Plays', align: 'right' },
-              { key: 'title', label: 'Title', align: 'left' },
-              { key: 'flags', label: 'Flags', align: 'left' },
+              { key: 'plays', label: 'Plays', align: 'right', def: 96 },
+              { key: 'title', label: 'Title', align: 'left', def: 480 },
+              { key: 'flags', label: 'Flags', align: 'left', def: 160 },
             ] as col (col.key)}
               {@const dir = sortDir(sortStack, col.key as SortCol)}
               {@const pos = sortPosition(sortStack, col.key as SortCol)}
-              <th class="relative select-none p-0 {col.align === 'right' ? 'text-right' : ''}">
+              <th
+                class="relative select-none p-0 {col.align === 'right' ? 'text-right' : ''}"
+                style="width: {getWidth(col.key, col.def)}px;"
+                aria-sort={ariaSort(sortStack, col.key as SortCol)}
+              >
                 <button
                   type="button"
                   class="w-full px-3 py-2 hover:bg-base-200 cursor-pointer flex items-center gap-1 {col.align === 'right' ? 'justify-end' : ''}"
                   onclick={(e) => onSortClick(col.key as SortCol, e)}
-                  title="Click to sort. Shift-click for multi-column sort."
+                  title="Click to sort. Shift-click for multi-column sort. Double-click the right edge to auto-fit."
                 >
                   <span class="overflow-hidden text-ellipsis">{col.label}</span>
                   {#if dir}
@@ -204,9 +217,12 @@
                 </button>
                 <button
                   type="button"
-                  aria-label={`Resize ${col.label}`}
+                  aria-label={`Resize ${col.label} (double-click to auto-fit)`}
                   class="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 z-10"
-                  onmousedown={(e) => startColumnResize(e, getWidth(col.key, 100), (w) => setWidth(col.key, w))}
+                  use:resizable={{
+                    getWidth: () => getWidth(col.key, 100),
+                    setWidth: (w) => setWidth(col.key, w),
+                  }}
                 ></button>
               </th>
             {/each}
