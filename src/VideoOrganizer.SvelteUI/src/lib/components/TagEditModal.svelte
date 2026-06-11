@@ -5,8 +5,12 @@
   //
   // Modes:
   //   tag is non-null         -> edit existing tag
-  //   tag is null + tagGroupId -> create new tag in that group
+  //   tag is null              -> create new tag. A Group select lets the
+  //                              user pick any tag group; tagGroupId (when
+  //                              provided) preselects it, otherwise the
+  //                              first group is preselected.
   //                              (initialName preseeds the name field)
+  import { untrack } from 'svelte';
   import { api, ApiError } from '$lib/api';
   import type { Tag, TagGroup } from '$lib/types';
 
@@ -45,27 +49,17 @@
   let aliasInputEl: HTMLInputElement | null = $state(null);
   let modalEl: HTMLDivElement | null = $state(null);
 
-  const isEdit = $derived(tag !== null && tag !== undefined);
-
-  // Edit-mode group select — lets the user move the tag to another
-  // group while keeping every video tagging (the server re-points
-  // TagGroupId; VideoTag rows reference the tag by id). Groups are
-  // lazy-loaded the first time the modal opens in edit mode.
+  // Group select, both modes. Create: pick where the new tag goes —
+  // tagGroupId (when the host passes one) preselects its option,
+  // otherwise the first group wins. Edit: picking a different group
+  // moves the tag there on Save, keeping every video tagging (the
+  // server re-points TagGroupId; VideoTag rows reference the tag by
+  // id). Lazy-loaded on first open.
   let groups = $state<TagGroup[]>([]);
   let groupsLoading = false;
   let selectedGroupId = $state<string | undefined>(undefined);
 
-  $effect(() => {
-    if (!show || !tag) return;
-    if (groups.length > 0 || groupsLoading) return;
-    groupsLoading = true;
-    api.listTagGroups()
-      .then(gs => { groups = gs; })
-      .catch(e => {
-        error = e instanceof Error ? e.message : 'Failed to load tag groups';
-      })
-      .finally(() => { groupsLoading = false; });
-  });
+  const isEdit = $derived(tag !== null && tag !== undefined);
 
   $effect(() => {
     if (!show) return;
@@ -80,12 +74,40 @@
       aliases = [];
       isFavorite = false;
       notes = '';
+      selectedGroupId = tagGroupId;
     }
     error = null;
     aliasInput = '';
     // Always land on the Name input — Enter then accepts the (pre-filled or
     // typed) name with default aliases/favorite/notes. Tab to reach those.
     queueMicrotask(() => nameInputEl?.focus());
+  });
+
+  // Load the group list the first time the modal opens (either mode).
+  // Separate effect (with the groups read untracked) so the reset effect
+  // above doesn't re-fire — and clobber in-progress typing — when the
+  // async load lands. The first-group fallback only applies in create
+  // mode; edit mode always preselects the tag's current group via the
+  // reset effect.
+  $effect(() => {
+    if (!show) return;
+    untrack(() => {
+      if (groups.length > 0) {
+        if (!selectedGroupId && !tag) selectedGroupId = groups[0]?.id;
+        return;
+      }
+      if (groupsLoading) return;
+      groupsLoading = true;
+      api.listTagGroups()
+        .then(gs => {
+          groups = gs;
+          if (!selectedGroupId && !tag) selectedGroupId = gs[0]?.id;
+        })
+        .catch(e => {
+          error = e instanceof Error ? e.message : 'Failed to load tag groups';
+        })
+        .finally(() => { groupsLoading = false; });
+    });
   });
 
   function addAlias() {
@@ -120,16 +142,16 @@
           tagGroupId: selectedGroupId
         });
         saved = await api.getTag(tag.id);
-      } else if (tagGroupId) {
+      } else if (selectedGroupId) {
         saved = await api.createTag({
-          tagGroupId,
+          tagGroupId: selectedGroupId,
           name: trimmed,
           aliases,
           isFavorite,
           notes
         });
       } else {
-        error = 'Internal error: no tag and no tagGroupId.';
+        error = 'Pick a tag group first.';
         saving = false;
         return;
       }
@@ -226,10 +248,14 @@
         </div>
       {/if}
 
-      {#if isEdit && groups.length > 0}
-        <!-- Edit-mode group select. Picking a different group moves the
-             tag there on Save — every video keeps its tagging (the
-             move re-points the tag row; video↔tag links are by id). -->
+      {#if !isEdit || groups.length > 0}
+        <!-- Group select, both modes. Create: the new tag can go into
+             any group — preselected from the host's tagGroupId when
+             one was passed (e.g. the per-group composer in
+             EditTagsPanel), otherwise the first group. Edit: picking
+             a different group moves the tag there on Save — every
+             video keeps its tagging (the move re-points the tag row;
+             video↔tag links are by id). -->
         <div class="flex items-center gap-2 mb-1">
           <span class="label-text w-20 shrink-0">Group</span>
           <select class="select select-bordered flex-1" bind:value={selectedGroupId}>
@@ -321,7 +347,7 @@
           type="button"
           class="btn btn-soft btn-primary btn-cta"
           onclick={save}
-          disabled={saving || !name.trim()}
+          disabled={saving || !name.trim() || (!isEdit && !selectedGroupId)}
         >
           {saving ? 'Saving…' : (isEdit ? 'Save' : 'Create')}
         </button>

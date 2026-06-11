@@ -35,6 +35,13 @@
     // overrides the default 70vh ceiling so a draggable split bar on the
     // page can resize the player.
     maxVideoHeightPx?: number | null;
+    // 1-based position of the current video within the host's playlist,
+    // plus the playlist's total size. Rendered as an "x of y" badge in
+    // the title row so the user knows how deep into the playlist they
+    // are. Hidden when either value is missing (e.g. a host without
+    // playlist context, or the current video fell out of the filter).
+    playlistIndex?: number | null;
+    playlistTotal?: number | null;
     // Reserved (currently unused). Was previously used to require Shift
     // for arrow navigation while the Edit Tags panel was open, but that
     // turned out to be too aggressive — focus inside an INPUT already
@@ -69,6 +76,8 @@
     onRequestNext,
     shortcutsEnabled = true,
     maxVideoHeightPx = null,
+    playlistIndex = null,
+    playlistTotal = null,
     tagsPanelOpen = false,
     onToggleTags,
     onToggleFileInfo,
@@ -2490,6 +2499,14 @@
           <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
         </svg>
       </button>
+      {#if playlistIndex !== null && playlistTotal !== null && playlistTotal > 0}
+        <!-- "x of y" playlist-position badge — answers "how far into
+             this playlist am I?" at a glance while arrow-navigating. -->
+        <span
+          class="badge badge-ghost badge-sm tabular-nums shrink-0"
+          title="Video {playlistIndex} of {playlistTotal} in the current playlist"
+        >{playlistIndex} of {playlistTotal}</span>
+      {/if}
       <span class="text-base-content/60">File:</span>
       <span class="text-base-content/70 break-all">{video.fileName}</span>
       {#if video.isClip && video.parentVideoId}
