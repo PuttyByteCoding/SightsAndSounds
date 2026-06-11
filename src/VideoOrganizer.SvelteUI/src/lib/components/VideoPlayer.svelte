@@ -16,8 +16,10 @@
   import { filterStore } from '$lib/filterStore.svelte';
   import { pillClass } from '$lib/tagColors';
   import { runtimeStore } from '$lib/runtimeStore.svelte';
+  import { tagKeyBindings, type TagKeyBinding } from '$lib/tagKeyBindings.svelte';
   import { portal } from '$lib/portal';
   import TagEditModal from './TagEditModal.svelte';
+  import TagKeyBindingsModal from './TagKeyBindingsModal.svelte';
   import FfprobeResultModal from './FfprobeResultModal.svelte';
 
   interface Props {
@@ -201,6 +203,61 @@
         video = { ...video, tags: previousTags, needsReview: previousNeedsReview };
       }
       errorMessage = `Failed to toggle flag: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
+  // --- Key-bound tags ------------------------------------------------------
+  // User-defined key → tag map (see $lib/tagKeyBindings.svelte). The ⌨
+  // toolbar button opens the management modal; pressing a bound key
+  // toggles its tag on the current video.
+  let keyBindingsModalShow = $state(false);
+
+  // Toggle a key-bound tag on the current video. Same optimistic-update
+  // shape as toggleFlagAt above: flip local state at keypress time, run
+  // the API calls in the background, roll back on failure if the user
+  // is still on the same video.
+  async function toggleBoundTag(binding: TagKeyBinding) {
+    if (!video) return;
+    const videoId = video.id;
+    const has = video.tags.some(t => t.id === binding.tagId);
+    const previousTags = video.tags;
+    const previousNeedsReview = video.needsReview;
+    const optimisticTags = has
+      ? video.tags.filter(t => t.id !== binding.tagId)
+      : [
+          ...video.tags,
+          {
+            id: binding.tagId,
+            tagGroupId: binding.tagGroupId,
+            tagGroupName: binding.tagGroupName,
+            name: binding.tagName
+          }
+        ];
+    const nextTagIds = optimisticTags.map(t => t.id);
+    // Applying any tag implies the user has reviewed the video — same
+    // contract as toggleFlagAt / EditTagsPanel.addTag.
+    const shouldClearReview = !has && previousNeedsReview;
+
+    video = {
+      ...video,
+      tags: optimisticTags,
+      needsReview: shouldClearReview ? false : video.needsReview
+    };
+
+    try {
+      await api.setVideoTags(videoId, { tagIds: nextTagIds });
+      if (shouldClearReview) await api.markReviewed(videoId);
+      const fresh = await api.getVideo(videoId);
+      if (fresh && video?.id === videoId) {
+        video = fresh;
+        loadedVideoSnapshot = JSON.stringify(fresh);
+        if (shouldClearReview) await onVideoChanged?.(fresh);
+      }
+    } catch (e) {
+      if (video?.id === videoId) {
+        video = { ...video, tags: previousTags, needsReview: previousNeedsReview };
+      }
+      errorMessage = `Failed to toggle '${binding.tagName}': ${e instanceof Error ? e.message : String(e)}`;
     }
   }
 
@@ -1615,6 +1672,10 @@
 
   async function onWindowKeyDown(e: KeyboardEvent) {
     if (!shortcutsEnabled || !video) return;
+    // The key-bindings modal owns the keyboard while open (its own
+    // window handler does Esc/Enter); blocking here keeps W/D/F and
+    // friends from firing against the video behind it.
+    if (keyBindingsModalShow) return;
     // While the clip-preview modal is open, hand keys off to the modal:
     //   Enter   — accept (Keep) the new clip
     //   Escape  — reject (Discard); deletes the just-created clip row
@@ -1790,6 +1851,19 @@
     // (Ctrl+Shift+[ / Shift+[ / [) — it's after this guard, but the
     // bracket keys aren't [A-Za-z] so they're unaffected.
     if ((e.ctrlKey || e.metaKey || e.altKey) && /^[A-Za-z]$/.test(e.key)) return;
+
+    // User-defined key → tag bindings (F-keys + free letters; see the
+    // ⌨ toolbar button). Checked before the built-in shortcuts but the
+    // bindable-key list excludes everything the player claims, so the
+    // ordering is only a guard against future drift.
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      const binding = tagKeyBindings.forKey(e.key);
+      if (binding) {
+        e.preventDefault();
+        await toggleBoundTag(binding);
+        return;
+      }
+    }
 
     if (e.key === ' ') {
       e.preventDefault();
@@ -2194,6 +2268,24 @@
             >+</button>
           </div>
         {/if}
+        <!-- Key-bound tags: open the binding manager. Badge shows how
+             many bindings are active so the affordance hints at state
+             without opening the modal. -->
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          onclick={() => (keyBindingsModalShow = true)}
+          title="Tag key bindings — map keys (F1, F2, …) to tags; pressing a bound key toggles its tag on the current video"
+          aria-label="Tag key bindings"
+        >
+          <!-- Keyboard icon. -->
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-6 w-6 fill-current">
+            <path d="M20 5H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 12H4V7h16v10zM6 9h2v2H6V9zm3 0h2v2H9V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zM6 12h2v2H6v-2zm3 0h2v2H9v-2zm3 0h2v2h-2v-2zm3 0h2v2h-2v-2zM8 15h8v1.5H8V15z" />
+          </svg>
+          {#if tagKeyBindings.bindings.length > 0}
+            <span class="badge badge-sm badge-ghost tabular-nums">{tagKeyBindings.bindings.length}</span>
+          {/if}
+        </button>
         <!-- Local-only file-system shortcuts. Hidden when the browser
              isn't on the API host (the corresponding endpoints would
              403 anyway). Same gate the Playback Issue overlay uses
@@ -2652,6 +2744,8 @@
     tag={editingTag}
     onSaved={onTagSavedFromPlayer}
   />
+
+  <TagKeyBindingsModal bind:show={keyBindingsModalShow} />
 
   {#if errorMessage}
     <div class="alert alert-error text-sm mt-2 flex items-start gap-2">
