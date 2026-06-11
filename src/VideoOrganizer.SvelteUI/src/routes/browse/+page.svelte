@@ -779,6 +779,16 @@
     playingVideo = v;
   }
 
+  // 1-based position of the playing video within the current grid order.
+  // Feeds the "x of y" badge in the player's title row. null when the
+  // playing video isn't part of the filtered list (e.g. a ?id= deep-link
+  // whose row was later clobbered by a filter change).
+  const playingIndex = $derived.by<number | null>(() => {
+    if (!playingVideo) return null;
+    const idx = videos.findIndex(v => v.id === playingVideo!.id);
+    return idx >= 0 ? idx + 1 : null;
+  });
+
   // Move to the next/previous video in the current grid order. Wired into
   // VideoPlayer's arrow-key handlers; the player gates by `tagsPanelOpen`
   // so plain arrows nav when the panel is closed and Shift+arrows do when
@@ -1498,6 +1508,8 @@
                 bind:video={playingVideo}
                 shortcutsEnabled={true}
                 maxVideoHeightPx={Math.max(100, playerHeight - 72)}
+                playlistIndex={playingIndex}
+                playlistTotal={videos.length}
                 tagsPanelOpen={showEditTagsPanel}
                 onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
                 onToggleFileInfo={() => (showFileInfo = !showFileInfo)}
