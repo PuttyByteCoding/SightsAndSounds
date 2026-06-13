@@ -5,6 +5,7 @@ import type {
   CreateTagRequest,
   DirectoryImportRequest,
   ImportBrowseResponse,
+  ImportedFolder,
   ImportScanProgress,
   MoveProgress,
   FileMoveLog,
@@ -446,6 +447,10 @@ export const api = {
     const qs = params.toString();
     return request<ImportBrowseResponse>(`/api/import/browse${qs ? `?${qs}` : ''}`);
   },
+  // Flat list of folders that already hold imported videos — the move
+  // dialog's destination choices. (issue #4)
+  listImportedFolders: () =>
+    request<ImportedFolder[]>('/api/import/imported-folders'),
   // Live count of video files discovered by an in-flight browse scan.
   // Polled by the Import page while a source loads. (issue #27)
   getImportScanProgress: () =>

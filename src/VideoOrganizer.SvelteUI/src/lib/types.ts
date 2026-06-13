@@ -420,6 +420,15 @@ export interface ImportBrowseResponse {
   directories: ImportBrowseDirectory[];
 }
 
+// A folder that already holds imported videos — the move dialog's
+// destination choices. fullPath is the move target; label is a
+// source-relative display path. (issue #4)
+export interface ImportedFolder {
+  fullPath: string;
+  label: string;
+  videoCount: number;
+}
+
 // GET /api/import/scan-progress — live count of video files discovered by
 // an in-flight /import/browse scan, polled while a source loads. (issue #27)
 export interface ImportScanProgress {

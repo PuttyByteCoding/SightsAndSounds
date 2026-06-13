@@ -14,6 +14,17 @@ public record ImportBrowseResponse(
     List<ImportBrowseDirectory> Directories
 );
 
+// A folder that already contains imported videos — the destination choices
+// for the move dialog (issue #4). Derived from the library (distinct parent
+// folders of imported videos), so listing it is a fast DB read rather than a
+// filesystem walk. Label is a source-relative display path ("Source / sub /
+// folder"); FullPath is the absolute path the move targets.
+public record ImportedFolder(
+    string FullPath,
+    string Label,
+    int VideoCount
+);
+
 // Live progress of an in-flight /import/browse directory scan, polled by
 // the Import page to show a climbing "Discovered N video files…" count.
 // Scanning is false once the walk finishes; Discovered holds the final
