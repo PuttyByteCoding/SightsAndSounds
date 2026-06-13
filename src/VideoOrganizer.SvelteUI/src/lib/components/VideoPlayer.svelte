@@ -1846,38 +1846,34 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
   }
 
-  // `[` / `]` single-tap zoom, double-tap mark a block (issue #44). To tell
-  // them apart we defer the zoom by one double-tap window: a second tap of the
-  // same bracket within the window cancels the pending zoom and marks the block
-  // instead. Key auto-repeat (held key) zooms immediately and never counts as a
-  // double-tap.
-  let bracketTap: { key: '[' | ']'; timer: ReturnType<typeof setTimeout> } | null = null;
-  const BRACKET_DBL_MS = 280;
+  // `{` / `}` (Shift+[ / Shift+]) keep their single-press manual-block actions
+  // (arm a block start / close it), and a quick double-tap of either marks a
+  // whole block in one gesture (issue #44):
+  //   }}  → Hide block from the START to the current position
+  //   {{  → Hide block from the current position to the END
+  // The single action fires on every press, so the two-step {…} flow is
+  // unaffected (those are two different keys). A second tap of the SAME key
+  // within the window then lays down the head/tail block. Held keys
+  // (auto-repeat) never count as a double-tap. Zoom stays on plain [ / ].
+  let lastBlockTap: { key: '{' | '}'; at: number } | null = null;
+  const BLOCK_DBL_MS = 350;
 
-  function zoomForBracket(key: '[' | ']') {
-    if (key === ']') zoomIn();
-    else zoomOut();
-  }
-
-  function handleBracketTap(key: '[' | ']', repeat: boolean) {
-    if (repeat) {
-      if (bracketTap?.key === key) { clearTimeout(bracketTap.timer); bracketTap = null; }
-      zoomForBracket(key);
+  function handleBlockTap(key: '{' | '}', repeat: boolean) {
+    if (!repeat && lastBlockTap?.key === key && Date.now() - lastBlockTap.at < BLOCK_DBL_MS) {
+      lastBlockTap = null;
+      if (key === '}') {
+        blockFromStart();
+      } else {
+        // The first `{` of the double already armed a pending start marker —
+        // clear it so the tail block doesn't leave a dangling start behind.
+        cancelPendingBlock();
+        blockToEnd();
+      }
       return;
     }
-    if (bracketTap?.key === key) {
-      clearTimeout(bracketTap.timer);
-      bracketTap = null;
-      if (key === ']') blockFromStart();
-      else blockToEnd();
-      return;
-    }
-    if (bracketTap) { clearTimeout(bracketTap.timer); bracketTap = null; }
-    const timer = setTimeout(() => {
-      bracketTap = null;
-      zoomForBracket(key);
-    }, BRACKET_DBL_MS);
-    bracketTap = { key, timer };
+    lastBlockTap = repeat ? null : { key, at: Date.now() };
+    if (key === '{') startBlock();
+    else endBlock();
   }
 
   async function onWindowKeyDown(e: KeyboardEvent) {
@@ -2130,10 +2126,10 @@
     //   \                            → fit-to-column
     if (e.key === '{' && e.ctrlKey) { e.preventDefault(); startClip(); return; }
     if (e.key === '}' && e.ctrlKey) { e.preventDefault(); await endClip(); return; }
-    if (e.key === '{') { e.preventDefault(); startBlock(); return; }
-    if (e.key === '}') { e.preventDefault(); endBlock(); return; }
-    if (e.key === '[') { e.preventDefault(); handleBracketTap('[', e.repeat); return; }
-    if (e.key === ']') { e.preventDefault(); handleBracketTap(']', e.repeat); return; }
+    if (e.key === '{') { e.preventDefault(); handleBlockTap('{', e.repeat); return; }
+    if (e.key === '}') { e.preventDefault(); handleBlockTap('}', e.repeat); return; }
+    if (e.key === '[') { e.preventDefault(); zoomOut(); return; }
+    if (e.key === ']') { e.preventDefault(); zoomIn(); return; }
     if (e.key === '\\') { e.preventDefault(); fitSize(); return; }
     switch (e.key) {
       case '1': e.preventDefault(); seekBy(-playbackSettings.key1Seconds); break;
