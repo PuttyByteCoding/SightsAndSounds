@@ -21,6 +21,18 @@ public record CreateTagRequest(
     int SortOrder = 0,
     string Notes = "");
 
+// Create many tags in one request (issue #49). Names are trimmed; blanks are
+// ignored; names that collide with an existing tag in the group (or repeat
+// earlier in the list), case-insensitively, are skipped rather than erroring.
+public record BulkCreateTagsRequest(
+    Guid TagGroupId,
+    IReadOnlyList<string> Names,
+    bool IsFavorite = false);
+
+public record BulkCreateTagsResponse(
+    int Created,
+    int Skipped);
+
 // TagGroupId moves the tag to another group when it differs from the
 // tag's current group. Existing VideoTag rows reference the tag by id,
 // so every video keeps its tagging across the move. Null / omitted

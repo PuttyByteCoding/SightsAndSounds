@@ -2926,6 +2926,55 @@ public static class ApiEndpoints
                 new TagDto(t.Id, t.TagGroupId, grp.Name, t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, 0));
         }).WithName("CreateTag");
 
+        // POST /api/tags/bulk — create many tags in one request (issue #49).
+        // The Tag Management paste box used to fire one POST per name, which
+        // fell over for thousands of tags. This inserts the whole batch in a
+        // single round-trip. Names are trimmed; blanks ignored; names that
+        // collide with an existing tag in the group (or repeat earlier in the
+        // batch), case-insensitively, are skipped so the per-group unique-name
+        // rule can't trip the insert.
+        tagsGroup.MapPost("/bulk", async (
+            BulkCreateTagsRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            if (!await db.TagGroups.AnyAsync(g => g.Id == req.TagGroupId, ct))
+                return Results.BadRequest(new { error = "TagGroup not found." });
+
+            var seen = new HashSet<string>(
+                await db.Tags.Where(t => t.TagGroupId == req.TagGroupId)
+                    .Select(t => t.Name).ToListAsync(ct),
+                StringComparer.OrdinalIgnoreCase);
+
+            var toAdd = new List<Tag>();
+            var skipped = 0;
+            foreach (var raw in req.Names ?? Array.Empty<string>())
+            {
+                var name = raw?.Trim();
+                if (string.IsNullOrEmpty(name)) continue;
+                if (!seen.Add(name)) { skipped++; continue; }
+                toAdd.Add(new Tag
+                {
+                    Id = Guid.NewGuid(),
+                    TagGroupId = req.TagGroupId,
+                    Name = name,
+                    Aliases = new(),
+                    IsFavorite = req.IsFavorite,
+                    SortOrder = 0,
+                    Notes = string.Empty
+                });
+            }
+
+            if (toAdd.Count > 0)
+            {
+                db.Tags.AddRange(toAdd);
+                await db.SaveChangesAsync(ct);
+            }
+            logger.LogInformation(
+                "Bulk-created {Created} tag(s) in TagGroup {TagGroupId} ({Skipped} skipped)",
+                toAdd.Count, req.TagGroupId, skipped);
+            return Results.Ok(new BulkCreateTagsResponse(toAdd.Count, skipped));
+        }).WithName("BulkCreateTags");
+
         tagsGroup.MapPut("/{id:guid}", async (
             Guid id, UpdateTagRequest req, VideoOrganizerDbContext db,
             ILogger<Program> logger, CancellationToken ct) =>
