@@ -14,6 +14,25 @@ public record MissingVideoFileDto(
     string? SourceName,
     bool SourceEnabled);
 
+// Request for POST /api/validation/missing-files/purge — the rows
+// (by Video id) the user wants removed from the database. IDs come
+// from a prior GET /missing-files scan.
+public record PurgeMissingFilesRequest(
+    System.Collections.Generic.IReadOnlyList<System.Guid> VideoIds);
+
+// Result of POST /api/validation/missing-files/purge. DB-only
+// deletion: the file is already gone — that's the premise — so
+// nothing touches disk. Every row is re-probed with File.Exists
+// before deletion; SkippedPresentIds lists rows whose file
+// reappeared between the scan and the purge (remounted drive,
+// restored backup) and were therefore NOT deleted. NotFound counts
+// ids with no matching row (deleted elsewhere since the scan).
+public record PurgeMissingFilesResultDto(
+    int Deleted,
+    int SkippedPresent,
+    int NotFound,
+    System.Collections.Generic.IReadOnlyList<System.Guid> SkippedPresentIds);
+
 // A video file found on disk under a configured source that does
 // NOT have a matching Video row in the DB. Returned by GET
 // /api/validation/extra-files. These are unimported leftovers — the
