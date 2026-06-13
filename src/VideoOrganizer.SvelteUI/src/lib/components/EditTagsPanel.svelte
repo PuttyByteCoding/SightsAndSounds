@@ -5,7 +5,7 @@
 
   import { onMount, tick } from 'svelte';
   import { api } from '$lib/api';
-  import type { Tag, TagGroup, Video, VideoTagSummary } from '$lib/types';
+  import type { Tag, TagGroup, TagSuggestion, Video, VideoTagSummary } from '$lib/types';
   import { pillClass } from '$lib/tagColors';
   import { tagFlash } from '$lib/tagFlash.svelte';
   import TagEditModal from './TagEditModal.svelte';
@@ -42,11 +42,19 @@
 
   // Per-group composer (autocomplete input + filtered list + keyboard hi)
   let composer = $state<Record<string, { input: string; open: boolean; highlighted: number }>>({});
-  // Potential tags parsed from the file name + path (issue #10). Analyzed
-  // automatically when the panel opens / the video changes, so they're always
-  // ready as candidates pinned to the top of every group's composer dropdown.
-  // Picking one is treated as a NEW tag (opens the create-tag modal).
+  // File-name analysis for the Potential Tags row (issue #10), refreshed when
+  // the panel opens / the video changes:
+  //   · tagMatches    — EXISTING tags whose name/alias appears in the file name
+  //                     or folder (server does whole-word + collapsed/no-space
+  //                     + alias matching, so "DaveMatthewsBand" hits the tag
+  //                     "Dave Matthews Band"). Picking one ADDS it.
+  //   · tagCandidates — raw names parsed from the file name that aren't an
+  //                     existing tag. Picking one creates a NEW tag.
+  let tagMatches = $state<TagSuggestion[]>([]);
   let tagCandidates = $state<string[]>([]);
+  // Separator-free lowercase form, mirroring the server's collapsed match, used
+  // to drop raw candidates that are really an existing tag spelled differently.
+  const collapse = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
   // DOM refs for each group's composer input, indexed by render order. We
   // focus [0] on Shift+arrow nav so the user can start typing into the
   // first tag group immediately.
@@ -243,7 +251,10 @@
     tagsByGroup[groupId] = await api.listTags({ groupId });
   }
 
-  function addTag(group: TagGroup, tag: Tag) {
+  function addTag(
+    group: TagGroup,
+    tag: { id: string; tagGroupId: string; tagGroupName: string; name: string }
+  ) {
     if (!video) return;
     if (video.tags.some(t => t.id === tag.id)) return;
     const summary: VideoTagSummary = {
@@ -425,51 +436,106 @@
   // the shared list against its own existing tags.
   async function loadCandidates() {
     if (!video) {
+      tagMatches = [];
       tagCandidates = [];
       return;
     }
+    const vid = video.id;
     try {
-      tagCandidates = await api.getTagCandidates(video.id);
+      const [matches, candidates] = await Promise.all([
+        api.getTagSuggestions(vid),
+        api.getTagCandidates(vid)
+      ]);
+      if (video?.id !== vid) return; // navigated away mid-fetch
+      tagMatches = matches;
+      tagCandidates = candidates;
     } catch {
+      tagMatches = [];
       tagCandidates = []; // non-fatal — the panel still works without candidates
     }
   }
 
-  // Potential tags for a group's dropdown: the analyzed candidates minus any
-  // that already exist in this group (those surface via normal typing) or are
-  // already applied, then filtered by the typed query like any other match.
-  function filteredPotential(group: TagGroup): string[] {
-    const q = (composer[group.id]?.input ?? '').toLowerCase().trim();
-    const existingNames = new Set(
-      (tagsByGroup[group.id] ?? []).flatMap(t => [
-        t.name.toLowerCase(),
-        ...t.aliases.map(a => a.toLowerCase())
-      ])
-    );
-    const appliedNames = new Set((video?.tags ?? []).map(t => t.name.toLowerCase()));
-    return tagCandidates
-      .filter(name => !existingNames.has(name.toLowerCase()))
-      .filter(name => !appliedNames.has(name.toLowerCase()))
-      .filter(name => !q || name.toLowerCase().includes(q));
-  }
+  // The dropdown is built from three sources, in order:
+  //   1. existing tags MATCHED from the file name/folder for THIS group → add
+  //   2. raw file-name candidates that aren't an existing tag        → create
+  //   3. the normal type-to-search over this group's tags            → add
+  // 1 + 2 are the pinned "Potential Tags" section; 3 is "Existing <group>".
+  type AddItem = {
+    section: 'potential' | 'existing';
+    kind: 'add';
+    id: string;
+    tagGroupId: string;
+    tagGroupName: string;
+    name: string;
+    hint?: string;
+  };
+  type NewItem = { section: 'potential'; kind: 'new'; name: string };
+  type DropItem = AddItem | NewItem;
 
-  // Combined dropdown list: potential (new) candidates first, then existing-tag
-  // matches. A single highlight index walks the whole list.
-  type DropItem = { kind: 'potential'; name: string } | { kind: 'existing'; tag: Tag };
   function dropItemsFor(group: TagGroup): DropItem[] {
-    const pot = filteredPotential(group).map(name => ({ kind: 'potential', name }) as DropItem);
-    const existing = suggestionsFor(group).map(tag => ({ kind: 'existing', tag }) as DropItem);
-    return [...pot, ...existing];
+    const q = (composer[group.id]?.input ?? '').toLowerCase().trim();
+    const appliedIds = new Set((video?.tags ?? []).map(t => t.id));
+    const appliedNames = new Set((video?.tags ?? []).map(t => t.name.toLowerCase()));
+
+    // 1. Existing tags found in the file name/folder, scoped to this group.
+    const matches: AddItem[] = tagMatches
+      .filter(m => m.tagGroupId === group.id && !appliedIds.has(m.tagId))
+      .filter(m => !q || m.name.toLowerCase().includes(q) || m.matchedText.toLowerCase().includes(q))
+      .map(m => ({
+        section: 'potential',
+        kind: 'add',
+        id: m.tagId,
+        tagGroupId: m.tagGroupId,
+        tagGroupName: m.tagGroupName,
+        name: m.name,
+        hint: m.matchedText && collapse(m.matchedText) !== collapse(m.name) ? m.matchedText : undefined
+      }));
+
+    // Collapsed forms of everything already "known" (matched existing tags +
+    // this group's tags/aliases) so a raw candidate that's really one of them
+    // — e.g. "DaveMatthewsBand" for "Dave Matthews Band" — isn't offered as new.
+    const known = new Set<string>();
+    for (const m of tagMatches) known.add(collapse(m.name));
+    for (const t of tagsByGroup[group.id] ?? []) {
+      known.add(collapse(t.name));
+      for (const a of t.aliases) known.add(collapse(a));
+    }
+    const matchNames = new Set(matches.map(m => m.name.toLowerCase()));
+
+    // 2. Raw candidates that aren't an existing/known tag → create-new items.
+    const news: NewItem[] = tagCandidates
+      .filter(name => !appliedNames.has(name.toLowerCase()))
+      .filter(name => !matchNames.has(name.toLowerCase()))
+      .filter(name => !known.has(collapse(name)))
+      .filter(name => !q || name.toLowerCase().includes(q))
+      .map(name => ({ section: 'potential', kind: 'new', name }));
+
+    // 3. Normal type-to-search over existing tags, minus any already pinned.
+    const pinnedIds = new Set(matches.map(m => m.id));
+    const typed: AddItem[] = suggestionsFor(group)
+      .filter(t => !pinnedIds.has(t.id))
+      .map(t => ({
+        section: 'existing',
+        kind: 'add',
+        id: t.id,
+        tagGroupId: t.tagGroupId,
+        tagGroupName: t.tagGroupName,
+        name: t.name,
+        hint: q && !t.name.toLowerCase().includes(q)
+          ? t.aliases.find(a => a.toLowerCase().includes(q))
+          : undefined
+      }));
+
+    return [...matches, ...news, ...typed];
   }
 
   function selectDropItem(group: TagGroup, item: DropItem) {
-    if (item.kind === 'existing') {
-      addTag(group, item.tag);
+    if (item.kind === 'add') {
+      addTag(group, item);
       return;
     }
-    // Potential candidate → treat as a new tag. If one with that exact name
-    // already exists in this group (e.g. tags hadn't loaded when it was shown),
-    // just apply it instead of opening a create modal that would conflict.
+    // New candidate → create a new tag. Safety net: if it turns out to exist in
+    // this group already, just apply it instead of a conflicting create.
     const existing = (tagsByGroup[group.id] ?? []).find(
       t => t.name.toLowerCase() === item.name.toLowerCase()
     );
@@ -713,57 +779,39 @@
 
               {#if composer[group.id]?.open && dropItemsFor(group).length > 0}
                 {@const items = dropItemsFor(group)}
-                {@const potCount = items.filter((it) => it.kind === 'potential').length}
-                {@const q = (composer[group.id]?.input ?? '').toLowerCase().trim()}
-                <!-- Floating command-palette-style popover (see the original
-                     styling notes): bg one step from the panel, primary border
-                     + ring halo + heavy shadow so it reads as "above the page".
-                     Potential Tags (analysis results from the file name +
-                     folders) are pinned first and badged NEW; picking one opens
-                     the create-tag modal. Existing-tag matches follow. A single
-                     highlight index walks the whole list. -->
+                <!-- Floating command-palette-style popover. Pinned "Potential
+                     Tags" come first: existing tags MATCHED from the file name
+                     (picking adds them) and new-name candidates badged NEW
+                     (picking opens the create modal). The "Existing <group>"
+                     type-to-search list follows. One highlight index walks the
+                     whole list. -->
                 <div class="absolute z-20 mt-1 w-full bg-base-300 border-2 border-primary rounded-md shadow-2xl ring-4 ring-primary/30 max-h-64 overflow-auto">
-                  {#each items as item, i (item.kind === 'potential' ? `p:${item.name}` : `e:${item.tag.id}`)}
+                  {#each items as item, i (item.kind === 'new' ? `new:${item.name}` : `${item.section}:${item.id}`)}
                     {@const isActive = composer[group.id]?.highlighted === i}
-                    {#if i === 0 && item.kind === 'potential'}
-                      <div class="px-3 py-1 text-xs uppercase tracking-wider text-accent-content bg-accent border-b border-accent">
-                        Potential Tags
-                      </div>
+                    {#if i === 0 || items[i - 1].section !== item.section}
+                      {#if item.section === 'potential'}
+                        <div class="px-3 py-1 text-xs uppercase tracking-wider text-accent-content bg-accent border-b border-accent">
+                          Potential Tags
+                        </div>
+                      {:else}
+                        <div class="px-3 py-1 text-xs uppercase tracking-wider text-primary-content bg-primary border-y border-primary">
+                          Existing {group.name}
+                        </div>
+                      {/if}
                     {/if}
-                    {#if i === potCount && item.kind === 'existing'}
-                      <div class="px-3 py-1 text-xs uppercase tracking-wider text-primary-content bg-primary border-y border-primary">
-                        Existing {group.name}
-                      </div>
-                    {/if}
-                    {#if item.kind === 'potential'}
-                      <button
-                        type="button"
-                        class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
-                        onmousedown={() => selectDropItem(group, item)}
-                        onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
-                      >
-                        {item.name}
+                    <button
+                      type="button"
+                      class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
+                      onmousedown={() => selectDropItem(group, item)}
+                      onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
+                    >
+                      {item.name}
+                      {#if item.kind === 'new'}
                         <span class="badge badge-accent badge-xs ml-2 align-middle">NEW</span>
-                      </button>
-                    {:else}
-                      {@const t = item.tag}
-                      {@const matchedAlias = q && !t.name.toLowerCase().includes(q)
-                        ? t.aliases.find((a) => a.toLowerCase().includes(q))
-                        : undefined}
-                      <button
-                        type="button"
-                        class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
-                        onmousedown={() => selectDropItem(group, item)}
-                        onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
-                      >
-                        {t.name}
-                        {#if matchedAlias}
-                          <span class="text-xs opacity-70 ml-2">matched: {matchedAlias}</span>
-                        {:else if t.aliases.length > 0}
-                          <span class="text-xs opacity-70 ml-2">({t.aliases.join(', ')})</span>
-                        {/if}
-                      </button>
-                    {/if}
+                      {:else if item.hint}
+                        <span class="text-xs opacity-70 ml-2">matched: {item.hint}</span>
+                      {/if}
+                    </button>
                   {/each}
                 </div>
               {/if}
