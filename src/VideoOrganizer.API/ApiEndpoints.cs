@@ -273,6 +273,50 @@ public static class ApiEndpoints
             .Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
+    // Release / quality / codec tokens that show up in file names but are
+    // never useful as content tags — dropped from candidate extraction so the
+    // "Potential tags" list isn't polluted with "1080p", "x264", etc. (#10).
+    private static readonly HashSet<string> TagCandidateNoise = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "1080p", "720p", "480p", "360p", "2160p", "4k", "8k", "uhd", "hd", "sd", "hdr",
+        "x264", "x265", "h264", "h265", "hevc", "avc", "xvid", "divx", "mpeg", "mp4", "mkv", "avi",
+        "aac", "ac3", "dts", "mp3", "flac", "opus", "5", "1ch",
+        "web", "webrip", "webdl", "bluray", "bdrip", "brrip", "dvdrip", "hdtv", "hdrip", "cam", "ts",
+        "proper", "repack", "internal", "extended", "uncut", "remux", "10bit", "8bit", "60fps", "30fps"
+    };
+
+    // Splits a file-name stem + folder path into candidate tag names for the
+    // Tag panel's "Potential tags" feature (issue #10). The stem is broken on
+    // common field delimiters (keeping internal spaces, so "Bob Marley - Live"
+    // yields "Bob Marley" and "Live"); folder segments are kept whole so a
+    // multi-word "Bob Marley" folder survives. Bare numbers, 1-char tokens, and
+    // known release-noise tokens are dropped; results are case-insensitively
+    // deduped in first-seen order and capped.
+    private static List<string> ExtractTagCandidates(string fileStem, string folderText)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+
+        void Add(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            var name = string.Join(' ', raw.Split(
+                (char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            if (name.Length < 2) return;
+            if (name.All(char.IsDigit)) return;
+            if (TagCandidateNoise.Contains(name)) return;
+            if (seen.Add(name)) result.Add(name);
+        }
+
+        var delimiters = new[] { '_', '.', '-', '–', '—', '~', '|', ',', '[', ']', '(', ')', '{', '}' };
+        foreach (var part in fileStem.Split(delimiters, StringSplitOptions.RemoveEmptyEntries))
+            Add(part);
+        foreach (var seg in folderText.Split('/', StringSplitOptions.RemoveEmptyEntries))
+            Add(seg);
+
+        return result.Take(25).ToList();
+    }
+
     // Moves a file from src to dst, reporting byte progress (issue #4).
     // Same-volume moves are an instant File.Move (a rename); cross-volume
     // moves stream the copy in 1 MiB chunks so the UI can show a real
@@ -2064,6 +2108,34 @@ public static class ApiEndpoints
                 .ToList();
             return Results.Ok(ordered);
         }).WithName("GetTagSuggestions");
+
+        // GET /api/videos/{id}/tag-candidates — names parsed out of the file
+        // name + folder path as *potential new tags* for the Tag panel
+        // (issue #10). Unlike tag-suggestions this doesn't match the existing
+        // tag table — it just proposes raw candidate names; the client treats
+        // a picked candidate as a new tag (opens the create modal) and filters
+        // out any that already exist in the focused group.
+        api.MapGet("/videos/{id:guid}/tag-candidates", async (
+            Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+
+            var norm = PathNormalizer.Normalize(video.FilePath);
+            var fileStem = Path.GetFileNameWithoutExtension(norm);
+            var dir = Path.GetDirectoryName(norm)?.Replace('\\', '/') ?? string.Empty;
+            var roots = await db.VideoSets.Select(s => s.Path).ToListAsync(ct);
+            var setRoot = roots
+                .Select(p => PathNormalizer.Normalize(p).TrimEnd('/'))
+                .Where(r => norm.StartsWith(r + "/", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(r => r.Length)
+                .FirstOrDefault();
+            var folderText = setRoot != null && dir.Length > setRoot.Length
+                ? dir[(setRoot.Length + 1)..]
+                : Path.GetFileName(dir);
+
+            return Results.Ok(ExtractTagCandidates(fileStem, folderText));
+        }).WithName("GetTagCandidates");
 
         api.MapPut("/videos/{id:guid}/properties", async (
             Guid id, SetPropertyValuesRequest req, VideoOrganizerDbContext db,
