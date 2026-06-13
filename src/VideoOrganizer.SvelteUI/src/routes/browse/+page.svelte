@@ -26,6 +26,7 @@
   import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { planFilteredQueue } from '$lib/browseQueue';
+  import { stripStickyLeft } from '$lib/browseStrip';
   import { pillClass, filterSlot, filterSlotClass } from '$lib/tagColors';
 
   let videos = $state<Video[]>([]);
@@ -116,11 +117,33 @@
   // --- Thumbnail size --------------------------------------------------
   // User-controlled minimum tile width; the grid uses auto-fill +
   // minmax so columns reflow naturally as the user drags. Persisted to
-  // localStorage so the choice sticks.
+  // localStorage so the choice sticks. Also drives the player-mode
+  // strip's fixed cell width.
   const THUMB_WIDTH_MIN = 120;
   const THUMB_WIDTH_MAX = 400;
   const THUMB_WIDTH_DEFAULT = 200;
   let thumbWidth = $state(THUMB_WIDTH_DEFAULT);
+
+  // --- View mode (issue #23) -------------------------------------------
+  // 'player': the video player on top with a single horizontal row of
+  //   thumbnails (the "strip") below it.
+  // 'grid':   the player is hidden and thumbnails fill the pane as a
+  //   grid (a thumbnails-only browsing view). Persisted to localStorage.
+  type ViewMode = 'player' | 'grid';
+  let viewMode = $state<ViewMode>('player');
+  function setViewMode(m: ViewMode) {
+    viewMode = m;
+    if (typeof localStorage !== 'undefined') localStorage.setItem('browseViewMode', m);
+  }
+  // Gap between strip cells, in px — mirrors the `gap-3` (0.75rem) Tailwind
+  // class on the strip so the sticky-pin offset math lines up exactly.
+  const STRIP_GAP = 12;
+  // 0-based index of the playing video within the current queue (−1 when
+  // nothing is playing or it fell out of the list). Drives the strip's
+  // rolling "previous 2 pinned" window.
+  const playingIdx0 = $derived(
+    playingVideo ? videos.findIndex((v) => v.id === playingVideo!.id) : -1
+  );
 
   // --- Section-level collapse ------------------------------------------
   // Each tree-style section in the sidebar (Flags, Favorite Tags,
@@ -160,6 +183,10 @@
     const storedSort = localStorage.getItem('browseSortMode');
     if (storedSort && SORT_MODES.some(m => m.value === storedSort)) {
       sortMode = storedSort as SortMode;
+    }
+    const storedView = localStorage.getItem('browseViewMode');
+    if (storedView === 'player' || storedView === 'grid') {
+      viewMode = storedView;
     }
   });
 
@@ -889,6 +916,10 @@
 
   function open(v: Video) {
     playingVideo = v;
+    // Clicking a thumbnail in the grid (thumbnails-only) view jumps
+    // back to the player so the pick actually starts watching (issue
+    // #23) — the player is hidden in grid mode otherwise.
+    if (viewMode === 'grid') setViewMode('player');
   }
 
   // --- Duplicate hunt ----------------------------------------------------
@@ -1733,7 +1764,7 @@
             </div>
           {/if}
 
-          {#if playingVideo}
+          {#if playingVideo && viewMode === 'player'}
             <!-- Player area — `min-height` tracks the divider so
                  dragging down enlarges the card (and lets the video
                  grow into the new room). The video's own `max-height`
@@ -1743,7 +1774,7 @@
                  the video holds at its 70vh default no matter how
                  high you drag. Subtract ~72px of wrapper chrome
                  (p-3 + button row + gap) so the picture fits cleanly
-                 inside the wrapper. -->
+                 inside the wrapper. Hidden in grid view (issue #23). -->
             <div
               class="card bg-base-200 p-3"
               style="min-height: {playerHeight}px;"
@@ -1767,7 +1798,7 @@
         </div>
       {/if}
 
-      {#if playingVideo}
+      {#if playingVideo && viewMode === 'player'}
         <!-- Drag handle: 12px hit area, visible 4px bar with three grip
              dots. Pointer-event-based drag with setPointerCapture so the
              cursor can leave the handle mid-drag. Double-click resets to
@@ -1873,41 +1904,91 @@
             onclick={reshufflePlaylist}
             title="Shuffle the current grid into a new random playlist and jump to the first video"
           >🔀 Reshuffle</button>
+          <!-- View toggle (issue #23): Player mode = video + single-row
+               thumbnail strip; Grid mode = thumbnails-only grid with the
+               player hidden. -->
+          <button
+            type="button"
+            class="btn btn-sm"
+            onclick={() => setViewMode(viewMode === 'player' ? 'grid' : 'player')}
+            title={viewMode === 'player'
+              ? 'Switch to grid view (hide the player, show all thumbnails)'
+              : 'Switch to player view (video with a thumbnail strip)'}
+            aria-label={viewMode === 'player' ? 'Switch to grid view' : 'Switch to player view'}
+          >{viewMode === 'player' ? '▦ Grid' : '▶ Player'}</button>
         </div>
       </div>
 
-      <!-- Thumbnail grid — natural document flow now. Page scrolls when
-           total content exceeds viewport; the sticky player above stays
-           pinned at the top of the viewport during that scroll. The
-           grid uses auto-fill + minmax so changing the thumbnail-size
-           slider above immediately reflows the column count. -->
-      <div>
-        <div
-          class="grid gap-3"
-          style="grid-template-columns: repeat(auto-fill, minmax({thumbWidth}px, 1fr));"
-        >
-          {#each visibleVideos as v (v.id)}
-            <VideoCard
-              video={v}
-              onopen={open}
-              active={playingVideo?.id === v.id}
-            />
+      {#if viewMode === 'player'}
+        <!-- Single-row thumbnail strip (issue #23). One horizontal row
+             of the queue scrolling left↔right under the player. The two
+             videos immediately before the current one pin to the left
+             edge (position: sticky) so the user can always step back as
+             the strip scrolls forward — a rolling window via
+             stripStickyLeft. Each cell is a fixed thumbWidth so the
+             pin offsets line up; VideoCard's own active-card
+             scrollIntoView keeps the current thumbnail in view. -->
+        <div class="flex gap-3 overflow-x-auto pb-2 isolate">
+          {#each visibleVideos as v, i (v.id)}
+            {@const left = stripStickyLeft(playingIdx0, i, thumbWidth, STRIP_GAP)}
+            <div
+              class="shrink-0"
+              class:sticky={left !== null}
+              class:z-20={left !== null}
+              class:rounded={left !== null}
+              class:bg-base-100={left !== null}
+              style="width: {thumbWidth}px;{left !== null ? ` left: ${left}px;` : ''}"
+            >
+              <VideoCard video={v} onopen={open} active={playingVideo?.id === v.id} />
+            </div>
           {/each}
+          <!-- Horizontal sentinel: the IntersectionObserver loads the
+               next chunk as the user scrolls toward the right end. -->
+          {#if visibleCount < videos.length}
+            <div
+              bind:this={scrollSentinelEl}
+              class="shrink-0 w-32 flex items-center justify-center text-xs text-base-content/50"
+            >
+              Loading more… ({videos.length - visibleCount})
+            </div>
+          {/if}
         </div>
-
-        <!-- Sentinel: empty div the IntersectionObserver watches for to
-             load the next chunk. Lives inside the scroll region so its
-             intersections fire against the right root. -->
-        {#if visibleCount < videos.length}
-          <div bind:this={scrollSentinelEl} class="h-12 flex items-center justify-center text-xs text-base-content/50">
-            Loading more… ({videos.length - visibleCount} remaining)
-          </div>
-        {/if}
 
         {#if !videosLoading && videos.length === 0}
           <p class="text-base-content/60">No videos match the current filter.</p>
         {/if}
-      </div>
+      {:else}
+        <!-- Grid view (issue #23) — thumbnails-only browsing, player
+             hidden. Natural document flow; auto-fill + minmax so the
+             thumbnail-size slider reflows columns live. -->
+        <div>
+          <div
+            class="grid gap-3"
+            style="grid-template-columns: repeat(auto-fill, minmax({thumbWidth}px, 1fr));"
+          >
+            {#each visibleVideos as v (v.id)}
+              <VideoCard
+                video={v}
+                onopen={open}
+                active={playingVideo?.id === v.id}
+              />
+            {/each}
+          </div>
+
+          <!-- Sentinel: empty div the IntersectionObserver watches for to
+               load the next chunk. Lives inside the scroll region so its
+               intersections fire against the right root. -->
+          {#if visibleCount < videos.length}
+            <div bind:this={scrollSentinelEl} class="h-12 flex items-center justify-center text-xs text-base-content/50">
+              Loading more… ({videos.length - visibleCount} remaining)
+            </div>
+          {/if}
+
+          {#if !videosLoading && videos.length === 0}
+            <p class="text-base-content/60">No videos match the current filter.</p>
+          {/if}
+        </div>
+      {/if}
       </div>
       <!-- ↑ end of content column -->
 
@@ -1918,8 +1999,9 @@
            them independently. Both can be open at once on wide enough
            viewports. Each panel has internal overflow-y-auto + max-
            h-screen so they stay visible during thumbnail scroll and
-           self-scroll when content is tall. -->
-      {#if showFileInfo && playingVideo}
+           self-scroll when content is tall. Hidden in grid view, which
+           has no player to pair them with (issue #23). -->
+      {#if showFileInfo && playingVideo && viewMode === 'player'}
         <div
           class="sticky top-0 z-10 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
         >
@@ -1929,7 +2011,7 @@
           />
         </div>
       {/if}
-      {#if showEditTagsPanel && playingVideo}
+      {#if showEditTagsPanel && playingVideo && viewMode === 'player'}
         <div
           class="sticky top-0 z-10 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
         >
