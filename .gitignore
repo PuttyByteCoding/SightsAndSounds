@@ -5,8 +5,11 @@
 .run/
 
 # Claude Code (CLI) — project-local config, hooks, commands, agents, skills.
-# CLAUDE.md and Notes-for-AI.md ARE checked in; everything below is local-only.
-.claude/
+# CLAUDE.md and Notes-for-AI.md ARE checked in. .claude/settings.json is
+# shared team config (permissions etc.); settings.local.json and everything
+# else under .claude/ stay local-only.
+.claude/*
+!.claude/settings.json
 .claude.json
 CLAUDE.local.md
 
