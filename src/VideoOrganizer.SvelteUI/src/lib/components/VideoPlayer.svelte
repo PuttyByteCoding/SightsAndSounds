@@ -935,11 +935,20 @@
     if (!video || !videoEl) return;
     if (pendingBlockStart === null) return;
     const t = videoEl.currentTime;
-    const start = Math.min(pendingBlockStart, t);
-    const end = Math.max(pendingBlockStart, t);
-    const length = end - start;
+    const start = pendingBlockStart;
     pendingBlockStart = null;
-    if (length < 0.25) return;
+    addHideBlock(start, t);
+  }
+
+  // Add a Hide block covering [a,b] (seconds, either order). Drops accidental
+  // micro-blocks, rounds to the int seconds the server stores (floor/ceil so
+  // the block still fully covers the selection), and merges with overlapping
+  // or adjacent Hide blocks. Shared by endBlock and the ]]/[[ shortcuts.
+  function addHideBlock(a: number, b: number) {
+    if (!video) return;
+    const start = Math.max(0, Math.min(a, b));
+    const end = Math.max(a, b);
+    if (end - start < 0.25) return;
     const offsetInt = Math.floor(start);
     const lengthInt = Math.max(1, Math.ceil(end) - offsetInt);
     const next: Block = {
@@ -948,6 +957,19 @@
       videoBlockType: 'hide'
     };
     video.videoBlocks = mergeHideBlocks([...video.videoBlocks, next]);
+  }
+
+  // ]] (double-tap ]) — Hide block from the start to the current position.
+  // [[ (double-tap [) — Hide block from the current position to the end.
+  // Quick "trim the head / tail" without the two-step {…} flow. (issue #44)
+  function blockFromStart() {
+    if (!video || !videoEl) return;
+    addHideBlock(0, videoEl.currentTime);
+  }
+  function blockToEnd() {
+    if (!video || !videoEl) return;
+    const end = Number.isFinite(videoEl.duration) ? videoEl.duration : videoDuration;
+    addHideBlock(videoEl.currentTime, end);
   }
 
   // Collapse overlapping or touching Hide blocks into the smallest set
@@ -1824,6 +1846,36 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
   }
 
+  // `{` / `}` (Shift+[ / Shift+]) keep their single-press manual-block actions
+  // (arm a block start / close it), and a quick double-tap of either marks a
+  // whole block in one gesture (issue #44):
+  //   }}  → Hide block from the START to the current position
+  //   {{  → Hide block from the current position to the END
+  // The single action fires on every press, so the two-step {…} flow is
+  // unaffected (those are two different keys). A second tap of the SAME key
+  // within the window then lays down the head/tail block. Held keys
+  // (auto-repeat) never count as a double-tap. Zoom stays on plain [ / ].
+  let lastBlockTap: { key: '{' | '}'; at: number } | null = null;
+  const BLOCK_DBL_MS = 350;
+
+  function handleBlockTap(key: '{' | '}', repeat: boolean) {
+    if (!repeat && lastBlockTap?.key === key && Date.now() - lastBlockTap.at < BLOCK_DBL_MS) {
+      lastBlockTap = null;
+      if (key === '}') {
+        blockFromStart();
+      } else {
+        // The first `{` of the double already armed a pending start marker —
+        // clear it so the tail block doesn't leave a dangling start behind.
+        cancelPendingBlock();
+        blockToEnd();
+      }
+      return;
+    }
+    lastBlockTap = repeat ? null : { key, at: Date.now() };
+    if (key === '{') startBlock();
+    else endBlock();
+  }
+
   async function onWindowKeyDown(e: KeyboardEvent) {
     if (!shortcutsEnabled || !video) return;
     // The key-bindings modal owns the keyboard while open (its own
@@ -2083,8 +2135,8 @@
     //   \                            → fit-to-column
     if (e.key === '{' && e.ctrlKey) { e.preventDefault(); startClip(); return; }
     if (e.key === '}' && e.ctrlKey) { e.preventDefault(); await endClip(); return; }
-    if (e.key === '{') { e.preventDefault(); startBlock(); return; }
-    if (e.key === '}') { e.preventDefault(); endBlock(); return; }
+    if (e.key === '{') { e.preventDefault(); handleBlockTap('{', e.repeat); return; }
+    if (e.key === '}') { e.preventDefault(); handleBlockTap('}', e.repeat); return; }
     if (e.key === '[') { e.preventDefault(); zoomOut(); return; }
     if (e.key === ']') { e.preventDefault(); zoomIn(); return; }
     if (e.key === '\\') { e.preventDefault(); fitSize(); return; }
