@@ -581,14 +581,17 @@
   // moved file's destination folder only becomes navigable once its
   // ancestors' cached children are rebuilt. Remounting collapses the
   // tree; that's the accepted cost of a guaranteed-fresh view.
-  async function refreshFolderTree() {
+  // bypassCache=true (the manual refresh button) forces a full server
+  // re-walk to pick up changes made outside the app. The post-move call
+  // leaves it false: the move endpoint already evicted just the affected
+  // folders, so a normal browse re-counts those and serves the rest from
+  // cache — keeping "move then browse" fast. Remounting (folderTreeSeed)
+  // re-pulls subtrees either way. (issue #4)
+  async function refreshFolderTree(bypassCache = false) {
     if (folderTreeRefreshing) return;
     folderTreeRefreshing = true;
     try {
-      // refresh=true so the server re-walks the filesystem rather than
-      // serving cached counts — picks up files moved/added since the last
-      // scan. Remounting (folderTreeSeed) then re-pulls subtrees fresh.
-      await loadFolderRoots(true);
+      await loadFolderRoots(bypassCache);
       folderTreeSeed++;
     } finally {
       folderTreeRefreshing = false;
@@ -1552,7 +1555,7 @@
             <button
               type="button"
               class="shrink-0 w-6 h-6 flex items-center justify-center rounded text-base-content/60 hover:text-base-content hover:bg-base-200 disabled:opacity-40"
-              onclick={refreshFolderTree}
+              onclick={() => refreshFolderTree(true)}
               disabled={folderTreeRefreshing}
               aria-label="Refresh folder tree"
               title="Refresh folder tree"
