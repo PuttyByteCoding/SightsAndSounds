@@ -361,8 +361,11 @@
         </div>
       {/if}
 
-      <!-- Filter (always shown — works for tag, folder, status, missing) -->
-      <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1">Filter</div>
+      <!-- Two filter actions (both work for tag, folder, status, missing):
+           "Add to Existing Filter" keeps the current filter and adds this
+           item to a bucket; "Clear Existing Filter & Set" wipes the active
+           filter and makes this item the only one. -->
+      <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1">Add to Existing Filter</div>
       <div class="flex gap-2">
         <button
           class="btn btn-sm btn-soft btn-success border border-success/50 flex-1"
@@ -377,6 +380,25 @@
         <button
           class="btn btn-sm btn-soft btn-error border border-error/50 flex-1"
           onclick={() => filterStore.applyPending('excluded')}
+          disabled={busy}
+        >Exclude</button>
+      </div>
+
+      <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1 mt-3">Clear Existing Filter &amp; Set</div>
+      <div class="flex gap-2">
+        <button
+          class="btn btn-sm btn-soft btn-success border border-success/50 flex-1"
+          onclick={() => filterStore.applyPendingReplacingAll('required')}
+          disabled={busy}
+        >Required</button>
+        <button
+          class="btn btn-sm btn-soft btn-info border border-info/50 flex-1"
+          onclick={() => filterStore.applyPendingReplacingAll('optional')}
+          disabled={busy}
+        >Optional</button>
+        <button
+          class="btn btn-sm btn-soft btn-error border border-error/50 flex-1"
+          onclick={() => filterStore.applyPendingReplacingAll('excluded')}
           disabled={busy}
         >Exclude</button>
       </div>
