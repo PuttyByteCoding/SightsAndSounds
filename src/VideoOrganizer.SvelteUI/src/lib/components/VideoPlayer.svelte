@@ -1932,8 +1932,17 @@
     // digits type into the input (the typing-target check below handles
     // that path); use top row for numeric tag values like Year.
     //   Numpad 1/3/4/6/7/9  — relative seek (per playbackSettings)
+    //   Numpad 5            — play/pause (works while a tag input has focus;
+    //                         issue #57). Matched on e.code so it fires
+    //                         regardless of NumLock, unlike the top-row '5'.
     //   Numpad 0            — jump to start (00:00)
     //   Numpad -            — jump to 10s from the end
+    if (e.code === 'Numpad5') {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePlayPause();
+      return;
+    }
     if (e.code === 'Numpad0') {
       e.preventDefault();
       e.stopPropagation();
