@@ -700,7 +700,11 @@
     }
   }
 
-  function onVideoTimeUpdate() {
+  // Sync the scrubber (current-time readout + progress fill) from the
+  // <video>'s currentTime. Called on `timeupdate` during playback AND on
+  // `seeking` so the scrubber jumps the instant the user skips ahead/back
+  // instead of waiting for the next timeupdate tick. (issue #35)
+  function syncScrubberFromVideo() {
     if (!videoEl) return;
     const d = Number.isFinite(videoEl.duration) && videoEl.duration > 0 ? videoEl.duration : 0;
     videoCurrentTime = videoEl.currentTime;
@@ -715,6 +719,12 @@
     } else {
       videoProgress = d === 0 ? 0 : videoEl.currentTime / d;
     }
+  }
+
+  function onVideoTimeUpdate() {
+    if (!videoEl) return;
+    syncScrubberFromVideo();
+    const d = Number.isFinite(videoEl.duration) && videoEl.duration > 0 ? videoEl.duration : 0;
 
     // Accumulate wall-clock playback time and fire the watch beacon once we
     // clear 10 seconds. We sample on ontimeupdate (~4Hz while playing), so a
@@ -2101,6 +2111,7 @@
         'object-position: left center;'
       ].join(' ')}
       ontimeupdate={onVideoTimeUpdate}
+      onseeking={syncScrubberFromVideo}
       onloadedmetadata={onVideoLoadedMetadata}
       onloadstart={onVideoLoadStart}
       onloadeddata={onVideoLoadedData}
