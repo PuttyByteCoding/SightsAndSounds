@@ -172,6 +172,10 @@ builder.Services.AddScoped<IDirectoryImportService, DirectoryImportService>();
 // Track import progress across requests
 builder.Services.AddSingleton<ImportProgressTracker>();
 
+// Live "discovered video files" count for an in-flight /import/browse scan,
+// polled by the Import page while a source loads. (issue #27)
+builder.Services.AddSingleton<ImportScanProgress>();
+
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
 // Centralized pause flags for the three workers. Toggled by
