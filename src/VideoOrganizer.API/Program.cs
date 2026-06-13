@@ -176,6 +176,10 @@ builder.Services.AddSingleton<ImportProgressTracker>();
 // polled by the Import page while a source loads. (issue #27)
 builder.Services.AddSingleton<ImportScanProgress>();
 
+// Live byte-progress for an in-flight file move/undo, polled by the move
+// dialog. (issue #4)
+builder.Services.AddSingleton<FileMoveProgress>();
+
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
 // Centralized pause flags for the three workers. Toggled by

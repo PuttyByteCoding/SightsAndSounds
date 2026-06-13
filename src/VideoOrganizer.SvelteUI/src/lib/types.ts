@@ -427,6 +427,36 @@ export interface ImportScanProgress {
   discovered: number;
 }
 
+// --- File move (issue #4) --------------------------------------------------
+
+// POST /api/videos/{id}/move
+export interface MoveVideoRequest {
+  targetDirectory: string;
+}
+
+// GET /api/videos/{id}/move-progress — live byte progress of an in-flight
+// move/undo. phase: 'idle' | 'copying' | 'finalizing' | 'done'. Same-volume
+// moves are instant so the bar may never appear; cross-volume copies report
+// real bytes.
+export interface MoveProgress {
+  active: boolean;
+  bytesCopied: number;
+  totalBytes: number;
+  phase: string;
+}
+
+// GET /api/file-moves — a logged move, for the Moves list + Undo.
+// revertedAt is null while the move can still be undone.
+export interface FileMoveLog {
+  id: string;
+  videoId: string;
+  fileName: string;
+  fromPath: string;
+  toPath: string;
+  movedAt: string;
+  revertedAt: string | null;
+}
+
 export interface ImportFileListResponse {
   directoryPath: string;
   files: string[];

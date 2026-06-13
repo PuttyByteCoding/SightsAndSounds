@@ -23,8 +23,11 @@
     video: Video;
     onopen?: (video: Video) => void;
     active?: boolean;
+    // Optional "move this file to another folder" action (issue #4).
+    // When provided, a small Move… button shows in the card footer.
+    onmove?: (video: Video) => void;
   }
-  let { video, onopen, active = false }: Props = $props();
+  let { video, onopen, active = false, onmove }: Props = $props();
 
   let cardEl: HTMLDivElement | null = $state(null);
   let imgWrapEl: HTMLDivElement | null = $state(null);
@@ -324,6 +327,15 @@
     >
       {displayTitle}
     </button>
+
+    {#if onmove && !video.isClip}
+      <button
+        type="button"
+        class="btn btn-ghost btn-xs px-1 text-base-content/60 hover:text-base-content"
+        onclick={(e) => { e.stopPropagation(); onmove?.(video); }}
+        title="Move this file to another folder"
+      >↪ Move…</button>
+    {/if}
 
     <!-- Clickable tag badges: body click filters; ✎ opens edit modal. -->
     {#if video.tags.length > 0}
