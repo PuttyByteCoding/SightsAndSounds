@@ -133,7 +133,7 @@
 
 {#if show && video}
   <div class="modal modal-open" role="dialog" aria-modal="true">
-    <div class="modal-box max-w-lg">
+    <div class="modal-box w-[80vw] max-w-[80vw]">
       <h3 class="font-bold text-lg">Move file</h3>
       <div class="text-sm mt-1 mb-3">
         <div class="font-medium break-all">{video.fileName}</div>
