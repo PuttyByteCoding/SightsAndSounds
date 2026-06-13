@@ -88,7 +88,18 @@
   const visibleVideos = $derived(videos.slice(0, visibleCount));
   let scrollSentinelEl: HTMLDivElement | null = $state(null);
   $effect(() => {
-    if (!scrollSentinelEl) return;
+    // Reading visibleCount makes this effect re-run after each chunk bump,
+    // which re-creates the observer. An IntersectionObserver only fires on
+    // intersection *changes*, so once the sentinel is in view it won't fire
+    // again on its own as more cards render beneath it — leaving it stuck
+    // on "Loading more…" forever (issue #33). Recreating the observer
+    // re-checks the sentinel against the now-larger list and keeps loading
+    // until it scrolls out of range or everything is shown. Svelte runs
+    // effects after the DOM update, so the fresh observer sees the
+    // post-render layout.
+    void visibleCount;
+    const el = scrollSentinelEl;
+    if (!el) return;
     const obs = new IntersectionObserver((entries) => {
       for (const e of entries) {
         if (e.isIntersecting && visibleCount < videos.length) {
@@ -97,7 +108,7 @@
         }
       }
     }, { rootMargin: '300px' });
-    obs.observe(scrollSentinelEl);
+    obs.observe(el);
     return () => obs.disconnect();
   });
 
