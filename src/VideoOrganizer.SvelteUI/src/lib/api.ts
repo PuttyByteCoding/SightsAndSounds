@@ -471,6 +471,14 @@ export const api = {
   // dialog's destination choices. (issue #4)
   listImportedFolders: () =>
     request<ImportedFolder[]>('/api/import/imported-folders'),
+
+  // Remove every imported video under a folder from the library (issue #53).
+  // Files on disk are left alone; returns how many videos were removed.
+  removeLibraryFolder: (path: string) =>
+    request<{ removed: number }>('/api/library/remove-folder', {
+      method: 'POST',
+      body: JSON.stringify({ path })
+    }),
   // Live count of video files discovered by an in-flight browse scan.
   // Polled by the Import page while a source loads. (issue #27)
   getImportScanProgress: () =>

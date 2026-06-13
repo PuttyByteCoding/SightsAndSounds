@@ -1860,6 +1860,43 @@ public static class ApiEndpoints
             return Results.NoContent();
         }).WithName("DeleteVideo");
 
+        // POST /api/library/remove-folder — drop every imported video under a
+        // folder from the library (issue #53). Files on disk are NOT touched;
+        // only the DB rows go, and EF cascades take their tags, properties,
+        // duplicate pairs, move logs, and clips with them. Clips reuse the
+        // parent's path, so the path-prefix match catches them too.
+        api.MapPost("/library/remove-folder", async (
+            RemoveFolderRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Path))
+                return Results.BadRequest(new { error = "No folder path provided." });
+
+            var folder = PathNormalizer.Normalize(Path.GetFullPath(req.Path)).TrimEnd('/');
+
+            // Guard: only a folder that sits under a configured source can be
+            // removed — keeps a stray/empty path from wiping unrelated rows.
+            var roots = await db.VideoSets.Select(s => s.Path).ToListAsync(ct);
+            var underSource = roots.Any(r =>
+            {
+                var root = PathNormalizer.Normalize(Path.GetFullPath(r)).TrimEnd('/');
+                return folder.Equals(root, StringComparison.OrdinalIgnoreCase)
+                    || folder.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase);
+            });
+            if (!underSource)
+                return Results.BadRequest(new { error = "That folder is not under any configured source." });
+
+            var prefix = folder + "/";
+            var victims = await db.Videos
+                .Where(v => v.FilePath.StartsWith(prefix))
+                .ToListAsync(ct);
+            db.Videos.RemoveRange(victims);
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Removed folder {Folder} from library — {Count} video(s) purged", folder, victims.Count);
+            return Results.Ok(new RemoveFolderResponse(victims.Count));
+        }).WithName("RemoveLibraryFolder");
+
         // POST /api/videos/{id}/move — move the video's file into another
         // folder under some enabled source (within or across sources).
         // Logged + reversible via file_move_logs; byte progress is reported
