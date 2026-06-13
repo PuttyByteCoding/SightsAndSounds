@@ -147,6 +147,28 @@
     if (typeof localStorage !== 'undefined') localStorage.setItem('browseViewMode', m);
   }
 
+  // Page-level shortcuts (issue #41): 'G' toggles Grid view, 'M' opens the
+  // Move dialog for the current video. Handled here, not in VideoPlayer,
+  // because the player is unmounted in grid mode. Ignored while typing in a
+  // field, when a modifier is held, or when a dialog is capturing keys.
+  function onBrowseKey(e: KeyboardEvent) {
+    const isG = e.key === 'g' || e.key === 'G';
+    const isM = e.key === 'm' || e.key === 'M';
+    if (!isG && !isM) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (filterStore.pending || moveDialogVideo || flagModalItem) return;
+    if (isG) {
+      e.preventDefault();
+      setViewMode(viewMode === 'grid' ? 'player' : 'grid');
+    } else if (playingVideo && !playingVideo.isClip) {
+      // Clips share their parent's file and can't be moved on their own.
+      e.preventDefault();
+      openMoveDialog(playingVideo);
+    }
+  }
+
   // --- Section-level collapse ------------------------------------------
   // Each tree-style section in the sidebar (Flags, Favorite Tags,
   // Folders, Tag Groups) carries a chevron next to its title so the
@@ -1063,6 +1085,9 @@
 </script>
 
 <svelte:head><title>Videos - Video Organizer</title></svelte:head>
+
+<!-- Page-level 'G' = toggle Grid view (issue #41); see onBrowseKey. -->
+<svelte:window onkeydown={onBrowseKey} />
 
 <div class="flex flex-col gap-4">
   <!-- Local-only diagnostic affordances live in the player's

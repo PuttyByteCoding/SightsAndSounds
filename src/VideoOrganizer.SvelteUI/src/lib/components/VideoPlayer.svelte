@@ -2004,8 +2004,12 @@
       case '1': e.preventDefault(); seekBy(-playbackSettings.key1Seconds); break;
       case '3': e.preventDefault(); seekBy(playbackSettings.key3Seconds); break;
       case '4': e.preventDefault(); seekBy(-playbackSettings.key4Seconds); break;
+      // 5 — play/pause (in addition to Space). (issue #41)
+      case '5': e.preventDefault(); togglePlayPause(); break;
       case '6': e.preventDefault(); seekBy(playbackSettings.key6Seconds); break;
       case '7': e.preventDefault(); seekBy(-playbackSettings.key7Seconds); break;
+      // 8 — jump to 10s from the end (same as Numpad-minus). (issue #41)
+      case '8': e.preventDefault(); seekToNearEnd(); break;
       case '9': e.preventDefault(); seekBy(playbackSettings.key9Seconds); break;
     }
   }

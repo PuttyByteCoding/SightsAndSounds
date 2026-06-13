@@ -755,7 +755,7 @@
             </td>
           </tr>
           <tr>
-            <td><kbd class="kbd kbd-sm">Space</kbd></td>
+            <td><kbd class="kbd kbd-sm">Space</kbd> / <kbd class="kbd kbd-sm">5</kbd></td>
             <td>Toggle <span class="font-semibold">play / pause</span>. Ignored while typing in a tag input.</td>
           </tr>
           <tr>
@@ -906,6 +906,26 @@
               Seek while typing in a tag input using the top-row digit keys.
               Shift prevents the corresponding character (<code>!#$^&amp;(</code>)
               from landing in the field.
+            </td>
+          </tr>
+          <tr>
+            <td><kbd class="kbd kbd-sm">8</kbd></td>
+            <td>Jump to <span class="font-semibold">10 seconds from the end</span> of the video (same as Numpad <kbd class="kbd kbd-xs">−</kbd>).</td>
+          </tr>
+          <tr>
+            <td><kbd class="kbd kbd-sm">G</kbd></td>
+            <td>
+              Toggle <span class="font-semibold">Grid view</span> in the Video
+              Browser — hide the player and show all thumbnails as a grid, or
+              switch back to the player + strip.
+            </td>
+          </tr>
+          <tr>
+            <td><kbd class="kbd kbd-sm">M</kbd></td>
+            <td>
+              Open the <span class="font-semibold">Move</span> dialog for the
+              current video — browse to a destination folder and move the file
+              (logged and undoable). Disabled for clips.
             </td>
           </tr>
         </tbody>
