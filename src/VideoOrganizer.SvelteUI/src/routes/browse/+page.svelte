@@ -25,6 +25,7 @@
   import FolderTreeNode from '$lib/components/FolderTreeNode.svelte';
   import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
+  import { planFilteredQueue } from '$lib/browseQueue';
   import { pillClass, filterSlot, filterSlotClass } from '$lib/tagColors';
 
   let videos = $state<Video[]>([]);
@@ -61,8 +62,10 @@
   // I-key toggles a read-only File Info side panel. Independent of
   // the Tags panel: either or both can be open at once.
   let showFileInfo = $state(false);
-  // True until the first videos load and we've shuffled-and-auto-played.
-  let initialAutoplayPending = true;
+  // True until the first videos load completes. The first load may
+  // shuffle into a random playlist; later filter changes keep server
+  // order in Shuffle mode (see browseQueue.ts / planFilteredQueue).
+  let firstLoad = true;
 
   // --- Infinite-scroll chunking -----------------------------------------
   // We render the grid in pages of CHUNK_SIZE so a 1000-video filter
@@ -306,7 +309,12 @@
     visibleResetSeed++;
   }
 
-  async function refreshVideos() {
+  // refreshVideos re-fetches the filtered list. `fromFilter` marks the
+  // calls driven by a filter/search change (the $effect below) — those
+  // restart the queue from position 0 per issue #21. Other callers
+  // (post-edit refreshPlaying, the "Show all" button) pass nothing and
+  // leave playback untouched.
+  async function refreshVideos({ fromFilter = false }: { fromFilter?: boolean } = {}) {
     // Empty-install case: loadSidebar has navigated to /import. Skip
     // the filter call so we don't pop a transient error banner during
     // the navigation.
@@ -325,26 +333,24 @@
         searchQuery: searchQuery.length > 0 ? searchQuery : undefined
       };
       const fetched = await api.filterVideos(filter);
-      // First load: order per the persisted sort mode (random playlist
-      // in the default Shuffle mode) and auto-play the first. Subsequent
-      // filter changes keep the fetched order in Shuffle mode (so the
-      // playing video isn't disrupted) but re-apply an explicit sort —
-      // the user asked for that ordering, so new result sets should
-      // honor it too.
-      //
-      // Search-driven loads (?searchQuery=…) skip the shuffle: the
-      // server already returned hits in relevance order (exact
-      // filename match first, then filename substring, then path,
-      // etc.), and randomizing would defeat the ranking the user
-      // expected from the palette. An explicit sort still wins over
-      // relevance — it's a deliberate choice the user made.
-      if (initialAutoplayPending && fetched.length > 0) {
-        videos = filter.searchQuery && sortMode === 'shuffle' ? fetched : orderVideos(fetched);
-        playingVideo = videos[0];
-        initialAutoplayPending = false;
-      } else {
-        videos = sortMode === 'shuffle' ? fetched : orderVideos(fetched);
-      }
+      // Decide the next queue + playing video. A filter/search change
+      // restarts the queue from position 0 (issue #21): the current
+      // video stops and the new queue's first entry plays. We suppress
+      // that reset while a ?id= deep-link is opening a specific video
+      // (deepLinkInFlight) so the deep-link's pick isn't clobbered by a
+      // concurrent filter refresh. See browseQueue.ts for ordering.
+      const plan = planFilteredQueue({
+        fetched,
+        playing: playingVideo,
+        firstLoad,
+        isShuffle: sortMode === 'shuffle',
+        hasSearchQuery: !!filter.searchQuery,
+        resetPlayback: fromFilter && !deepLinkInFlight,
+        order: orderVideos
+      });
+      firstLoad = false;
+      videos = plan.videos;
+      playingVideo = plan.playing;
       // Filter change → reset the infinite-scroll window so the new
       // result set starts from the top.
       visibleResetSeed++;
@@ -359,10 +365,11 @@
     // Re-fetch whenever the filter store OR the URL's searchQuery
     // changes. Touching `page.url.searchParams` makes the effect
     // reactive to navigation events (back/forward, palette "Play
-    // all" clicks, etc.) without remounting the component.
+    // all" clicks, etc.) without remounting the component. These are
+    // the filter-driven refreshes that restart the queue from the top.
     void filterStore.required; void filterStore.optional; void filterStore.excluded;
     void page.url.searchParams.get('searchQuery');
-    refreshVideos();
+    refreshVideos({ fromFilter: true });
   });
 
   // ?id= deep-link → play that specific video.
@@ -373,8 +380,10 @@
   //   · Any external link sharing a specific video URL
   //
   // Behavior:
-  //   1. Suppress the initialAutoplayPending override so refreshVideos
-  //      won't replace our pick with `videos[0]` on first paint.
+  //   1. Set deepLinkInFlight so a concurrent filter-driven refresh
+  //      (both effects fire when the palette navigates to
+  //      ?id=…&searchQuery=…) doesn't reset playback to videos[0] and
+  //      clobber this specific pick.
   //   2. Fetch the video by id and set it as `playingVideo`.
   //   3. If the video isn't already in the current `videos` list
   //      (because it doesn't match the active filter), prepend it so
@@ -386,6 +395,10 @@
   // remounting the component, but the effect re-runs and swaps to
   // the new video.
   let lastOpenedId = $state<string | null>(null);
+  // True while a ?id= deep-link is opening a specific video. Set
+  // synchronously here (before the concurrent filter refresh resumes
+  // from its await) so refreshVideos sees it and skips the queue reset.
+  let deepLinkInFlight = false;
   $effect(() => {
     const id = page.url.searchParams.get('id');
     if (!id) return;
@@ -395,7 +408,7 @@
       return;
     }
     lastOpenedId = id;
-    initialAutoplayPending = false;
+    deepLinkInFlight = true;
     void openVideoFromUrl(id);
   });
 
@@ -405,14 +418,16 @@
       if (!v) return;
       if (!videos.some((x) => x.id === id)) {
         // Inject at the front so the player has a playlist context
-        // even when the filter excludes this video. Filter changes
-        // later may clobber this — the user's already in the player
-        // by then, so the side-effect is acceptable.
+        // even when the filter excludes this video. A later filter
+        // change restarts the queue (issue #21) and drops this video —
+        // the user's already in the player by then, so that's fine.
         videos = [v, ...videos];
       }
       playingVideo = v;
     } catch (e: any) {
       loadError = `Failed to open video: ${e?.message ?? String(e)}`;
+    } finally {
+      deepLinkInFlight = false;
     }
   }
 
