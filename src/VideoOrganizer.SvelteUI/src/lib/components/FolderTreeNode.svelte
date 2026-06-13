@@ -32,6 +32,10 @@
     videoCount: number;
     importedCount: number;
     onPickFolder: (fullPath: string, label: string) => void;
+    // When provided, a hover trash button removes this folder's imported
+    // videos from the library (issue #53). Bubbles up to the browse page,
+    // which confirms + calls the API. Threaded down recursively.
+    onRemoveFolder?: (fullPath: string, label: string, importedCount: number) => void;
     // Only meaningful at depth 0 (source-root rows). When false, the
     // row renders the source name with a strikethrough and a faded
     // "(Disabled)" suffix so it's clear the source is browse-only —
@@ -50,6 +54,7 @@
     videoCount,
     importedCount,
     onPickFolder,
+    onRemoveFolder,
     enabled = true
   }: Props = $props();
 
@@ -104,7 +109,7 @@
 
 <div class="text-sm">
   <div
-    class="flex items-center gap-1 hover:bg-base-200 rounded"
+    class="group flex items-center gap-1 hover:bg-base-200 rounded"
     style="padding-left: {indentRem}rem"
   >
     {#if hasSubdirectories}
@@ -158,6 +163,22 @@
         >{importedCount}/{videoCount}</span>
       {/if}
     {/if}
+    {#if onRemoveFolder && importedCount > 0}
+      <!-- Remove this folder's imported videos from the library (issue #53).
+           Hover-revealed so it doesn't clutter the tree; stopPropagation so it
+           doesn't also trigger the row's filter-pick. -->
+      <button
+        type="button"
+        class="shrink-0 w-5 h-5 flex items-center justify-center rounded text-base-content/40 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-error"
+        title="Remove this folder's videos from the library (files on disk are kept)"
+        aria-label="Remove {name} from library"
+        onclick={(e) => { e.stopPropagation(); onRemoveFolder?.(fullPath, name, importedCount); }}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current">
+          <path d="M9 3a1 1 0 00-1 1v1H5a1 1 0 100 2h14a1 1 0 100-2h-3V4a1 1 0 00-1-1H9zm-2 6v9a2 2 0 002 2h6a2 2 0 002-2V9H7z" />
+        </svg>
+      </button>
+    {/if}
   </div>
 
   {#if expanded}
@@ -186,6 +207,7 @@
           videoCount={c.videoCount}
           importedCount={c.importedCount}
           {onPickFolder}
+          {onRemoveFolder}
         />
       {/each}
     {/if}

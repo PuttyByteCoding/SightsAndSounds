@@ -598,6 +598,37 @@
     }
   }
 
+  // --- Remove a folder from the library (issue #53) ----------------------
+  // The folder-tree trash button asks here; we confirm (it's destructive)
+  // then purge every imported video under the folder via the API. Files on
+  // disk are untouched. After removal we refresh the tree (bypassing the
+  // scan cache so counts are right) and the grid (the removed videos may be
+  // on screen).
+  let removeFolderTarget = $state<{ path: string; label: string; count: number } | null>(null);
+  let removingFolder = $state(false);
+  let removeFolderError = $state<string | null>(null);
+
+  function askRemoveFolder(path: string, label: string, importedCount: number) {
+    removeFolderError = null;
+    removeFolderTarget = { path, label, count: importedCount };
+  }
+
+  async function confirmRemoveFolder() {
+    if (!removeFolderTarget || removingFolder) return;
+    removingFolder = true;
+    removeFolderError = null;
+    try {
+      await api.removeLibraryFolder(removeFolderTarget.path);
+      removeFolderTarget = null;
+      await refreshFolderTree(true);
+      await refreshVideos();
+    } catch (e: any) {
+      removeFolderError = e?.message ?? 'Failed to remove folder';
+    } finally {
+      removingFolder = false;
+    }
+  }
+
   // Cache every tag once so the search box can scan them without a round
   // trip per keystroke. Favorites are derived from the same list.
   let allTags = $state<Tag[]>([]);
@@ -1594,6 +1625,7 @@
                   enabled={matchingSet ? matchingSet.enabled : true}
                   onPickFolder={(path, label) =>
                     filterStore.requestAdd({ type: 'folder', value: path, label })}
+                  onRemoveFolder={askRemoveFolder}
                 />
               {/each}
             {/key}
@@ -2137,6 +2169,43 @@
   onClose={() => (moveDialogVideo = null)}
   onMoved={onFileMoved}
 />
+
+<!-- Remove-folder confirmation (issue #53). Destructive: purges the folder's
+     imported videos from the library (files on disk are kept). -->
+{#if removeFolderTarget}
+  {@const t = removeFolderTarget}
+  <div class="modal modal-open" role="dialog" aria-modal="true">
+    <div class="modal-box max-w-md">
+      <h3 class="font-bold text-lg">Remove folder from library</h3>
+      <p class="text-sm mt-2">
+        Remove <span class="font-medium break-all">{t.label}</span> from the library?
+      </p>
+      <p class="text-sm mt-2">
+        This deletes <span class="font-medium">{t.count}</span>
+        imported video{t.count === 1 ? '' : 's'} (and their tags, notes, and properties)
+        from the library. <span class="font-medium">Files on disk are not deleted.</span>
+      </p>
+      {#if removeFolderError}
+        <div class="alert alert-error text-sm mt-3">{removeFolderError}</div>
+      {/if}
+      <div class="modal-action">
+        <button class="btn btn-sm btn-cancel" onclick={() => (removeFolderTarget = null)} disabled={removingFolder}>
+          Cancel
+        </button>
+        <button class="btn btn-sm btn-error" onclick={confirmRemoveFolder} disabled={removingFolder}>
+          {#if removingFolder}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Remove {t.count} from library
+        </button>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Cancel"
+      onclick={() => { if (!removingFolder) removeFolderTarget = null; }}
+    ></button>
+  </div>
+{/if}
 
 <!-- Flag filter modal (issue #2). Clicking a flag in the Flags tree
      opens this to pick Required / Excluded (or Clear when one is set),

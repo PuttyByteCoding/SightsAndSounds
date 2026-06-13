@@ -25,6 +25,13 @@ public record ImportedFolder(
     int VideoCount
 );
 
+// Remove every imported video under a folder from the library (issue #53).
+// Files on disk are untouched; only the DB rows (and their cascaded tags,
+// properties, duplicate pairs, move logs, and clips) go away.
+public record RemoveFolderRequest(string Path);
+
+public record RemoveFolderResponse(int Removed);
+
 // Live progress of an in-flight /import/browse directory scan, polled by
 // the Import page to show a climbing "Discovered N video files…" count.
 // Scanning is false once the walk finishes; Discovered holds the final
