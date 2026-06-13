@@ -810,15 +810,10 @@
     else filterStore.apply(tag, 'excluded');
   }
 
-  // Tristate-cycle handler. Each flag row in the Flags tree is a
-  // single button that advances the filter state on every click —
-  // Any → True → False → Any. Compact one-row-per-flag UI (Option A
-  // from the patterns review) instead of expand-then-pick.
-  function cycleFlag(item: FlagItem) {
-    const cur = flagState(item);
-    const next = cur === 'nofilter' ? 'true' : cur === 'true' ? 'false' : 'nofilter';
-    applyFlag(item, next);
-  }
+  // Clicking a flag row opens a small modal to choose Required or
+  // Excluded (issue #2) — an explicit pick instead of cycling the state
+  // in place. The chosen flag item is held here while the modal is open.
+  let flagModalItem = $state<FlagItem | null>(null);
   function flagStateLabel(s: 'true' | 'false' | 'nofilter'): string {
     return s === 'true' ? 'True' : s === 'false' ? 'False' : 'Any';
   }
@@ -1208,9 +1203,9 @@
             <button
               type="button"
               class="w-full flex items-center gap-1 hover:bg-base-200 rounded text-left"
-              onclick={() => cycleFlag(item)}
-              title="{itemLabel}: {flagStateLabel(state)} — click to cycle"
-              aria-label="{itemLabel}, currently {flagStateLabel(state)}, click to cycle"
+              onclick={() => (flagModalItem = item)}
+              title="{itemLabel}: {flagStateLabel(state)} — click to filter"
+              aria-label="{itemLabel}, currently {flagStateLabel(state)}, click to filter"
             >
               <!-- Empty chevron-slot keeps the indent rhythm aligned
                    with other tree sections (which put a chevron here
@@ -2057,6 +2052,48 @@
   onClose={() => (moveDialogVideo = null)}
   onMoved={onFileMoved}
 />
+
+<!-- Flag filter modal (issue #2). Clicking a flag in the Flags tree
+     opens this to pick Required / Excluded (or Clear when one is set),
+     instead of cycling the state in place. -->
+{#if flagModalItem}
+  {@const fi = flagModalItem}
+  {@const fs = flagState(fi)}
+  <div class="modal modal-open" role="dialog" aria-modal="true">
+    <div class="modal-box max-w-sm">
+      <h3 class="font-bold text-lg">Filter by flag</h3>
+      <p class="text-sm mt-1 mb-4">
+        <span class="font-medium">{flagItemLabel(fi)}</span> —
+        currently <span class="font-medium">{flagStateLabel(fs)}</span>
+      </p>
+      <div class="flex gap-2">
+        <button
+          class="btn btn-sm btn-soft btn-success border border-success/50 flex-1"
+          onclick={() => { applyFlag(fi, 'true'); flagModalItem = null; }}
+        >Required</button>
+        <button
+          class="btn btn-sm btn-soft btn-error border border-error/50 flex-1"
+          onclick={() => { applyFlag(fi, 'false'); flagModalItem = null; }}
+        >Excluded</button>
+      </div>
+      {#if fs !== 'nofilter'}
+        <button
+          class="btn btn-sm btn-ghost w-full mt-2"
+          onclick={() => { applyFlag(fi, 'nofilter'); flagModalItem = null; }}
+        >Clear filter</button>
+      {/if}
+      <div class="modal-action mt-4">
+        <button class="btn btn-sm btn-cancel" onclick={() => (flagModalItem = null)}>Cancel</button>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Cancel flag filter"
+      onclick={() => (flagModalItem = null)}
+    ></button>
+  </div>
+{/if}
 
 <FilterDialog
   onTagChanged={async () => {
