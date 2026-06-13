@@ -130,6 +130,17 @@ export interface TagSearchHit {
   aliases: string[];
 }
 
+// A tag suggested for a video because its name/alias was found in the file
+// name or folder path (issue #10). source: 'File name' | 'Folder'.
+export interface TagSuggestion {
+  tagId: string;
+  tagGroupId: string;
+  tagGroupName: string;
+  name: string;
+  source: string;
+  matchedText: string;
+}
+
 // --- Global search (Ctrl+K palette) ----------------------------------------
 //
 // Mirrors src/VideoOrganizer.Shared/Dto/SearchDto.cs. The server uses

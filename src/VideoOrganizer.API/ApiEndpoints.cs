@@ -261,6 +261,18 @@ public static class ApiEndpoints
         return set;
     }
 
+    // Normalizes free text into a space-delimited lowercase token string for
+    // tag-suggestion matching (issue #10). Every non-alphanumeric character
+    // becomes a separator so "Bob.Marley_live-2009" and "bob marley" line up;
+    // runs of separators collapse. Matching against the result with a leading
+    // and trailing space gives whole-word/phrase hits without substring noise.
+    private static string NormalizeForMatch(string s)
+    {
+        var chars = s.Select(ch => char.IsLetterOrDigit(ch) ? char.ToLowerInvariant(ch) : ' ');
+        return string.Join(' ', new string(chars.ToArray())
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
     // Moves a file from src to dst, reporting byte progress (issue #4).
     // Same-volume moves are an instant File.Move (a rename); cross-volume
     // moves stream the copy in 1 MiB chunks so the UI can show a real
@@ -1964,6 +1976,77 @@ public static class ApiEndpoints
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("SetVideoTags");
+
+        // GET /api/videos/{id}/tag-suggestions — tags whose name or an alias
+        // appears in the video's file name or folder path, minus the ones
+        // already applied (issue #10). Lets the player offer "found these in
+        // the name — add them?" on demand. Whole-word/phrase matching on
+        // normalized text; file-name hits rank above folder hits.
+        api.MapGet("/videos/{id:guid}/tag-suggestions", async (
+            Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var video = await db.Videos.AsNoTracking()
+                .Include(v => v.VideoTags)
+                .FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+
+            var applied = video.VideoTags.Select(vt => vt.TagId).ToHashSet();
+
+            // Split the path into the file name and the folder segments that
+            // sit below the containing source root — matching the whole
+            // absolute path would drag in drive letters and system folders.
+            var norm = PathNormalizer.Normalize(video.FilePath);
+            var fileText = Path.GetFileNameWithoutExtension(norm);
+            var dir = Path.GetDirectoryName(norm)?.Replace('\\', '/') ?? string.Empty;
+            var roots = await db.VideoSets.Select(s => s.Path).ToListAsync(ct);
+            var setRoot = roots
+                .Select(p => PathNormalizer.Normalize(p).TrimEnd('/'))
+                .Where(r => norm.StartsWith(r + "/", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(r => r.Length)
+                .FirstOrDefault();
+            var folderText = setRoot != null && dir.Length > setRoot.Length
+                ? dir[(setRoot.Length + 1)..]
+                : Path.GetFileName(dir);
+
+            var fileHay = $" {NormalizeForMatch(fileText)} ";
+            var folderHay = $" {NormalizeForMatch(folderText)} ";
+
+            var tags = await db.Tags.AsNoTracking().Include(t => t.TagGroup).ToListAsync(ct);
+            var suggestions = new List<TagSuggestion>();
+            foreach (var t in tags)
+            {
+                if (applied.Contains(t.Id)) continue;
+
+                string? source = null;
+                string matched = string.Empty;
+                foreach (var candidate in new[] { t.Name }.Concat(t.Aliases))
+                {
+                    var cn = NormalizeForMatch(candidate);
+                    if (cn.Length < 2) continue; // 1-char tags match everything
+                    if (fileHay.Contains($" {cn} ", StringComparison.Ordinal))
+                    {
+                        source = "File name";
+                        matched = candidate;
+                        break; // file-name hit is the best source; stop looking
+                    }
+                    if (source is null && folderHay.Contains($" {cn} ", StringComparison.Ordinal))
+                    {
+                        source = "Folder";
+                        matched = candidate;
+                    }
+                }
+                if (source is not null)
+                    suggestions.Add(new TagSuggestion(
+                        t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty, t.Name, source, matched));
+            }
+
+            var ordered = suggestions
+                .OrderByDescending(s => s.Source == "File name")
+                .ThenBy(s => s.TagGroupName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return Results.Ok(ordered);
+        }).WithName("GetTagSuggestions");
 
         api.MapPut("/videos/{id:guid}/properties", async (
             Guid id, SetPropertyValuesRequest req, VideoOrganizerDbContext db,

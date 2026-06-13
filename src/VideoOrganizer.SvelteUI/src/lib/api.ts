@@ -30,6 +30,7 @@ import type {
   Tag,
   TagGroup,
   TagSearchHit,
+  TagSuggestion,
   UpdatePropertyDefinitionRequest,
   UpdateTagGroupRequest,
   UpdateTagRequest,
@@ -178,6 +179,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body)
     }),
+
+  // Tags whose name/alias appears in this video's file name or folder path,
+  // excluding ones already applied (issue #10).
+  getTagSuggestions: (id: string) =>
+    request<TagSuggestion[]>(`/api/videos/${id}/tag-suggestions`),
 
   setVideoProperties: (id: string, body: SetPropertyValuesRequest) =>
     request<void>(`/api/videos/${id}/properties`, {
