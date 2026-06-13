@@ -42,11 +42,11 @@
 
   // Per-group composer (autocomplete input + filtered list + keyboard hi)
   let composer = $state<Record<string, { input: string; open: boolean; highlighted: number }>>({});
-  // Per-group "potential tags" parsed from the file name + path, pinned to the
-  // top of the composer dropdown by Ctrl+Shift+T (issue #10). They're treated
-  // as NEW tags — picking one opens the create-tag modal. Cleared on navigation
-  // to another video.
-  let potentialByGroup = $state<Record<string, string[]>>({});
+  // Potential tags parsed from the file name + path (issue #10). Analyzed
+  // automatically when the panel opens / the video changes, so they're always
+  // ready as candidates pinned to the top of every group's composer dropdown.
+  // Picking one is treated as a NEW tag (opens the create-tag modal).
+  let tagCandidates = $state<string[]>([]);
   // DOM refs for each group's composer input, indexed by render order. We
   // focus [0] on Shift+arrow nav so the user can start typing into the
   // first tag group immediately.
@@ -97,10 +97,13 @@
     const videoChanged = prevVideoId !== null && prevVideoId !== video.id;
     prevShow = show;
     prevVideoId = video.id;
-    if (opened || videoChanged) pendingFocus = true;
-    // Pinned potential tags belong to the previous file — drop them so the
-    // next Ctrl+Shift+T re-analyzes the new video's name/path.
-    if (videoChanged) potentialByGroup = {};
+    if (opened || videoChanged) {
+      pendingFocus = true;
+      // Analyze the (new) file name for potential tags as soon as the panel is
+      // shown or we navigate to another video, so the candidates are always
+      // present in the dropdowns without any manual trigger.
+      void loadCandidates();
+    }
   });
   $effect(() => {
     if (!pendingFocus) return;
@@ -417,34 +420,35 @@
       t.name.toLowerCase() === q || t.aliases.some(a => a.toLowerCase() === q));
   }
 
-  // Ctrl+Shift+T: fetch candidate names parsed from this video's file name +
-  // path and pin them as "potential tags" for this group (issue #10). Existing
-  // tags in the group are excluded — those already surface via normal typing.
-  async function loadPotential(group: TagGroup) {
-    if (!video) return;
-    await ensureTagsLoaded(group.id);
-    ensureComposer(group.id);
+  // Analyze the current video's file name + path into potential tag names
+  // (issue #10). One fetch for the whole panel; each group's dropdown filters
+  // the shared list against its own existing tags.
+  async function loadCandidates() {
+    if (!video) {
+      tagCandidates = [];
+      return;
+    }
     try {
-      const candidates = await api.getTagCandidates(video.id);
-      const existing = new Set(
-        (tagsByGroup[group.id] ?? []).flatMap(t => [
-          t.name.toLowerCase(),
-          ...t.aliases.map(a => a.toLowerCase())
-        ])
-      );
-      potentialByGroup[group.id] = candidates.filter(c => !existing.has(c.toLowerCase()));
-      composer[group.id] = { ...composer[group.id], open: true, highlighted: -1 };
-    } catch (e: any) {
-      error = e?.message ?? 'Failed to analyze file name';
+      tagCandidates = await api.getTagCandidates(video.id);
+    } catch {
+      tagCandidates = []; // non-fatal — the panel still works without candidates
     }
   }
 
-  // Potential tags for the dropdown: pinned candidates minus any already
-  // applied, filtered by the typed query exactly like existing-tag matches.
+  // Potential tags for a group's dropdown: the analyzed candidates minus any
+  // that already exist in this group (those surface via normal typing) or are
+  // already applied, then filtered by the typed query like any other match.
   function filteredPotential(group: TagGroup): string[] {
     const q = (composer[group.id]?.input ?? '').toLowerCase().trim();
+    const existingNames = new Set(
+      (tagsByGroup[group.id] ?? []).flatMap(t => [
+        t.name.toLowerCase(),
+        ...t.aliases.map(a => a.toLowerCase())
+      ])
+    );
     const appliedNames = new Set((video?.tags ?? []).map(t => t.name.toLowerCase()));
-    return (potentialByGroup[group.id] ?? [])
+    return tagCandidates
+      .filter(name => !existingNames.has(name.toLowerCase()))
       .filter(name => !appliedNames.has(name.toLowerCase()))
       .filter(name => !q || name.toLowerCase().includes(q));
   }
@@ -459,22 +463,23 @@
   }
 
   function selectDropItem(group: TagGroup, item: DropItem) {
-    if (item.kind === 'existing') addTag(group, item.tag);
-    else openCreateModal(group, item.name, true); // potential → create new tag
+    if (item.kind === 'existing') {
+      addTag(group, item.tag);
+      return;
+    }
+    // Potential candidate → treat as a new tag. If one with that exact name
+    // already exists in this group (e.g. tags hadn't loaded when it was shown),
+    // just apply it instead of opening a create modal that would conflict.
+    const existing = (tagsByGroup[group.id] ?? []).find(
+      t => t.name.toLowerCase() === item.name.toLowerCase()
+    );
+    if (existing) addTag(group, existing);
+    else openCreateModal(group, item.name, true);
   }
 
   function onComposerKeyDown(group: TagGroup, e: KeyboardEvent) {
     const c = composer[group.id];
     if (!c) return;
-    // Ctrl/Cmd+Shift+T → analyze file name for potential tags. Handled here so
-    // it only fires while a tag composer input is focused, and preventDefault
-    // stops the browser's "reopen closed tab".
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === 'KeyT') {
-      e.preventDefault();
-      e.stopPropagation();
-      void loadPotential(group);
-      return;
-    }
     const sugs = dropItemsFor(group);
     switch (e.key) {
       case 'ArrowDown':
@@ -565,8 +570,7 @@
       <h2 class="text-lg font-semibold">
         Tags
         <span class="ml-2 text-xs font-normal text-base-content/50 align-middle">
-          <kbd class="kbd kbd-xs">Ctrl</kbd>+<kbd class="kbd kbd-xs">Shift</kbd>+<kbd class="kbd kbd-xs">T</kbd>
-          in a tag box suggests tags from the file name
+          Potential Tags from the file name appear at the top of each box
         </span>
       </h2>
       <div class="flex gap-2">
@@ -714,16 +718,16 @@
                 <!-- Floating command-palette-style popover (see the original
                      styling notes): bg one step from the panel, primary border
                      + ring halo + heavy shadow so it reads as "above the page".
-                     Potential tags (parsed from the file name via Ctrl+Shift+T)
-                     are pinned first and badged NEW; picking one opens the
-                     create-tag modal. Existing-tag matches follow. A single
+                     Potential Tags (analysis results from the file name +
+                     folders) are pinned first and badged NEW; picking one opens
+                     the create-tag modal. Existing-tag matches follow. A single
                      highlight index walks the whole list. -->
                 <div class="absolute z-20 mt-1 w-full bg-base-300 border-2 border-primary rounded-md shadow-2xl ring-4 ring-primary/30 max-h-64 overflow-auto">
                   {#each items as item, i (item.kind === 'potential' ? `p:${item.name}` : `e:${item.tag.id}`)}
                     {@const isActive = composer[group.id]?.highlighted === i}
                     {#if i === 0 && item.kind === 'potential'}
                       <div class="px-3 py-1 text-xs uppercase tracking-wider text-accent-content bg-accent border-b border-accent">
-                        Potential — from file name &amp; folders
+                        Potential Tags
                       </div>
                     {/if}
                     {#if i === potCount && item.kind === 'existing'}
