@@ -42,6 +42,11 @@
 
   // Per-group composer (autocomplete input + filtered list + keyboard hi)
   let composer = $state<Record<string, { input: string; open: boolean; highlighted: number }>>({});
+  // Per-group "potential tags" parsed from the file name + path, pinned to the
+  // top of the composer dropdown by Ctrl+Shift+T (issue #10). They're treated
+  // as NEW tags — picking one opens the create-tag modal. Cleared on navigation
+  // to another video.
+  let potentialByGroup = $state<Record<string, string[]>>({});
   // DOM refs for each group's composer input, indexed by render order. We
   // focus [0] on Shift+arrow nav so the user can start typing into the
   // first tag group immediately.
@@ -93,6 +98,9 @@
     prevShow = show;
     prevVideoId = video.id;
     if (opened || videoChanged) pendingFocus = true;
+    // Pinned potential tags belong to the previous file — drop them so the
+    // next Ctrl+Shift+T re-analyzes the new video's name/path.
+    if (videoChanged) potentialByGroup = {};
   });
   $effect(() => {
     if (!pendingFocus) return;
@@ -409,10 +417,65 @@
       t.name.toLowerCase() === q || t.aliases.some(a => a.toLowerCase() === q));
   }
 
+  // Ctrl+Shift+T: fetch candidate names parsed from this video's file name +
+  // path and pin them as "potential tags" for this group (issue #10). Existing
+  // tags in the group are excluded — those already surface via normal typing.
+  async function loadPotential(group: TagGroup) {
+    if (!video) return;
+    await ensureTagsLoaded(group.id);
+    ensureComposer(group.id);
+    try {
+      const candidates = await api.getTagCandidates(video.id);
+      const existing = new Set(
+        (tagsByGroup[group.id] ?? []).flatMap(t => [
+          t.name.toLowerCase(),
+          ...t.aliases.map(a => a.toLowerCase())
+        ])
+      );
+      potentialByGroup[group.id] = candidates.filter(c => !existing.has(c.toLowerCase()));
+      composer[group.id] = { ...composer[group.id], open: true, highlighted: -1 };
+    } catch (e: any) {
+      error = e?.message ?? 'Failed to analyze file name';
+    }
+  }
+
+  // Potential tags for the dropdown: pinned candidates minus any already
+  // applied, filtered by the typed query exactly like existing-tag matches.
+  function filteredPotential(group: TagGroup): string[] {
+    const q = (composer[group.id]?.input ?? '').toLowerCase().trim();
+    const appliedNames = new Set((video?.tags ?? []).map(t => t.name.toLowerCase()));
+    return (potentialByGroup[group.id] ?? [])
+      .filter(name => !appliedNames.has(name.toLowerCase()))
+      .filter(name => !q || name.toLowerCase().includes(q));
+  }
+
+  // Combined dropdown list: potential (new) candidates first, then existing-tag
+  // matches. A single highlight index walks the whole list.
+  type DropItem = { kind: 'potential'; name: string } | { kind: 'existing'; tag: Tag };
+  function dropItemsFor(group: TagGroup): DropItem[] {
+    const pot = filteredPotential(group).map(name => ({ kind: 'potential', name }) as DropItem);
+    const existing = suggestionsFor(group).map(tag => ({ kind: 'existing', tag }) as DropItem);
+    return [...pot, ...existing];
+  }
+
+  function selectDropItem(group: TagGroup, item: DropItem) {
+    if (item.kind === 'existing') addTag(group, item.tag);
+    else openCreateModal(group, item.name, true); // potential → create new tag
+  }
+
   function onComposerKeyDown(group: TagGroup, e: KeyboardEvent) {
     const c = composer[group.id];
     if (!c) return;
-    const sugs = suggestionsFor(group);
+    // Ctrl/Cmd+Shift+T → analyze file name for potential tags. Handled here so
+    // it only fires while a tag composer input is focused, and preventDefault
+    // stops the browser's "reopen closed tab".
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === 'KeyT') {
+      e.preventDefault();
+      e.stopPropagation();
+      void loadPotential(group);
+      return;
+    }
+    const sugs = dropItemsFor(group);
     switch (e.key) {
       case 'ArrowDown':
         if (sugs.length === 0) return;
@@ -428,7 +491,7 @@
         e.preventDefault();
         e.stopPropagation();
         if (c.highlighted >= 0 && c.highlighted < sugs.length) {
-          addTag(group, sugs[c.highlighted]);
+          selectDropItem(group, sugs[c.highlighted]);
         } else if (c.input.trim().length > 0 && isNovel(group)) {
           openCreateModal(group, c.input.trim(), true);
         }
@@ -499,7 +562,13 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="card bg-base-200 p-4 space-y-4" onkeydown={onPanelKeyDown}>
     <header class="flex items-center justify-between">
-      <h2 class="text-lg font-semibold">Tags</h2>
+      <h2 class="text-lg font-semibold">
+        Tags
+        <span class="ml-2 text-xs font-normal text-base-content/50 align-middle">
+          <kbd class="kbd kbd-xs">Ctrl</kbd>+<kbd class="kbd kbd-xs">Shift</kbd>+<kbd class="kbd kbd-xs">T</kbd>
+          in a tag box suggests tags from the file name
+        </span>
+      </h2>
       <div class="flex gap-2">
         {#if !editingPanel}
           <button class="btn btn-sm" onclick={startPanelEdit}>Edit Tags Panel</button>
@@ -638,65 +707,59 @@
                 <span class="badge badge-accent badge-sm absolute right-2 top-1/2 -translate-y-1/2">NEW</span>
               {/if}
 
-              {#if composer[group.id]?.open && suggestionsFor(group).length > 0}
-                <!-- Heavy-handed lift so the popover unmistakably
-                     reads as "above the page":
-                       bg-base-300        — a full step away from the
-                                            panel's bg-base-200, so the
-                                            shade contrast is one step
-                                            in the opposite direction
-                                            from the input field
-                                            (input sits on bg-base-100
-                                            inside this panel)
-                       border-2 +         — solid primary border at
-                       border-primary       full opacity (was /50)
-                       ring-4 +           — wide primary halo around
-                       ring-primary/30      the border so the popover
-                                            visibly glows away from
-                                            its surroundings
-                       shadow-2xl         — heavy drop shadow so the
-                                            popover lifts out of the
-                                            panel surface
-                     Together these produce a floating-card look
-                     close to a command-palette popover. -->
+              {#if composer[group.id]?.open && dropItemsFor(group).length > 0}
+                {@const items = dropItemsFor(group)}
+                {@const potCount = items.filter((it) => it.kind === 'potential').length}
+                {@const q = (composer[group.id]?.input ?? '').toLowerCase().trim()}
+                <!-- Floating command-palette-style popover (see the original
+                     styling notes): bg one step from the panel, primary border
+                     + ring halo + heavy shadow so it reads as "above the page".
+                     Potential tags (parsed from the file name via Ctrl+Shift+T)
+                     are pinned first and badged NEW; picking one opens the
+                     create-tag modal. Existing-tag matches follow. A single
+                     highlight index walks the whole list. -->
                 <div class="absolute z-20 mt-1 w-full bg-base-300 border-2 border-primary rounded-md shadow-2xl ring-4 ring-primary/30 max-h-64 overflow-auto">
-                  <div class="px-3 py-1 text-xs uppercase tracking-wider text-primary-content bg-primary border-b border-primary sticky top-0">
-                    Existing {group.name}
-                  </div>
-                  {#each suggestionsFor(group) as t, i (t.id)}
-                    {@const q = (composer[group.id]?.input ?? '').toLowerCase().trim()}
-                    {@const matchedAlias = q && !t.name.toLowerCase().includes(q)
-                      ? t.aliases.find(a => a.toLowerCase().includes(q))
-                      : undefined}
+                  {#each items as item, i (item.kind === 'potential' ? `p:${item.name}` : `e:${item.tag.id}`)}
                     {@const isActive = composer[group.id]?.highlighted === i}
-                    <!-- Mouse hover writes `highlighted = i` (see
-                         onmouseenter), so hover and keyboard-arrow
-                         selection share the same active style — there's
-                         no separate "hovered but not highlighted"
-                         state. Active row uses bg-primary +
-                         text-primary-content for unmistakable contrast
-                         (the previous bg-base-200 was identical to the
-                         old hover color and easy to miss while arrowing
-                         through a long list). -->
-                    <button
-                      type="button"
-                      class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
-                      onmousedown={() => addTag(group, t)}
-                      onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
-                    >
-                      {t.name}
-                      {#if matchedAlias}
-                        <!-- Use opacity-70 instead of an explicit
-                             muted color so the alias text inherits
-                             whichever foreground (default vs
-                             primary-content) the parent button is
-                             using. text-base-content/50 against
-                             bg-primary was nearly invisible. -->
-                        <span class="text-xs opacity-70 ml-2">matched: {matchedAlias}</span>
-                      {:else if t.aliases.length > 0}
-                        <span class="text-xs opacity-70 ml-2">({t.aliases.join(', ')})</span>
-                      {/if}
-                    </button>
+                    {#if i === 0 && item.kind === 'potential'}
+                      <div class="px-3 py-1 text-xs uppercase tracking-wider text-accent-content bg-accent border-b border-accent">
+                        Potential — from file name &amp; folders
+                      </div>
+                    {/if}
+                    {#if i === potCount && item.kind === 'existing'}
+                      <div class="px-3 py-1 text-xs uppercase tracking-wider text-primary-content bg-primary border-y border-primary">
+                        Existing {group.name}
+                      </div>
+                    {/if}
+                    {#if item.kind === 'potential'}
+                      <button
+                        type="button"
+                        class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
+                        onmousedown={() => selectDropItem(group, item)}
+                        onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
+                      >
+                        {item.name}
+                        <span class="badge badge-accent badge-xs ml-2 align-middle">NEW</span>
+                      </button>
+                    {:else}
+                      {@const t = item.tag}
+                      {@const matchedAlias = q && !t.name.toLowerCase().includes(q)
+                        ? t.aliases.find((a) => a.toLowerCase().includes(q))
+                        : undefined}
+                      <button
+                        type="button"
+                        class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
+                        onmousedown={() => selectDropItem(group, item)}
+                        onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
+                      >
+                        {t.name}
+                        {#if matchedAlias}
+                          <span class="text-xs opacity-70 ml-2">matched: {matchedAlias}</span>
+                        {:else if t.aliases.length > 0}
+                          <span class="text-xs opacity-70 ml-2">({t.aliases.join(', ')})</span>
+                        {/if}
+                      </button>
+                    {/if}
                   {/each}
                 </div>
               {/if}

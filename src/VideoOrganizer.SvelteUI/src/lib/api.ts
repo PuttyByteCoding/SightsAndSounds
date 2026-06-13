@@ -185,6 +185,11 @@ export const api = {
   getTagSuggestions: (id: string) =>
     request<TagSuggestion[]>(`/api/videos/${id}/tag-suggestions`),
 
+  // Candidate *new* tag names parsed from the file name + path — the Tag
+  // panel's Ctrl+Shift+T "potential tags" (issue #10).
+  getTagCandidates: (id: string) =>
+    request<string[]>(`/api/videos/${id}/tag-candidates`),
+
   setVideoProperties: (id: string, body: SetPropertyValuesRequest) =>
     request<void>(`/api/videos/${id}/properties`, {
       method: 'PUT',
