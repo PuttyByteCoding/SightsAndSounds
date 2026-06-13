@@ -771,12 +771,17 @@ public static class ApiEndpoints
         }).WithName("GetRuntimeInfo");
 
         // === Data validation ================================================
-        // Three diagnostic endpoints powering the /data-validation page:
+        // Diagnostic endpoints powering the /data-validation page:
         //
         //   GET /validation/missing-files
         //     Videos whose FilePath no longer exists on disk. By default
         //     scoped to enabled sources — pass includeDisabled=true to
         //     surface orphans under disabled sources too.
+        //
+        //   POST /validation/missing-files/purge
+        //     Remove the DB rows for videos surfaced by the scan above.
+        //     DB-only — no file I/O beyond a per-row File.Exists re-probe
+        //     that refuses to delete rows whose file has reappeared.
         //
         //   GET /validation/extra-files
         //     Video files on disk under a configured source that have no
@@ -842,6 +847,55 @@ public static class ApiEndpoints
                 .ThenBy(m => m.FilePath)
                 .ToList());
         }).WithName("GetValidationMissingFiles");
+
+        // POST /validation/missing-files/purge — remove DB rows for videos
+        // whose file is gone from disk. Deliberately DB-only: the file is
+        // already gone (that's the premise), so unlike /videos/{id}/purge
+        // nothing here touches disk. Each row is re-probed with File.Exists
+        // immediately before deletion so a file that reappeared since the
+        // scan (remounted drive, restored backup) is never silently dropped
+        // from the library — those rows are skipped and reported back.
+        // Clip rows, tags, properties, markers and blocks all cascade with
+        // the parent row via FK delete behavior.
+        api.MapPost("/validation/missing-files/purge", async (
+            PurgeMissingFilesRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            if (req.VideoIds is null || req.VideoIds.Count == 0)
+                return Results.BadRequest(new { error = "No video IDs provided." });
+
+            var ids = req.VideoIds.Distinct().ToList();
+            var videos = await db.Videos
+                .Where(v => ids.Contains(v.Id))
+                .ToListAsync(ct);
+            var notFound = ids.Count - videos.Count;
+
+            var skippedPresent = new List<Guid>();
+            var deleted = 0;
+            foreach (var video in videos)
+            {
+                if (!string.IsNullOrEmpty(video.FilePath) && File.Exists(video.FilePath))
+                {
+                    skippedPresent.Add(video.Id);
+                    logger.LogWarning(
+                        "Missing-files purge: file for video {VideoId} ({FileName}) reappeared at {Path} — row kept",
+                        video.Id, video.FileName, video.FilePath);
+                    continue;
+                }
+                db.Videos.Remove(video);
+                deleted++;
+            }
+            await db.SaveChangesAsync(ct);
+
+            logger.LogInformation(
+                "Missing-files purge: {Deleted} rows deleted, {SkippedPresent} skipped (file present), {NotFound} not found",
+                deleted, skippedPresent.Count, notFound);
+            return Results.Ok(new PurgeMissingFilesResultDto(
+                Deleted: deleted,
+                SkippedPresent: skippedPresent.Count,
+                NotFound: notFound,
+                SkippedPresentIds: skippedPresent));
+        }).WithName("PurgeValidationMissingFiles");
 
         api.MapGet("/validation/extra-files", async (
             VideoOrganizerDbContext db, Guid? sourceId, bool? includeDisabled,

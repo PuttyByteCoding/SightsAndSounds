@@ -553,6 +553,18 @@ export interface MissingVideoFile {
   sourceEnabled: boolean;
 }
 
+// POST /api/validation/missing-files/purge. DB-only removal of rows
+// surfaced by the missing-files scan. The server re-probes each file
+// before deleting — skippedPresentIds are rows whose file reappeared
+// since the scan and were kept; notFound counts ids whose row was
+// already deleted elsewhere.
+export interface PurgeMissingFilesResult {
+  deleted: number;
+  skippedPresent: number;
+  notFound: number;
+  skippedPresentIds: string[];
+}
+
 // GET /api/validation/extra-files. A video file on disk under a
 // configured source that has no matching Video row in the DB.
 export interface ExtraDiskFile {

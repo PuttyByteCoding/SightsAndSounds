@@ -36,6 +36,7 @@ import type {
   FlagCounts,
   ClipSummary,
   MissingVideoFile,
+  PurgeMissingFilesResult,
   ExtraDiskFile,
   Md5Candidate,
   SearchRequestOpts,
@@ -214,6 +215,14 @@ export const api = {
     request<MissingVideoFile[]>(
       `/api/validation/missing-files?includeDisabled=${includeDisabled ? 'true' : 'false'}`
     ),
+  // DB-only removal of rows the missing-files scan surfaced. The
+  // server re-probes File.Exists per row and refuses to delete rows
+  // whose file has reappeared — see PurgeMissingFilesResult.
+  purgeMissingFiles: (videoIds: string[]) =>
+    request<PurgeMissingFilesResult>('/api/validation/missing-files/purge', {
+      method: 'POST',
+      body: JSON.stringify({ videoIds })
+    }),
   // Video files on disk under a configured source that have no
   // matching Video row. sourceId optional — omit to scan every
   // enabled source (or every source if includeDisabled=true).

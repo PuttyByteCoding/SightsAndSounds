@@ -36,7 +36,7 @@
   // estimates for the previously content-sized text columns.
   const TABLE_DEFAULTS: Record<string, Record<string, number>> = {
     sources:    { name: 200, path: 480, enabled: 96, reachable: 128 },
-    missing:    { source: 160, file: 480, size: 96 },
+    missing:    { source: 160, file: 480, size: 96, actions: 112 },
     extras:     { source: 160, file: 480, size: 96 },
     md5Match:   { source: 160, file: 480, size: 96, stored: 280, computed: 280 },
     md5Errors:  { source: 160, file: 480, error: 400 },
@@ -103,12 +103,81 @@
   async function runMissing() {
     missingLoading = true;
     missingError = null;
+    missingPurgeNotice = null;
     try {
       missing = await api.getMissingFiles(missingIncludeDisabled);
     } catch (e) {
       missingError = e instanceof Error ? e.message : String(e);
     } finally {
       missingLoading = false;
+    }
+  }
+
+  // --- Remove missing-file rows from the DB (issue #19) -----------------
+  // DB-only purge of rows the scan above surfaced — the file is already
+  // gone, so nothing touches disk. The server re-probes File.Exists per
+  // row and keeps rows whose file reappeared since the scan (remounted
+  // drive, restored backup); those stay in the table with a warning so
+  // the user knows to re-run the check.
+  type MissingPurgeConfirm =
+    | { kind: 'one'; row: MissingVideoFile }
+    | { kind: 'all'; rows: MissingVideoFile[] };
+  let missingPurgeConfirm = $state<MissingPurgeConfirm | null>(null);
+  let missingPurging = $state(false);
+  let missingPurgeNotice = $state<string | null>(null);
+  let missingPurgeNoticeKind = $state<'success' | 'warning' | 'error'>('success');
+
+  function openMissingPurgeOne(row: MissingVideoFile) {
+    if (missingPurging) return;
+    missingPurgeConfirm = { kind: 'one', row };
+  }
+  function openMissingPurgeAll() {
+    if (missingPurging || !missing || missing.length === 0) return;
+    missingPurgeConfirm = { kind: 'all', rows: missing };
+  }
+  function cancelMissingPurge() {
+    missingPurgeConfirm = null;
+  }
+  async function onConfirmMissingPurge() {
+    const c = missingPurgeConfirm;
+    if (!c) return;
+    missingPurgeConfirm = null;
+    await runMissingPurge(c.kind === 'one' ? [c.row] : c.rows);
+  }
+
+  async function runMissingPurge(rows: MissingVideoFile[]) {
+    if (missingPurging || rows.length === 0) return;
+    missingPurging = true;
+    missingPurgeNotice = null;
+    try {
+      const ids = rows.map(r => r.videoId);
+      const res = await api.purgeMissingFiles(ids);
+      // Deleted and already-gone rows leave the table; rows the server
+      // kept (file reappeared) stay so the user can see exactly which
+      // ones survived.
+      const requested = new Set(ids);
+      const kept = new Set(res.skippedPresentIds);
+      missing = (missing ?? []).filter(
+        m => !requested.has(m.videoId) || kept.has(m.videoId)
+      );
+      const parts = [
+        `Removed ${res.deleted} database entr${res.deleted === 1 ? 'y' : 'ies'}.`
+      ];
+      if (res.skippedPresent > 0) {
+        parts.push(
+          `${res.skippedPresent} kept — the file exists on disk again; re-run the check.`
+        );
+      }
+      if (res.notFound > 0) {
+        parts.push(`${res.notFound} already removed elsewhere.`);
+      }
+      missingPurgeNotice = parts.join(' ');
+      missingPurgeNoticeKind = res.skippedPresent > 0 ? 'warning' : 'success';
+    } catch (e) {
+      missingPurgeNotice = e instanceof Error ? e.message : String(e);
+      missingPurgeNoticeKind = 'error';
+    } finally {
+      missingPurging = false;
     }
   }
 
@@ -373,16 +442,35 @@
           type="button"
           class="btn btn-sm btn-soft btn-primary btn-cta"
           onclick={runMissing}
-          disabled={missingLoading}
+          disabled={missingLoading || missingPurging}
         >
           {#if missingLoading}<span class="loading loading-spinner loading-xs"></span>{/if}
           Run check
         </button>
+        {#if missing !== null && missing.length > 0}
+          <button
+            type="button"
+            class="btn btn-sm btn-soft btn-error border border-error/50"
+            onclick={openMissingPurgeAll}
+            disabled={missingLoading || missingPurging}
+            title="Remove every listed entry from the database. No files are touched — they're already gone."
+          >
+            {#if missingPurging}<span class="loading loading-spinner loading-xs"></span>{/if}
+            Remove all from DB
+          </button>
+        {/if}
       </div>
     </div>
 
     {#if missingError}
       <div class="alert alert-error text-sm">{missingError}</div>
+    {/if}
+
+    {#if missingPurgeNotice}
+      <div
+        class="alert text-sm {missingPurgeNoticeKind === 'error' ? 'alert-error'
+          : missingPurgeNoticeKind === 'warning' ? 'alert-warning' : 'alert-success'}"
+      >{missingPurgeNotice}</div>
     {/if}
 
     {#if missing !== null}
@@ -401,6 +489,7 @@
               <col style="width: {getW('missing', 'source', 160)}px" />
               <col style="width: {getW('missing', 'file', 480)}px" />
               <col style="width: {getW('missing', 'size', 96)}px" />
+              <col style="width: {getW('missing', 'actions', 112)}px" />
             </colgroup>
             <thead>
               <tr>
@@ -408,6 +497,7 @@
                   { key: 'source', label: 'Source', align: 'left', def: 160 },
                   { key: 'file', label: 'File', align: 'left', def: 480 },
                   { key: 'size', label: 'Size', align: 'right', def: 96 },
+                  { key: 'actions', label: '', align: 'right', def: 112 },
                 ] as col (col.key)}
                   <th
                     class="relative select-none p-0 {col.align === 'right' ? 'text-right' : 'text-left'}"
@@ -447,6 +537,15 @@
                     <div class="text-xs text-base-content/60 break-all">{m.filePath}</div>
                   </td>
                   <td class="text-right tabular-nums text-sm">{formatBytes(m.fileSize)}</td>
+                  <td class="text-right">
+                    <button
+                      type="button"
+                      class="btn btn-xs btn-soft btn-error border border-error/50"
+                      onclick={() => openMissingPurgeOne(m)}
+                      disabled={missingPurging}
+                      title="Remove this entry from the database. The file is already gone — nothing on disk is touched."
+                    >Remove</button>
+                  </td>
                 </tr>
               {/each}
             </tbody>
@@ -821,3 +920,68 @@
     {/if}
   </section>
 </div>
+
+<!-- Remove-from-DB confirmation for the missing-files tool. Same
+     daisyUI-styled modal pattern as the purge page — a destructive
+     action never falls out of the design system into a browser
+     window.confirm(). Handles both the per-row Remove button
+     (kind='one') and the section-level Remove All (kind='all'). -->
+{#if missingPurgeConfirm !== null}
+  {@const c = missingPurgeConfirm}
+  <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="missing-purge-confirm-title">
+    <div class="modal-box">
+      <h3 id="missing-purge-confirm-title" class="font-bold text-lg">
+        {#if c.kind === 'one'}
+          Remove this database entry?
+        {:else}
+          Remove all {c.rows.length} database entries?
+        {/if}
+      </h3>
+
+      {#if c.kind === 'one'}
+        <!-- Single-row removal: show the file name + path so the user
+             can verify they're about to drop the right row. -->
+        <div class="mt-3 text-sm">
+          <div class="font-medium break-all">{c.row.fileName}</div>
+          <div class="text-xs text-base-content/60 break-all">{c.row.filePath}</div>
+        </div>
+        <p class="mt-3 text-sm text-base-content/80">
+          The file is already missing on disk — this removes only the
+          database row. Its tags, properties, markers, and clips go
+          with it. Nothing on disk is touched.
+        </p>
+      {:else}
+        <p class="mt-3 text-sm text-base-content/80">
+          Remove <span class="font-semibold tabular-nums">{c.rows.length}</span>
+          database entr{c.rows.length === 1 ? 'y' : 'ies'}
+          ({formatBytes(missingTotalBytes)} of files already gone from
+          disk)? Tags, properties, markers, and clips of each video go
+          with their row. Nothing on disk is touched.
+        </p>
+      {/if}
+      <p class="mt-2 text-xs text-base-content/60">
+        Each row is re-checked on the server first — entries whose file
+        has reappeared since the scan are kept, not deleted.
+      </p>
+      <div class="modal-action">
+        <button
+          type="button"
+          class="btn btn-sm btn-cancel"
+          onclick={cancelMissingPurge}
+        >Cancel</button>
+        <button
+          type="button"
+          class="btn btn-sm btn-soft btn-error border border-error/50"
+          onclick={onConfirmMissingPurge}
+        >{c.kind === 'one' ? 'Remove from DB' : `Remove all ${c.rows.length}`}</button>
+      </div>
+    </div>
+    <!-- Backdrop click cancels — same affordance as the Cancel button. -->
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Cancel removal"
+      onclick={cancelMissingPurge}
+    ></button>
+  </div>
+{/if}
