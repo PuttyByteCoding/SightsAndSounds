@@ -1,11 +1,12 @@
 <script lang="ts">
-  // Move a video's file into another folder (issue #4). Browse the
-  // configured sources/folders (reusing /import/browse), pick a
-  // destination, confirm, and watch a live progress bar while the move
-  // runs. Same-drive moves are instant; cross-drive copies report real
-  // bytes via /videos/{id}/move-progress.
+  // Move a video's file into another folder (issue #4). Destinations are
+  // limited to folders that already hold imported videos — a flat,
+  // filterable list pulled from the library (GET /import/imported-folders),
+  // so there's no slow filesystem walk. Pick a folder, confirm, and watch a
+  // live progress bar. Same-drive moves are instant; cross-drive copies
+  // report real bytes via /videos/{id}/move-progress.
   import { api } from '$lib/api';
-  import type { Video, ImportBrowseDirectory, MoveProgress } from '$lib/types';
+  import type { Video, ImportedFolder, MoveProgress } from '$lib/types';
 
   interface Props {
     video: Video | null;
@@ -17,14 +18,15 @@
   }
   let { video, show, onClose, onMoved }: Props = $props();
 
-  let currentPath = $state<string>(''); // '' = the sources root
-  let parentPath = $state<string | null>(null);
-  let dirs = $state<ImportBrowseDirectory[]>([]);
+  let folders = $state<ImportedFolder[]>([]);
+  let filterText = $state('');
+  let selected = $state<string | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let confirming = $state(false);
   let moving = $state(false);
   let progress = $state<MoveProgress | null>(null);
+  let filterInput = $state<HTMLInputElement | null>(null);
 
   let shownFor: string | null = null;
   $effect(() => {
@@ -34,21 +36,22 @@
       progress = null;
       moving = false;
       confirming = false;
-      void browse('');
+      selected = null;
+      filterText = '';
+      void loadFolders();
     } else if (!show) {
       shownFor = null;
     }
   });
 
-  async function browse(path: string) {
-    confirming = false;
+  async function loadFolders() {
     loading = true;
     error = null;
     try {
-      const res = await api.browseImport(path.length ? path : null);
-      dirs = res.directories;
-      currentPath = res.currentPath ?? '';
-      parentPath = res.parentPath;
+      folders = await api.listImportedFolders();
+      // Focus the filter box once the list is up so the user can type
+      // straight away.
+      queueMicrotask(() => filterInput?.focus());
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -56,16 +59,35 @@
     }
   }
 
-  // The video's current folder — don't allow "moving" it to where it
-  // already lives (the server rejects this too, but disable up front).
+  // Normalize for comparison: strip trailing separators, lowercase.
   const trimSep = (p: string) => p.replace(/[/\\]+$/, '').toLowerCase();
-  const currentFolder = $derived(video ? video.filePath.replace(/[/\\][^/\\]*$/, '') : '');
-  const canMoveHere = $derived(
-    currentPath.length > 0 && trimSep(currentPath) !== trimSep(currentFolder)
+  // The video's current folder — selecting it is a no-op (the server rejects
+  // it too), so it's shown disabled.
+  const currentFolder = $derived(
+    video ? trimSep(video.filePath.replace(/[/\\][^/\\]*$/, '')) : ''
+  );
+  const isCurrent = (f: ImportedFolder) => trimSep(f.fullPath) === currentFolder;
+
+  const filtered = $derived.by(() => {
+    const q = filterText.trim().toLowerCase();
+    if (!q) return folders;
+    return folders.filter(
+      (f) => f.label.toLowerCase().includes(q) || f.fullPath.toLowerCase().includes(q)
+    );
+  });
+
+  function pick(f: ImportedFolder) {
+    if (isCurrent(f)) return;
+    selected = f.fullPath;
+    confirming = false;
+  }
+
+  const selectedLabel = $derived(
+    selected ? (folders.find((f) => f.fullPath === selected)?.label ?? selected) : null
   );
 
   async function doMove() {
-    if (!video || !canMoveHere || moving) return;
+    if (!video || !selected || moving) return;
     moving = true;
     confirming = false;
     error = null;
@@ -79,7 +101,7 @@
       }
     }, 300);
     try {
-      const updated = await api.moveVideo(id, currentPath);
+      const updated = await api.moveVideo(id, selected);
       clearInterval(poll);
       await onMoved?.(updated);
       onClose();
@@ -140,49 +162,60 @@
           {/if}
         </div>
       {:else}
-        <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1">Destination folder</div>
+        <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1">
+          Destination folder
+        </div>
+        <input
+          bind:this={filterInput}
+          type="text"
+          class="input input-sm input-bordered w-full mb-2"
+          placeholder="Filter folders…"
+          bind:value={filterText}
+        />
         <div class="border border-base-300 rounded-box overflow-hidden">
-          <div class="px-3 py-2 bg-base-200 text-xs font-mono break-all border-b border-base-300">
-            {currentPath.length ? currentPath : 'Sources'}
-          </div>
           <div class="max-h-64 overflow-y-auto">
-            {#if currentPath.length}
-              <button
-                type="button"
-                class="w-full text-left px-3 py-1.5 hover:bg-base-200 text-sm flex items-center gap-2"
-                onclick={() => browse(parentPath ?? '')}
-                disabled={loading}
-              ><span aria-hidden="true">↰</span> ..</button>
-            {/if}
             {#if loading}
               <div class="px-3 py-3 text-sm text-base-content/60">
-                <span class="loading loading-spinner loading-xs"></span> Loading…
+                <span class="loading loading-spinner loading-xs"></span> Loading folders…
               </div>
-            {:else if dirs.length === 0}
-              <div class="px-3 py-3 text-sm text-base-content/50 italic">No subfolders here.</div>
+            {:else if folders.length === 0}
+              <div class="px-3 py-3 text-sm text-base-content/50 italic">
+                No imported folders yet.
+              </div>
+            {:else if filtered.length === 0}
+              <div class="px-3 py-3 text-sm text-base-content/50 italic">
+                No folders match “{filterText}”.
+              </div>
             {:else}
-              {#each dirs as d (d.fullPath)}
+              {#each filtered as f (f.fullPath)}
+                {@const current = isCurrent(f)}
                 <button
                   type="button"
-                  class="w-full text-left px-3 py-1.5 hover:bg-base-200 text-sm flex items-center gap-2"
-                  onclick={() => browse(d.fullPath)}
-                  disabled={loading}
+                  class="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 {selected ===
+                  f.fullPath
+                    ? 'bg-primary/15'
+                    : 'hover:bg-base-200'} {current ? 'opacity-40 cursor-not-allowed' : ''}"
+                  onclick={() => pick(f)}
+                  disabled={current}
+                  title={f.fullPath}
                 >
                   <span aria-hidden="true">📁</span>
-                  <span class="flex-1 min-w-0 truncate">{d.name}</span>
-                  {#if d.videoCount > 0}
-                    <span class="text-xs text-base-content/50 tabular-nums shrink-0">{d.videoCount}</span>
+                  <span class="flex-1 min-w-0 truncate">{f.label}</span>
+                  {#if current}
+                    <span class="text-xs italic text-base-content/60 shrink-0">current</span>
                   {/if}
+                  <span class="text-xs text-base-content/50 tabular-nums shrink-0">{f.videoCount}</span>
                 </button>
               {/each}
             {/if}
           </div>
         </div>
 
-        {#if confirming}
+        {#if confirming && selectedLabel}
           <p class="text-sm text-info mt-3">
             Move <span class="font-medium">{video.fileName}</span> into
-            <span class="font-mono break-all">{currentPath}</span>? This can be undone from the Moves page.
+            <span class="font-medium">{selectedLabel}</span>? This can be undone from the Moves
+            page.
           </p>
         {/if}
       {/if}
@@ -193,10 +226,8 @@
           <button
             class="btn btn-sm btn-soft btn-primary btn-cta"
             onclick={() => (confirming ? doMove() : (confirming = true))}
-            disabled={!canMoveHere}
-            title={canMoveHere
-              ? `Move into ${currentPath}`
-              : 'Navigate into a destination folder first'}
+            disabled={!selected}
+            title={selected ? `Move into ${selectedLabel}` : 'Select a destination folder first'}
           >{confirming ? 'Confirm move' : 'Move here'}</button>
         {/if}
       </div>
@@ -205,7 +236,9 @@
       type="button"
       class="modal-backdrop"
       aria-label="Cancel move"
-      onclick={() => { if (!moving) onClose(); }}
+      onclick={() => {
+        if (!moving) onClose();
+      }}
     ></button>
   </div>
 {/if}

@@ -3712,6 +3712,57 @@ public static class ApiEndpoints
             }
         }).WithName("BrowseDirectory");
 
+        // GET /api/import/imported-folders — flat, filterable destination list
+        // for the move dialog: every distinct folder that already holds an
+        // imported video, under an enabled source. A pure DB read (no
+        // filesystem walk), so it's fast regardless of library size. (issue #4)
+        import.MapGet("/imported-folders", async (
+            VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var sets = await db.VideoSets.Where(s => s.Enabled).ToListAsync(ct);
+            if (sets.Count == 0) return Results.Ok(new List<ImportedFolder>());
+
+            // Pull just the path column; the parent-folder split + dedupe is
+            // cheap in memory and avoids provider-specific SQL string funcs.
+            // Clips share their parent's file, so skip them.
+            var paths = await db.Videos
+                .Where(v => v.ParentVideoId == null)
+                .Select(v => v.FilePath)
+                .ToListAsync(ct);
+
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in paths)
+            {
+                var norm = PathNormalizer.Normalize(p);
+                var idx = norm.LastIndexOf('/');
+                if (idx <= 0) continue;
+                var folder = norm[..idx];
+                counts[folder] = counts.TryGetValue(folder, out var c) ? c + 1 : 1;
+            }
+
+            var roots = sets
+                .Select(s => (Set: s, Root: PathNormalizer.Normalize(s.Path).TrimEnd('/')))
+                .ToList();
+
+            var result = new List<ImportedFolder>();
+            foreach (var (folder, count) in counts)
+            {
+                var match = roots.FirstOrDefault(r =>
+                    folder.Equals(r.Root, StringComparison.OrdinalIgnoreCase) ||
+                    folder.StartsWith(r.Root + "/", StringComparison.OrdinalIgnoreCase));
+                if (match.Set is null) continue; // under a disabled/removed source
+
+                var rel = folder.Length > match.Root.Length
+                    ? folder[(match.Root.Length + 1)..]
+                    : string.Empty;
+                var label = rel.Length == 0 ? match.Set.Name : $"{match.Set.Name}/{rel}";
+                result.Add(new ImportedFolder(folder, label, count));
+            }
+
+            result.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+            return Results.Ok(result);
+        }).WithName("ListImportedFolders");
+
         // Live progress for an in-flight /import/browse scan. The Import
         // page polls this (~500ms) to show a climbing "Discovered N video
         // files…" count while a source loads, instead of a blind spinner.
