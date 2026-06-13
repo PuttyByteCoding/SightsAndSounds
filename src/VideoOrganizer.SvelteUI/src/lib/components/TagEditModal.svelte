@@ -12,7 +12,7 @@
   //                              (initialName preseeds the name field)
   import { untrack } from 'svelte';
   import { api, ApiError } from '$lib/api';
-  import type { Tag, TagGroup } from '$lib/types';
+  import type { Tag, TagGroup, TagSearchHit } from '$lib/types';
 
   // Portal action lives in $lib/portal — same one is used by the
   // FfprobeResultModal and the inline clip-preview modal in
@@ -60,6 +60,48 @@
   let selectedGroupId = $state<string | undefined>(undefined);
 
   const isEdit = $derived(tag !== null && tag !== undefined);
+
+  // When creating a tag, prompt to use an existing one if the entered name
+  // already exists as a tag name OR an alias anywhere (issue #10). Debounced
+  // exact-match search against /tags/search (name + alias).
+  let nameMatches = $state<TagSearchHit[]>([]);
+  $effect(() => {
+    const q = name.trim();
+    // Only in create mode — an edit renaming into a collision is the server's
+    // job, and "use this other tag" makes no sense mid-edit.
+    if (!show || tag || q.length < 2) {
+      nameMatches = [];
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const hits = await api.searchTags(q);
+        const lc = q.toLowerCase();
+        nameMatches = hits.filter(
+          h => h.name.toLowerCase() === lc || h.aliases.some(a => a.toLowerCase() === lc)
+        );
+      } catch {
+        nameMatches = [];
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  });
+
+  // Apply the existing tag instead of creating a duplicate. Pull the full Tag
+  // so the host's onSaved gets the same shape it would after a real save.
+  async function useExisting(hit: TagSearchHit) {
+    saving = true;
+    error = null;
+    try {
+      const full = await api.getTag(hit.tagId);
+      show = false;
+      onSaved?.(full);
+    } catch (e) {
+      error = e instanceof ApiError || e instanceof Error ? e.message : String(e);
+    } finally {
+      saving = false;
+    }
+  }
 
   $effect(() => {
     if (!show) return;
@@ -298,6 +340,33 @@
           </svg>
         </button>
       </div>
+
+      <!-- Existing-tag prompt (create mode). If the entered name already
+           exists as a tag name or alias, offer to use that tag instead of
+           creating a duplicate. (issue #10) -->
+      {#if !isEdit && nameMatches.length > 0}
+        <div class="alert alert-warning text-sm mb-3 flex-col items-start gap-2">
+          <span>“{name.trim()}” already exists — use the existing tag?</span>
+          <div class="flex flex-col gap-1 w-full">
+            {#each nameMatches as m (m.tagId)}
+              {@const viaAlias = m.name.toLowerCase() !== name.trim().toLowerCase()}
+              <div class="flex items-center justify-between gap-2 w-full">
+                <span class="min-w-0 truncate">
+                  <span class="font-medium">{m.name}</span>
+                  <span class="text-xs opacity-70">in {m.tagGroupName}</span>
+                  {#if viaAlias}<span class="text-xs opacity-70">· alias “{name.trim()}”</span>{/if}
+                </span>
+                <button
+                  type="button"
+                  class="btn btn-xs btn-primary shrink-0"
+                  onclick={() => useExisting(m)}
+                  disabled={saving}
+                >Use this tag</button>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
 
       <div class="mb-3">
         {#if aliases.length > 0}
