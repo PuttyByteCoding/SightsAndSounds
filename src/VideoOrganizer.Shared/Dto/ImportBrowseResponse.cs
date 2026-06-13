@@ -13,3 +13,12 @@ public record ImportBrowseResponse(
     string? ParentPath,
     List<ImportBrowseDirectory> Directories
 );
+
+// Live progress of an in-flight /import/browse directory scan, polled by
+// the Import page to show a climbing "Discovered N video files…" count.
+// Scanning is false once the walk finishes; Discovered holds the final
+// total until the next scan starts. (issue #27)
+public record ImportScanProgressDto(
+    bool Scanning,
+    int Discovered
+);

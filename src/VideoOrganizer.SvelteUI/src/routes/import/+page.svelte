@@ -25,6 +25,30 @@
   let treeLoadingPaths = $state<Set<string>>(new Set());
   let treeInitialLoading = $state(true);
 
+  // Live "discovered video files" count while a browse scan runs (issue #27).
+  // The /import/browse walk reports progress to a server-side counter; we
+  // poll it so the user sees a climbing total instead of a blind spinner.
+  let scanDiscovered = $state(0);
+  const treeLoading = $derived(treeInitialLoading || treeLoadingPaths.size > 0);
+  $effect(() => {
+    if (!treeLoading) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const p = await api.getImportScanProgress();
+        if (!cancelled) scanDiscovered = p.discovered;
+      } catch {
+        /* transient — keep polling until the scan finishes */
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  });
+
   // Form
   // Multi-select state.
   // - selectedPath is the "primary" — drives the right-pane file list,
@@ -734,8 +758,13 @@
       {/if}
 
       {#if treeInitialLoading}
-        <div class="flex items-center gap-2 text-base-content/70 p-2">
-          <span class="loading loading-spinner loading-sm"></span> Loading...
+        <div class="flex items-center gap-2 text-base-content/70 p-2 tabular-nums">
+          <span class="loading loading-spinner loading-sm"></span>
+          {#if scanDiscovered > 0}
+            Scanning sources… {scanDiscovered.toLocaleString()} video file{scanDiscovered === 1 ? '' : 's'} found
+          {:else}
+            Loading…
+          {/if}
         </div>
       {:else if treeRoots.length === 0}
         <div class="text-base-content/60 italic text-sm p-2 space-y-2">

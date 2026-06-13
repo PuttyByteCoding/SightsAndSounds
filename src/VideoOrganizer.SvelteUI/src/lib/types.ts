@@ -420,6 +420,13 @@ export interface ImportBrowseResponse {
   directories: ImportBrowseDirectory[];
 }
 
+// GET /api/import/scan-progress — live count of video files discovered by
+// an in-flight /import/browse scan, polled while a source loads. (issue #27)
+export interface ImportScanProgress {
+  scanning: boolean;
+  discovered: number;
+}
+
 export interface ImportFileListResponse {
   directoryPath: string;
   files: string[];

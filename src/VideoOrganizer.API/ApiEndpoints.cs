@@ -202,7 +202,12 @@ public static class ApiEndpoints
             .Replace("-", string.Empty).ToLowerInvariant();
     }
 
-    private static int CountVideoFilesRecursive(string path)
+    // Recursive count of video files under `path`. When `progress` is
+    // supplied, each video found also bumps the shared scan counter so the
+    // Import page can poll a live "discovered" total while this walk runs
+    // (issue #27). EnumerateFiles is lazy, so the counter climbs as the
+    // filesystem yields entries.
+    private static int CountVideoFilesRecursive(string path, ImportScanProgress? progress = null)
     {
         if (!TryDirectoryExists(path)) return 0;
         try
@@ -211,7 +216,11 @@ public static class ApiEndpoints
             foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
             {
                 if (PathFilters.IsInExcludedFolder(file, path)) continue;
-                if (VideoFileExtensions.IsVideo(file)) count++;
+                if (VideoFileExtensions.IsVideo(file))
+                {
+                    count++;
+                    progress?.Increment();
+                }
             }
             return count;
         }
@@ -3370,8 +3379,13 @@ public static class ApiEndpoints
         ).WithName("ListImportQueue");
 
         import.MapGet("/browse", async (
-            VideoOrganizerDbContext db, string? path, ILogger<Program> logger, CancellationToken ct) =>
+            VideoOrganizerDbContext db, string? path, ImportScanProgress progress,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
+            // The recursive video-file count below feeds a shared progress
+            // counter so the Import page can poll GET /import/scan-progress
+            // for a live "discovered N" total while a source loads. (issue #27)
+            progress.Begin();
             try
             {
                 // Include disabled sources too so the browse-page
@@ -3402,7 +3416,7 @@ public static class ApiEndpoints
                             p.StartsWith(normalizedDir, StringComparison.OrdinalIgnoreCase));
                         return new ImportBrowseDirectory(
                             Name: d.name, FullPath: d.fullPath, HasSubdirectories: d.hasSubs,
-                            VideoCount: CountVideoFilesRecursive(d.fullPath),
+                            VideoCount: CountVideoFilesRecursive(d.fullPath, progress),
                             ImportedCount: importedCount);
                     }).ToList();
                 }
@@ -3427,7 +3441,7 @@ public static class ApiEndpoints
                                 .CountAsync(v => v.FilePath.StartsWith(normalizedSet), ct);
                             annotated.Add(new ImportBrowseDirectory(
                                 Name: s.Name, FullPath: full, HasSubdirectories: hasSubs,
-                                VideoCount: CountVideoFilesRecursive(full),
+                                VideoCount: CountVideoFilesRecursive(full, progress),
                                 ImportedCount: importedCount));
                         }
                         catch (Exception ex)
@@ -3478,7 +3492,22 @@ public static class ApiEndpoints
                 logger.LogError(ex, "Error browsing directory: {Path}", path);
                 return Results.Problem("Failed to browse directory");
             }
+            finally
+            {
+                progress.End();
+            }
         }).WithName("BrowseDirectory");
+
+        // Live progress for an in-flight /import/browse scan. The Import
+        // page polls this (~500ms) to show a climbing "Discovered N video
+        // files…" count while a source loads, instead of a blind spinner.
+        // Scanning=false once the walk(s) finish; Discovered holds the
+        // final total until the next scan starts. (issue #27)
+        import.MapGet("/scan-progress", (ImportScanProgress progress) =>
+        {
+            var (scanning, discovered) = progress.Snapshot();
+            return Results.Ok(new ImportScanProgressDto(scanning, discovered));
+        }).WithName("GetImportScanProgress");
 
         import.MapGet("/files", async (
             VideoOrganizerDbContext db, string directoryPath, ILogger<Program> logger,

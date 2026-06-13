@@ -5,6 +5,7 @@ import type {
   CreateTagRequest,
   DirectoryImportRequest,
   ImportBrowseResponse,
+  ImportScanProgress,
   ImportFailedFileRow,
   ImportFileListResponse,
   ImportJobSummary,
@@ -424,6 +425,10 @@ export const api = {
       : '/api/import/browse';
     return request<ImportBrowseResponse>(url);
   },
+  // Live count of video files discovered by an in-flight browse scan.
+  // Polled by the Import page while a source loads. (issue #27)
+  getImportScanProgress: () =>
+    request<ImportScanProgress>('/api/import/scan-progress'),
   getImportFiles: (directoryPath: string, includeSubdirectories: boolean = true) =>
     request<ImportFileListResponse>(
       `/api/import/files?directoryPath=${enc(directoryPath)}&includeSubdirectories=${includeSubdirectories}`
