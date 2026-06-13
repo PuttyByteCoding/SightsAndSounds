@@ -2010,6 +2010,14 @@ public static class ApiEndpoints
 
             var fileHay = $" {NormalizeForMatch(fileText)} ";
             var folderHay = $" {NormalizeForMatch(folderText)} ";
+            // Collapsed (separator-free) forms so a multi-word tag written
+            // without spaces still hits — "BobMarley" / "bobmarley" for the tag
+            // "Bob Marley" (issue #10 follow-up). The whole-word haystacks above
+            // can't catch that because the run has no separator to split on.
+            // collapsedMin keeps short tags from turning into substring noise.
+            var fileCollapsed = fileHay.Replace(" ", string.Empty);
+            var folderCollapsed = folderHay.Replace(" ", string.Empty);
+            const int collapsedMin = 4;
 
             var tags = await db.Tags.AsNoTracking().Include(t => t.TagGroup).ToListAsync(ct);
             var suggestions = new List<TagSuggestion>();
@@ -2023,16 +2031,25 @@ public static class ApiEndpoints
                 {
                     var cn = NormalizeForMatch(candidate);
                     if (cn.Length < 2) continue; // 1-char tags match everything
-                    if (fileHay.Contains($" {cn} ", StringComparison.Ordinal))
+                    var cc = cn.Replace(" ", string.Empty); // collapsed tag
+
+                    var inFile = fileHay.Contains($" {cn} ", StringComparison.Ordinal)
+                        || (cc.Length >= collapsedMin && fileCollapsed.Contains(cc, StringComparison.Ordinal));
+                    if (inFile)
                     {
                         source = "File name";
                         matched = candidate;
                         break; // file-name hit is the best source; stop looking
                     }
-                    if (source is null && folderHay.Contains($" {cn} ", StringComparison.Ordinal))
+                    if (source is null)
                     {
-                        source = "Folder";
-                        matched = candidate;
+                        var inFolder = folderHay.Contains($" {cn} ", StringComparison.Ordinal)
+                            || (cc.Length >= collapsedMin && folderCollapsed.Contains(cc, StringComparison.Ordinal));
+                        if (inFolder)
+                        {
+                            source = "Folder";
+                            matched = candidate;
+                        }
                     }
                 }
                 if (source is not null)
