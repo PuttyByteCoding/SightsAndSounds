@@ -21,6 +21,7 @@
   import EditTagsPanel from '$lib/components/EditTagsPanel.svelte';
   import FileInfoPanel from '$lib/components/FileInfoPanel.svelte';
   import FilterDialog from '$lib/components/FilterDialog.svelte';
+  import MoveFileDialog from '$lib/components/MoveFileDialog.svelte';
   import TagEditModal from '$lib/components/TagEditModal.svelte';
   import FolderTreeNode from '$lib/components/FolderTreeNode.svelte';
   import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
@@ -920,6 +921,19 @@
     // back to the player so the pick actually starts watching (issue
     // #23) — the player is hidden in grid mode otherwise.
     if (viewMode === 'grid') setViewMode('player');
+  }
+
+  // --- Move file (issue #4) ---------------------------------------------
+  // The MoveFileDialog is opened from the player toolbar (current video)
+  // and from each grid card's Move… button. On success we patch the moved
+  // row's new FilePath into the grid and the player.
+  let moveDialogVideo = $state<Video | null>(null);
+  function openMoveDialog(v: Video) {
+    moveDialogVideo = v;
+  }
+  function onFileMoved(updated: Video) {
+    patchVideoInGrid(updated);
+    if (playingVideo?.id === updated.id) playingVideo = updated;
   }
 
   // --- Duplicate hunt ----------------------------------------------------
@@ -1871,6 +1885,15 @@
               title="Start a duplicate hunt: pin the playing video as the anchor, then navigate and mark look-alikes"
             >🎯 Find duplicates</button>
           {/if}
+          <!-- Move the currently-playing video's file to another folder
+               (issue #4). The grid cards carry their own Move… button. -->
+          <button
+            type="button"
+            class="btn btn-sm"
+            disabled={!playingVideo || playingVideo.isClip}
+            onclick={() => playingVideo && openMoveDialog(playingVideo)}
+            title="Move the current video's file to another folder"
+          >↪ Move file</button>
           <!-- Sort mode select + direction toggle. Shuffle is the default
                random-playlist behavior; explicit modes re-order the grid
                client-side. The ↑↓ button flips ascending/descending and
@@ -1939,7 +1962,7 @@
               class:bg-base-100={left !== null}
               style="width: {thumbWidth}px;{left !== null ? ` left: ${left}px;` : ''}"
             >
-              <VideoCard video={v} onopen={open} active={playingVideo?.id === v.id} />
+              <VideoCard video={v} onopen={open} onmove={openMoveDialog} active={playingVideo?.id === v.id} />
             </div>
           {/each}
           <!-- Horizontal sentinel: the IntersectionObserver loads the
@@ -1970,6 +1993,7 @@
               <VideoCard
                 video={v}
                 onopen={open}
+                onmove={openMoveDialog}
                 active={playingVideo?.id === v.id}
               />
             {/each}
@@ -2026,6 +2050,13 @@
     </section>
   </div>
 </div>
+
+<MoveFileDialog
+  video={moveDialogVideo}
+  show={moveDialogVideo !== null}
+  onClose={() => (moveDialogVideo = null)}
+  onMoved={onFileMoved}
+/>
 
 <FilterDialog
   onTagChanged={async () => {

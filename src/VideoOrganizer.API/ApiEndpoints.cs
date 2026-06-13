@@ -230,6 +230,53 @@ public static class ApiEndpoints
         }
     }
 
+    // Moves a file from src to dst, reporting byte progress (issue #4).
+    // Same-volume moves are an instant File.Move (a rename); cross-volume
+    // moves stream the copy in 1 MiB chunks so the UI can show a real
+    // percentage, then delete the source — mimicking File.Move's
+    // copy+delete without losing progress visibility. A partial
+    // cross-volume copy is cleaned up on failure/cancel so we never strand
+    // a half file at the destination.
+    private static async Task MoveFileWithProgressAsync(
+        string src, string dst, FileMoveProgress progress, CancellationToken ct)
+    {
+        if (MovePathHelpers.IsSameVolume(src, dst))
+        {
+            File.Move(src, dst);
+            return;
+        }
+
+        const int bufferSize = 1 << 20; // 1 MiB
+        var buffer = new byte[bufferSize];
+        long copied = 0;
+        try
+        {
+            await using (var input = new FileStream(
+                src, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize, useAsync: true))
+            await using (var output = new FileStream(
+                dst, FileMode.CreateNew, FileAccess.Write, FileShare.None, bufferSize, useAsync: true))
+            {
+                int read;
+                while ((read = await input.ReadAsync(buffer.AsMemory(0, bufferSize), ct)) > 0)
+                {
+                    await output.WriteAsync(buffer.AsMemory(0, read), ct);
+                    copied += read;
+                    progress.Report(copied);
+                }
+                await output.FlushAsync(ct);
+            }
+        }
+        catch
+        {
+            // Drop the partial destination copy before bubbling up.
+            try { if (File.Exists(dst)) File.Delete(dst); } catch { /* best effort */ }
+            throw;
+        }
+
+        progress.SetPhase("finalizing");
+        File.Delete(src);
+    }
+
     // Moves the file at video.FilePath into <setRoot>/<specialFolderName>/<rel>,
     // updates the row, and runs setFlag. Used by mark-for-deletion / mark-playback-issue.
     // Skips file move on clip rows (they share the parent's file).
@@ -1725,6 +1772,144 @@ public static class ApiEndpoints
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("DeleteVideo");
+
+        // POST /api/videos/{id}/move — move the video's file into another
+        // folder under some enabled source (within or across sources).
+        // Logged + reversible via file_move_logs; byte progress is reported
+        // to FileMoveProgress and polled at /videos/{id}/move-progress.
+        // (issue #4)
+        api.MapPost("/videos/{id:guid}/move", async (
+            Guid id, MoveVideoRequest req, VideoOrganizerDbContext db,
+            FileMoveProgress progress, ILogger<Program> logger, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.TargetDirectory))
+                return Results.BadRequest(new { error = "No target folder provided." });
+
+            var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (video.ParentVideoId.HasValue)
+                return Results.BadRequest(new { error = "Clips share their parent's file and can't be moved on their own." });
+
+            var targetDir = Path.GetFullPath(req.TargetDirectory);
+            var sets = await db.VideoSets.Where(s => s.Enabled).ToListAsync(ct);
+            var underSource = sets.Any(s =>
+                targetDir.StartsWith(Path.GetFullPath(s.Path), StringComparison.OrdinalIgnoreCase));
+            if (!underSource)
+                return Results.BadRequest(new { error = "Target folder is not under any enabled source." });
+            if (!Directory.Exists(targetDir))
+                return Results.BadRequest(new { error = "Target folder does not exist." });
+            if (!File.Exists(video.FilePath))
+                return Results.BadRequest(new { error = "The video's file is missing on disk." });
+
+            var fileName = Path.GetFileName(video.FilePath);
+            var desired = Path.Combine(targetDir, fileName);
+            if (string.Equals(Path.GetFullPath(desired), Path.GetFullPath(video.FilePath), StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "The file is already in that folder." });
+
+            var dest = MovePathHelpers.UniqueDestination(desired, File.Exists);
+            var fromPath = video.FilePath;
+            long total = 0;
+            try { total = new FileInfo(fromPath).Length; } catch { /* size best-effort */ }
+
+            progress.Begin(id, total);
+            try
+            {
+                await MoveFileWithProgressAsync(fromPath, dest, progress, ct);
+            }
+            catch (Exception ex)
+            {
+                progress.End();
+                logger.LogError(ex, "Failed to move {Src} to {Dst}", fromPath, dest);
+                return Results.Problem($"Could not move file: {ex.Message}");
+            }
+            progress.End();
+
+            var normalizedDest = PathNormalizer.Normalize(dest);
+            video.FilePath = normalizedDest;
+            db.FileMoveLogs.Add(new FileMoveLog
+            {
+                VideoId = id,
+                FileName = fileName,
+                FromPath = PathNormalizer.Normalize(fromPath),
+                ToPath = normalizedDest,
+                MovedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Moved video {VideoId} ({FileName}) from {From} to {To}",
+                id, fileName, fromPath, dest);
+            return await ReturnFreshDtoAsync(db, id, ct);
+        }).WithName("MoveVideo");
+
+        // GET /api/videos/{id}/move-progress — live byte progress for an
+        // in-flight move/undo of this video; idle when nothing is moving it.
+        api.MapGet("/videos/{id:guid}/move-progress", (Guid id, FileMoveProgress progress) =>
+        {
+            var (active, copied, total, phase, vid) = progress.Snapshot();
+            return active && vid == id
+                ? Results.Ok(new MoveProgressDto(true, copied, total, phase))
+                : Results.Ok(new MoveProgressDto(false, 0, 0, "idle"));
+        }).WithName("GetMoveProgress");
+
+        // GET /api/file-moves — recent moves, newest first, for the Moves
+        // list + Undo. (issue #4)
+        api.MapGet("/file-moves", async (
+            VideoOrganizerDbContext db, int? limit, CancellationToken ct) =>
+        {
+            var take = Math.Clamp(limit ?? 50, 1, 500);
+            var moves = await db.FileMoveLogs.AsNoTracking()
+                .OrderByDescending(m => m.MovedAt)
+                .Take(take)
+                .Select(m => new FileMoveLogDto(
+                    m.Id, m.VideoId, m.FileName, m.FromPath, m.ToPath,
+                    m.MovedAt.ToString("o"),
+                    m.RevertedAt.HasValue ? m.RevertedAt.Value.ToString("o") : null))
+                .ToListAsync(ct);
+            return Results.Ok(moves);
+        }).WithName("ListFileMoves");
+
+        // POST /api/file-moves/{moveId}/revert — undo a move by putting the
+        // file back at its original path and restoring the row. (issue #4)
+        api.MapPost("/file-moves/{moveId:guid}/revert", async (
+            Guid moveId, VideoOrganizerDbContext db, FileMoveProgress progress,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var move = await db.FileMoveLogs.FirstOrDefaultAsync(m => m.Id == moveId, ct);
+            if (move is null) return Results.NotFound();
+            if (move.RevertedAt.HasValue)
+                return Results.BadRequest(new { error = "This move was already undone." });
+
+            var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == move.VideoId, ct);
+            if (video is null)
+                return Results.BadRequest(new { error = "The video no longer exists." });
+            if (!File.Exists(move.ToPath))
+                return Results.BadRequest(new { error = "The moved file is no longer at its destination — can't undo." });
+
+            var fromDir = Path.GetDirectoryName(move.FromPath);
+            if (!string.IsNullOrEmpty(fromDir)) Directory.CreateDirectory(fromDir);
+            var dest = MovePathHelpers.UniqueDestination(move.FromPath, File.Exists);
+
+            long total = 0;
+            try { total = new FileInfo(move.ToPath).Length; } catch { /* best-effort */ }
+            progress.Begin(move.VideoId, total);
+            try
+            {
+                await MoveFileWithProgressAsync(move.ToPath, dest, progress, ct);
+            }
+            catch (Exception ex)
+            {
+                progress.End();
+                logger.LogError(ex, "Failed to undo move {MoveId}", moveId);
+                return Results.Problem($"Could not undo move: {ex.Message}");
+            }
+            progress.End();
+
+            video.FilePath = PathNormalizer.Normalize(dest);
+            move.RevertedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation("Reverted move {MoveId}: {To} -> {From}", moveId, move.ToPath, dest);
+            return await ReturnFreshDtoAsync(db, move.VideoId, ct);
+        }).WithName("RevertFileMove");
 
         // PUT /api/videos/{id}/tags — replace the tag set for a video.
         // Enforces TagGroup.AllowMultiple = false for single-value groups.

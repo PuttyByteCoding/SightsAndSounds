@@ -22,6 +22,8 @@ public sealed class VideoOrganizerDbContext : DbContext
 
     public DbSet<DuplicateCandidate> DuplicateCandidates => Set<DuplicateCandidate>();
 
+    public DbSet<FileMoveLog> FileMoveLogs => Set<FileMoveLog>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(VideoOrganizerDbContext).Assembly);

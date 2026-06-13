@@ -6,6 +6,8 @@ import type {
   DirectoryImportRequest,
   ImportBrowseResponse,
   ImportScanProgress,
+  MoveProgress,
+  FileMoveLog,
   ImportFailedFileRow,
   ImportFileListResponse,
   ImportJobSummary,
@@ -248,6 +250,22 @@ export const api = {
 
   deleteVideo: (id: string) =>
     request<void>(`/api/videos/${id}`, { method: 'DELETE' }),
+
+  // --- File move (issue #4) ----------------------------------------------
+  // Move the video's file into targetDirectory (an absolute folder under
+  // some enabled source). Returns the refreshed Video. Poll moveProgress
+  // during the call for a live bar on big cross-drive moves.
+  moveVideo: (id: string, targetDirectory: string) =>
+    request<Video>(`/api/videos/${id}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ targetDirectory })
+    }),
+  getMoveProgress: (id: string) =>
+    request<MoveProgress>(`/api/videos/${id}/move-progress`),
+  listFileMoves: (limit = 50) =>
+    request<FileMoveLog[]>(`/api/file-moves?limit=${limit}`),
+  revertFileMove: (moveId: string) =>
+    request<Video>(`/api/file-moves/${moveId}/revert`, { method: 'POST' }),
 
   getMarkedForDeletion: () => request<Video[]>('/api/videos/marked-for-deletion'),
   purgeVideo: (id: string) =>
