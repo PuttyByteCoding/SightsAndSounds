@@ -552,9 +552,9 @@
   // Extracted from loadSidebar so the manual refresh button and the
   // post-move refresh can re-pull root-level counts without redoing
   // the whole sidebar load.
-  async function loadFolderRoots() {
+  async function loadFolderRoots(refresh = false) {
     try {
-      const browse = await api.browseImport();
+      const browse = await api.browseImport(null, refresh);
       folderRoots = browse.directories;
       folderRootsAnnotated = true;
     } catch (e: any) {
@@ -585,7 +585,10 @@
     if (folderTreeRefreshing) return;
     folderTreeRefreshing = true;
     try {
-      await loadFolderRoots();
+      // refresh=true so the server re-walks the filesystem rather than
+      // serving cached counts — picks up files moved/added since the last
+      // scan. Remounting (folderTreeSeed) then re-pulls subtrees fresh.
+      await loadFolderRoots(true);
       folderTreeSeed++;
     } finally {
       folderTreeRefreshing = false;

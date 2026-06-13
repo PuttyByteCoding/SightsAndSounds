@@ -180,6 +180,11 @@ builder.Services.AddSingleton<ImportScanProgress>();
 // dialog. (issue #4)
 builder.Services.AddSingleton<FileMoveProgress>();
 
+// Memoizes the per-folder recursive video-file count so the Sources tree
+// doesn't re-walk the filesystem on every /import/browse. Invalidated on
+// file move/undo and by the Sources refresh button. (issue #4)
+builder.Services.AddSingleton<DirectoryScanCache>();
+
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
 // Centralized pause flags for the three workers. Toggled by

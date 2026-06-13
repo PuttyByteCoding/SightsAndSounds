@@ -1780,7 +1780,8 @@ public static class ApiEndpoints
         // (issue #4)
         api.MapPost("/videos/{id:guid}/move", async (
             Guid id, MoveVideoRequest req, VideoOrganizerDbContext db,
-            FileMoveProgress progress, ILogger<Program> logger, CancellationToken ct) =>
+            FileMoveProgress progress, DirectoryScanCache scanCache,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.TargetDirectory))
                 return Results.BadRequest(new { error = "No target folder provided." });
@@ -1835,6 +1836,9 @@ public static class ApiEndpoints
                 MovedAt = DateTime.UtcNow
             });
             await db.SaveChangesAsync(ct);
+            // The file's folder changed on disk → recursive counts for the
+            // source/destination trees are now stale. (issue #4)
+            scanCache.Clear();
             logger.LogInformation(
                 "Moved video {VideoId} ({FileName}) from {From} to {To}",
                 id, fileName, fromPath, dest);
@@ -1872,7 +1876,7 @@ public static class ApiEndpoints
         // file back at its original path and restoring the row. (issue #4)
         api.MapPost("/file-moves/{moveId:guid}/revert", async (
             Guid moveId, VideoOrganizerDbContext db, FileMoveProgress progress,
-            ILogger<Program> logger, CancellationToken ct) =>
+            DirectoryScanCache scanCache, ILogger<Program> logger, CancellationToken ct) =>
         {
             var move = await db.FileMoveLogs.FirstOrDefaultAsync(m => m.Id == moveId, ct);
             if (move is null) return Results.NotFound();
@@ -1907,6 +1911,8 @@ public static class ApiEndpoints
             video.FilePath = PathNormalizer.Normalize(dest);
             move.RevertedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
+            // File moved back on disk → stale recursive counts. (issue #4)
+            scanCache.Clear();
             logger.LogInformation("Reverted move {MoveId}: {To} -> {From}", moveId, move.ToPath, dest);
             return await ReturnFreshDtoAsync(db, move.VideoId, ct);
         }).WithName("RevertFileMove");
@@ -3565,12 +3571,35 @@ public static class ApiEndpoints
 
         import.MapGet("/browse", async (
             VideoOrganizerDbContext db, string? path, ImportScanProgress progress,
+            DirectoryScanCache scanCache, bool? refresh,
             ILogger<Program> logger, CancellationToken ct) =>
         {
             // The recursive video-file count below feeds a shared progress
             // counter so the Import page can poll GET /import/scan-progress
             // for a live "discovered N" total while a source loads. (issue #27)
             progress.Begin();
+            // ?refresh=true (the Sources refresh button) drops the scan cache
+            // so every folder is re-walked fresh — picks up changes made
+            // outside the app. Normal loads reuse cached counts. (issue #4)
+            if (refresh == true) scanCache.Clear();
+
+            // Recursive on-disk video count, memoized per folder. The walk
+            // (CountVideoFilesRecursive) is the slow part of annotating the
+            // tree; a hit skips it but still credits the discovered total so
+            // the live count stays meaningful.
+            int CachedVideoCount(string p)
+            {
+                var key = PathNormalizer.Normalize(p);
+                if (scanCache.TryGet(key, out var hit))
+                {
+                    progress.Add(hit);
+                    return hit;
+                }
+                var n = CountVideoFilesRecursive(p, progress);
+                scanCache.Set(key, n);
+                return n;
+            }
+
             try
             {
                 // Include disabled sources too so the browse-page
@@ -3601,7 +3630,7 @@ public static class ApiEndpoints
                             p.StartsWith(normalizedDir, StringComparison.OrdinalIgnoreCase));
                         return new ImportBrowseDirectory(
                             Name: d.name, FullPath: d.fullPath, HasSubdirectories: d.hasSubs,
-                            VideoCount: CountVideoFilesRecursive(d.fullPath, progress),
+                            VideoCount: CachedVideoCount(d.fullPath),
                             ImportedCount: importedCount);
                     }).ToList();
                 }
@@ -3626,7 +3655,7 @@ public static class ApiEndpoints
                                 .CountAsync(v => v.FilePath.StartsWith(normalizedSet), ct);
                             annotated.Add(new ImportBrowseDirectory(
                                 Name: s.Name, FullPath: full, HasSubdirectories: hasSubs,
-                                VideoCount: CountVideoFilesRecursive(full, progress),
+                                VideoCount: CachedVideoCount(full),
                                 ImportedCount: importedCount));
                         }
                         catch (Exception ex)
