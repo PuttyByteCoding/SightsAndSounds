@@ -391,7 +391,13 @@
   let showPasteDialog = $state(false);
   let pasteText = $state('');
   let pasteSaving = $state(false);
-  let pasteResult = $state<{ created: number; failed: { name: string; error: string }[] } | null>(null);
+  let pasteResult = $state<{
+    created: number;
+    skipped: number;
+    failed: { name: string; error: string }[];
+  } | null>(null);
+  // Determinate progress across the chunked bulk-create requests (issue #49).
+  let pasteProgress = $state<{ done: number; total: number } | null>(null);
   // When set, every tag created from this paste is marked as a
   // favorite up-front. Useful when seeding a list of "important"
   // performers / tags that should already appear in the Favorites
@@ -427,28 +433,46 @@
     showPasteDialog = true;
   }
 
+  // Send the deduped names to the bulk endpoint in chunks (issue #49).
+  // One request per chunk — vs one per name before — and the chunking lets
+  // a multi-thousand paste show a determinate progress bar instead of hanging
+  // on a single opaque request.
+  const PASTE_CHUNK = 250;
+
   async function commitPaste() {
     if (!selectedGroup || pasteNewNames.length === 0) return;
+    const names = pasteNewNames;
+    const total = names.length;
     pasteSaving = true;
     pasteResult = null;
+    pasteProgress = { done: 0, total };
     const failed: { name: string; error: string }[] = [];
     let created = 0;
-    for (const name of pasteNewNames) {
-      try {
-        await api.createTag({
-          tagGroupId: selectedGroup.id,
-          name,
-          aliases: [],
-          isFavorite: pasteAsFavorites,
-          notes: ''
-        });
-        created++;
-      } catch (e: any) {
-        failed.push({ name, error: e?.message ?? 'Unknown error' });
+    let skipped = 0;
+    try {
+      for (let i = 0; i < total; i += PASTE_CHUNK) {
+        const batch = names.slice(i, i + PASTE_CHUNK);
+        try {
+          const res = await api.bulkCreateTags({
+            tagGroupId: selectedGroup.id,
+            names: batch,
+            isFavorite: pasteAsFavorites
+          });
+          created += res.created;
+          skipped += res.skipped;
+        } catch (e: any) {
+          failed.push({
+            name: `Batch of ${batch.length} (from #${i + 1})`,
+            error: e?.message ?? 'Unknown error'
+          });
+        }
+        pasteProgress = { done: Math.min(i + PASTE_CHUNK, total), total };
       }
+    } finally {
+      pasteSaving = false;
+      pasteProgress = null;
     }
-    pasteSaving = false;
-    pasteResult = { created, failed };
+    pasteResult = { created, skipped, failed };
     if (selectedGroup) await selectGroup(selectedGroup);
     if (failed.length === 0) {
       // Auto-close on full success after a brief delay so the user sees the count.
@@ -914,10 +938,30 @@
         </span>
       </label>
 
+      {#if pasteSaving && pasteProgress}
+        <div class="space-y-1">
+          <progress
+            class="progress progress-primary w-full"
+            value={pasteProgress.done}
+            max={pasteProgress.total}
+          ></progress>
+          <div class="text-xs text-base-content/60 tabular-nums text-center">
+            Creating… {pasteProgress.done} / {pasteProgress.total}
+          </div>
+        </div>
+      {/if}
+
       {#if pasteResult}
         <div class="alert {pasteResult.failed.length === 0 ? 'alert-success' : 'alert-warning'} text-sm">
           <div class="space-y-1 w-full">
-            <div>Created {pasteResult.created} tag{pasteResult.created === 1 ? '' : 's'}.</div>
+            <div>
+              Created {pasteResult.created} tag{pasteResult.created === 1 ? '' : 's'}.
+              {#if pasteResult.skipped > 0}
+                <span class="text-base-content/70">
+                  · {pasteResult.skipped} skipped (already existed).
+                </span>
+              {/if}
+            </div>
             {#if pasteResult.failed.length > 0}
               <ul class="list-disc ml-5">
                 {#each pasteResult.failed as f, i (i)}
