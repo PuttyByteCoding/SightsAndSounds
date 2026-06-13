@@ -110,6 +110,18 @@ export interface MergeTagsRequest {
   targetId: string;
 }
 
+// Create many tags in one request (issue #49). Skipped counts names that
+// already exist in the group or repeat within the batch.
+export interface BulkCreateTagsRequest {
+  tagGroupId: string;
+  names: string[];
+  isFavorite?: boolean;
+}
+export interface BulkCreateTagsResponse {
+  created: number;
+  skipped: number;
+}
+
 export interface TagSearchHit {
   tagId: string;
   tagGroupId: string;

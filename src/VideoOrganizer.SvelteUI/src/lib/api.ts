@@ -1,4 +1,6 @@
 import type {
+  BulkCreateTagsRequest,
+  BulkCreateTagsResponse,
   CreateClipRequest,
   CreatePropertyDefinitionRequest,
   CreateTagGroupRequest,
@@ -339,6 +341,13 @@ export const api = {
   getTag: (id: string) => request<Tag>(`/api/tags/${id}`),
   createTag: (req: CreateTagRequest) =>
     request<Tag>('/api/tags', { method: 'POST', body: JSON.stringify(req) }),
+  // Create many tags in one request (issue #49) — used by the Tag
+  // Management paste box instead of one POST per name.
+  bulkCreateTags: (req: BulkCreateTagsRequest) =>
+    request<BulkCreateTagsResponse>('/api/tags/bulk', {
+      method: 'POST',
+      body: JSON.stringify(req)
+    }),
   updateTag: (id: string, req: UpdateTagRequest) =>
     request<void>(`/api/tags/${id}`, { method: 'PUT', body: JSON.stringify(req) }),
   deleteTag: (id: string) =>
