@@ -437,11 +437,14 @@ export const api = {
   },
   getRuntimeInfo: () => request<RuntimeInfo>('/api/runtime-info'),
 
-  browseImport: (path?: string | null) => {
-    const url = path && path.trim().length > 0
-      ? `/api/import/browse?path=${enc(path)}`
-      : '/api/import/browse';
-    return request<ImportBrowseResponse>(url);
+  // refresh=true bypasses the server's per-folder scan cache and re-walks
+  // the filesystem — backs the Sources refresh button. (issue #4)
+  browseImport: (path?: string | null, refresh = false) => {
+    const params = new URLSearchParams();
+    if (path && path.trim().length > 0) params.set('path', path);
+    if (refresh) params.set('refresh', 'true');
+    const qs = params.toString();
+    return request<ImportBrowseResponse>(`/api/import/browse${qs ? `?${qs}` : ''}`);
   },
   // Live count of video files discovered by an in-flight browse scan.
   // Polled by the Import page while a source loads. (issue #27)

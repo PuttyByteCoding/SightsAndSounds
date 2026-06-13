@@ -43,6 +43,11 @@ public sealed class ImportScanProgress
     // than taking the lock.
     public void Increment() => Interlocked.Increment(ref _discovered);
 
+    // Bulk bump for a folder whose recursive count was served from the
+    // scan cache (issue #4): the walk is skipped, but the discovered total
+    // should still reflect those files so the count stays meaningful.
+    public void Add(int n) => Interlocked.Add(ref _discovered, n);
+
     public (bool Scanning, int Discovered) Snapshot()
     {
         lock (_lock)
