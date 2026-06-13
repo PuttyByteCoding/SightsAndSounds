@@ -27,7 +27,6 @@
   import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { planFilteredQueue } from '$lib/browseQueue';
-  import { stripStickyLeft } from '$lib/browseStrip';
   import { pillClass, filterSlot, filterSlotClass } from '$lib/tagColors';
 
   let videos = $state<Video[]>([]);
@@ -147,15 +146,6 @@
     viewMode = m;
     if (typeof localStorage !== 'undefined') localStorage.setItem('browseViewMode', m);
   }
-  // Gap between strip cells, in px — mirrors the `gap-3` (0.75rem) Tailwind
-  // class on the strip so the sticky-pin offset math lines up exactly.
-  const STRIP_GAP = 12;
-  // 0-based index of the playing video within the current queue (−1 when
-  // nothing is playing or it fell out of the list). Drives the strip's
-  // rolling "previous 2 pinned" window.
-  const playingIdx0 = $derived(
-    playingVideo ? videos.findIndex((v) => v.id === playingVideo!.id) : -1
-  );
 
   // --- Section-level collapse ------------------------------------------
   // Each tree-style section in the sidebar (Flags, Favorite Tags,
@@ -1949,26 +1939,22 @@
       </div>
 
       {#if viewMode === 'player'}
-        <!-- Single-row thumbnail strip (issue #23). One horizontal row
-             of the queue scrolling left↔right under the player. The two
-             videos immediately before the current one pin to the left
-             edge (position: sticky) so the user can always step back as
-             the strip scrolls forward — a rolling window via
-             stripStickyLeft. Each cell is a fixed thumbWidth so the
-             pin offsets line up; VideoCard's own active-card
-             scrollIntoView keeps the current thumbnail in view. -->
-        <div class="flex gap-3 overflow-x-auto pb-2 isolate">
-          {#each visibleVideos as v, i (v.id)}
-            {@const left = stripStickyLeft(playingIdx0, i, thumbWidth, STRIP_GAP)}
-            <div
-              class="shrink-0"
-              class:sticky={left !== null}
-              class:z-20={left !== null}
-              class:rounded={left !== null}
-              class:bg-base-100={left !== null}
-              style="width: {thumbWidth}px;{left !== null ? ` left: ${left}px;` : ''}"
-            >
-              <VideoCard video={v} onopen={open} onmove={openMoveDialog} active={playingVideo?.id === v.id} />
+        <!-- Player-mode thumbnail strip (issues #23, #37). One horizontal
+             row of the whole queue; the currently-playing thumbnail is
+             kept CENTERED, with the earlier videos to its left and the
+             upcoming ones to its right. VideoCard centers itself when
+             active (centerOnActive) — near the ends the browser clamps the
+             scroll so it sits as close to center as the queue allows. -->
+        <div class="flex gap-3 overflow-x-auto pb-2">
+          {#each visibleVideos as v (v.id)}
+            <div class="shrink-0" style="width: {thumbWidth}px;">
+              <VideoCard
+                video={v}
+                onopen={open}
+                onmove={openMoveDialog}
+                active={playingVideo?.id === v.id}
+                centerOnActive
+              />
             </div>
           {/each}
           <!-- Horizontal sentinel: the IntersectionObserver loads the
