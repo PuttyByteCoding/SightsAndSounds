@@ -57,6 +57,14 @@
       ? folderRoots.filter(r => r.importedCount > 0)
       : folderRoots
   );
+  // Bumped to force the folder tree to remount. FolderTreeNode caches
+  // its children on first expand, so a stale subtree (e.g. after a
+  // move drops a file into a folder) only refreshes when the nodes
+  // are torn down and rebuilt — a {#key folderTreeSeed} block does
+  // exactly that. Also re-fetches the annotated roots so a folder
+  // that just became non-empty appears in the (imports-only) tree.
+  let folderTreeSeed = $state(0);
+  let folderTreeRefreshing = $state(false);
 
   let playingVideo = $state<Video | null>(null);
   let showEditTagsPanel = $state(false);
@@ -534,28 +542,53 @@
       // real `hasSubdirectories` flag rather than an always-on
       // chevron). Failures here are non-fatal — the user can still
       // browse the tree, just without count badges on the roots.
-      try {
-        const browse = await api.browseImport();
-        folderRoots = browse.directories;
-        folderRootsAnnotated = true;
-      } catch (e: any) {
-        // Stub out roots from `sets` so the tree still renders.
-        // videoCount=0 suppresses the badge; chevron defaults true
-        // to preserve the affordance — the per-folder browseImport
-        // call on expand will surface real children if any exist.
-        // folderRootsAnnotated stays false so the imports-only
-        // filter doesn't accidentally hide every root.
-        folderRoots = sets.map(s => ({
-          name: s.name,
-          fullPath: s.path,
-          hasSubdirectories: true,
-          videoCount: 0,
-          importedCount: 0
-        }));
-        folderRootsAnnotated = false;
-      }
+      await loadFolderRoots();
     } catch (e: any) {
       loadError = e?.message ?? 'Failed to load sidebar';
+    }
+  }
+
+  // Fetch the annotated source roots that seed the Folders tree.
+  // Extracted from loadSidebar so the manual refresh button and the
+  // post-move refresh can re-pull root-level counts without redoing
+  // the whole sidebar load.
+  async function loadFolderRoots() {
+    try {
+      const browse = await api.browseImport();
+      folderRoots = browse.directories;
+      folderRootsAnnotated = true;
+    } catch (e: any) {
+      // Stub out roots from `sets` so the tree still renders.
+      // videoCount=0 suppresses the badge; chevron defaults true
+      // to preserve the affordance — the per-folder browseImport
+      // call on expand will surface real children if any exist.
+      // folderRootsAnnotated stays false so the imports-only
+      // filter doesn't accidentally hide every root.
+      folderRoots = sets.map(s => ({
+        name: s.name,
+        fullPath: s.path,
+        hasSubdirectories: true,
+        videoCount: 0,
+        importedCount: 0
+      }));
+      folderRootsAnnotated = false;
+    }
+  }
+
+  // Re-pull root counts and remount the tree so stale subtree caches
+  // (FolderTreeNode.children) are discarded. Backs both the Sources
+  // refresh button and the automatic refresh after a file move — the
+  // moved file's destination folder only becomes navigable once its
+  // ancestors' cached children are rebuilt. Remounting collapses the
+  // tree; that's the accepted cost of a guaranteed-fresh view.
+  async function refreshFolderTree() {
+    if (folderTreeRefreshing) return;
+    folderTreeRefreshing = true;
+    try {
+      await loadFolderRoots();
+      folderTreeSeed++;
+    } finally {
+      folderTreeRefreshing = false;
     }
   }
 
@@ -952,6 +985,10 @@
   function onFileMoved(updated: Video) {
     patchVideoInGrid(updated);
     if (playingVideo?.id === updated.id) playingVideo = updated;
+    // Refresh the Folders tree so the destination folder shows up
+    // (and its counts update) — without this the moved file is in the
+    // DB but unreachable via the filter tree until a full reload.
+    void refreshFolderTree();
   }
 
   // --- Duplicate hunt ----------------------------------------------------
@@ -1493,21 +1530,39 @@
 
       {#if visibleFolderRoots.length > 0}
         <div>
-          <button
-            type="button"
-            class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
-            onclick={() => toggleSection('folders')}
-            aria-expanded={!sectionCollapsed.folders}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              class="h-3 w-3 fill-current transition-transform {sectionCollapsed.folders ? '' : 'rotate-90'}"
+          <div class="flex items-center gap-1 mb-1">
+            <button
+              type="button"
+              class="flex items-center gap-1 flex-1 min-w-0 text-left hover:bg-base-200 rounded px-1 py-0.5"
+              onclick={() => toggleSection('folders')}
+              aria-expanded={!sectionCollapsed.folders}
             >
-              <path d="M9 6l6 6-6 6V6z" />
-            </svg>
-            <h3 class="font-semibold text-sm">Sources</h3>
-          </button>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                class="h-3 w-3 fill-current transition-transform {sectionCollapsed.folders ? '' : 'rotate-90'}"
+              >
+                <path d="M9 6l6 6-6 6V6z" />
+              </svg>
+              <h3 class="font-semibold text-sm">Sources</h3>
+            </button>
+            <button
+              type="button"
+              class="shrink-0 w-6 h-6 flex items-center justify-center rounded text-base-content/60 hover:text-base-content hover:bg-base-200 disabled:opacity-40"
+              onclick={refreshFolderTree}
+              disabled={folderTreeRefreshing}
+              aria-label="Refresh folder tree"
+              title="Refresh folder tree"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                class="h-3.5 w-3.5 fill-current {folderTreeRefreshing ? 'animate-spin' : ''}"
+              >
+                <path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.74 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
+              </svg>
+            </button>
+          </div>
           {#if !sectionCollapsed.folders}
           <!-- Tree view that mirrors the on-disk layout under each
                configured source root. Chevron expands a node, lazy-
@@ -1520,20 +1575,22 @@
                folders containing at least one imported video appear
                — the rest (and their subtrees) are pruned out. -->
           <div class="bg-base-100 rounded-box p-1">
-            {#each visibleFolderRoots as root (root.fullPath)}
-              {@const matchingSet = sets.find(s => s.path === root.fullPath || s.name === root.name)}
-              <FolderTreeNode
-                name={root.name}
-                fullPath={root.fullPath}
-                hasSubdirectories={root.hasSubdirectories}
-                depth={0}
-                videoCount={root.videoCount}
-                importedCount={root.importedCount}
-                enabled={matchingSet ? matchingSet.enabled : true}
-                onPickFolder={(path, label) =>
-                  filterStore.requestAdd({ type: 'folder', value: path, label })}
-              />
-            {/each}
+            {#key folderTreeSeed}
+              {#each visibleFolderRoots as root (root.fullPath)}
+                {@const matchingSet = sets.find(s => s.path === root.fullPath || s.name === root.name)}
+                <FolderTreeNode
+                  name={root.name}
+                  fullPath={root.fullPath}
+                  hasSubdirectories={root.hasSubdirectories}
+                  depth={0}
+                  videoCount={root.videoCount}
+                  importedCount={root.importedCount}
+                  enabled={matchingSet ? matchingSet.enabled : true}
+                  onPickFolder={(path, label) =>
+                    filterStore.requestAdd({ type: 'folder', value: path, label })}
+                />
+              {/each}
+            {/key}
           </div>
           {/if}
         </div>
