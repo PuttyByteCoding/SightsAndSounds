@@ -935,11 +935,20 @@
     if (!video || !videoEl) return;
     if (pendingBlockStart === null) return;
     const t = videoEl.currentTime;
-    const start = Math.min(pendingBlockStart, t);
-    const end = Math.max(pendingBlockStart, t);
-    const length = end - start;
+    const start = pendingBlockStart;
     pendingBlockStart = null;
-    if (length < 0.25) return;
+    addHideBlock(start, t);
+  }
+
+  // Add a Hide block covering [a,b] (seconds, either order). Drops accidental
+  // micro-blocks, rounds to the int seconds the server stores (floor/ceil so
+  // the block still fully covers the selection), and merges with overlapping
+  // or adjacent Hide blocks. Shared by endBlock and the ]]/[[ shortcuts.
+  function addHideBlock(a: number, b: number) {
+    if (!video) return;
+    const start = Math.max(0, Math.min(a, b));
+    const end = Math.max(a, b);
+    if (end - start < 0.25) return;
     const offsetInt = Math.floor(start);
     const lengthInt = Math.max(1, Math.ceil(end) - offsetInt);
     const next: Block = {
@@ -948,6 +957,19 @@
       videoBlockType: 'hide'
     };
     video.videoBlocks = mergeHideBlocks([...video.videoBlocks, next]);
+  }
+
+  // ]] (double-tap ]) — Hide block from the start to the current position.
+  // [[ (double-tap [) — Hide block from the current position to the end.
+  // Quick "trim the head / tail" without the two-step {…} flow. (issue #44)
+  function blockFromStart() {
+    if (!video || !videoEl) return;
+    addHideBlock(0, videoEl.currentTime);
+  }
+  function blockToEnd() {
+    if (!video || !videoEl) return;
+    const end = Number.isFinite(videoEl.duration) ? videoEl.duration : videoDuration;
+    addHideBlock(videoEl.currentTime, end);
   }
 
   // Collapse overlapping or touching Hide blocks into the smallest set
@@ -1824,6 +1846,40 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
   }
 
+  // `[` / `]` single-tap zoom, double-tap mark a block (issue #44). To tell
+  // them apart we defer the zoom by one double-tap window: a second tap of the
+  // same bracket within the window cancels the pending zoom and marks the block
+  // instead. Key auto-repeat (held key) zooms immediately and never counts as a
+  // double-tap.
+  let bracketTap: { key: '[' | ']'; timer: ReturnType<typeof setTimeout> } | null = null;
+  const BRACKET_DBL_MS = 280;
+
+  function zoomForBracket(key: '[' | ']') {
+    if (key === ']') zoomIn();
+    else zoomOut();
+  }
+
+  function handleBracketTap(key: '[' | ']', repeat: boolean) {
+    if (repeat) {
+      if (bracketTap?.key === key) { clearTimeout(bracketTap.timer); bracketTap = null; }
+      zoomForBracket(key);
+      return;
+    }
+    if (bracketTap?.key === key) {
+      clearTimeout(bracketTap.timer);
+      bracketTap = null;
+      if (key === ']') blockFromStart();
+      else blockToEnd();
+      return;
+    }
+    if (bracketTap) { clearTimeout(bracketTap.timer); bracketTap = null; }
+    const timer = setTimeout(() => {
+      bracketTap = null;
+      zoomForBracket(key);
+    }, BRACKET_DBL_MS);
+    bracketTap = { key, timer };
+  }
+
   async function onWindowKeyDown(e: KeyboardEvent) {
     if (!shortcutsEnabled || !video) return;
     // The key-bindings modal owns the keyboard while open (its own
@@ -2076,8 +2132,8 @@
     if (e.key === '}' && e.ctrlKey) { e.preventDefault(); await endClip(); return; }
     if (e.key === '{') { e.preventDefault(); startBlock(); return; }
     if (e.key === '}') { e.preventDefault(); endBlock(); return; }
-    if (e.key === '[') { e.preventDefault(); zoomOut(); return; }
-    if (e.key === ']') { e.preventDefault(); zoomIn(); return; }
+    if (e.key === '[') { e.preventDefault(); handleBracketTap('[', e.repeat); return; }
+    if (e.key === ']') { e.preventDefault(); handleBracketTap(']', e.repeat); return; }
     if (e.key === '\\') { e.preventDefault(); fitSize(); return; }
     switch (e.key) {
       case '1': e.preventDefault(); seekBy(-playbackSettings.key1Seconds); break;
