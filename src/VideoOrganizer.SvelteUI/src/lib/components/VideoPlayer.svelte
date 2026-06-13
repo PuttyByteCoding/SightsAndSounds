@@ -10,7 +10,9 @@
   // composes those around this component as needed.
 
   import { tick, onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { api } from '$lib/api';
+  import { loadProgressFraction } from '$lib/videoLoadProgress';
   import type { Tag, Video, FfprobeResult, ClipSummary } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
@@ -350,11 +352,37 @@
   // it on so the spinner appears immediately when the user navigates
   // — without waiting for the browser to fire loadstart.
   let videoLoading = $state(true);
+  // True once the current video has decoded enough to show. Drives the
+  // fade-in of the <video>; reset to false on each new video (in the
+  // re-init effect) so we crossfade through the loading card instead of
+  // flashing the previous clip's last frame. A mid-play rebuffer
+  // (`waiting`) keeps it true so the picture stays put. (issue #26)
+  let videoReady = $state(false);
+  // 0..1 fraction of the file buffered, or null = indeterminate (before
+  // loadedmetadata gives us a duration). Feeds the loading bar.
+  let loadProgress = $state<number | null>(null);
+  // Delayed + faded visibility for the loading card: only shown once a
+  // load has taken a beat (see the effect below) so quick next/prev
+  // navigations never flash a bar.
+  let showLoadingCard = $state(false);
+
   function onVideoLoadStart() { videoLoading = true; }
   function onVideoWaiting()   { videoLoading = true; }
-  function onVideoCanPlay()   { videoLoading = false; }
-  function onVideoPlaying()   { videoLoading = false; }
-  function onVideoLoadedData(){ videoLoading = false; }
+  function onVideoCanPlay()   { videoLoading = false; videoReady = true; }
+  function onVideoPlaying()   { videoLoading = false; videoReady = true; }
+  function onVideoLoadedData(){ videoLoading = false; videoReady = true; }
+
+  // End of the furthest buffered range, in seconds (0 when nothing is
+  // buffered yet). Paired with duration to compute the load fraction.
+  function bufferedEndSeconds(): number {
+    if (!videoEl) return 0;
+    const b = videoEl.buffered;
+    return b.length > 0 ? b.end(b.length - 1) : 0;
+  }
+  function onVideoProgress() {
+    if (!videoEl) return;
+    loadProgress = loadProgressFraction(bufferedEndSeconds(), videoEl.duration);
+  }
 
   // Whichever video ID we've most recently initialized state for. Used to
   // avoid re-running the reset effect on every unrelated field mutation
@@ -487,6 +515,19 @@
 
   // --- Effects --------------------------------------------------------------
 
+  // Show the loading card only after a short delay, so a quick load
+  // never flashes a bar; the {#if showLoadingCard} block then fades it
+  // in/out. Clearing the timer when loading ends early is what keeps
+  // fast next/prev navigations clean. (issue #26)
+  $effect(() => {
+    if (!videoLoading) {
+      showLoadingCard = false;
+      return;
+    }
+    const t = setTimeout(() => { showLoadingCard = true; }, 180);
+    return () => clearTimeout(t);
+  });
+
   // Re-init whenever the host swaps in a different video. Fires on every
   // assignment, but the id check skips reset when it's the same row just
   // being mutated.
@@ -494,6 +535,9 @@
     if (!video) {
       initializedForId = null;
       loadedVideoSnapshot = null;
+      videoReady = false;
+      loadProgress = null;
+      showLoadingCard = false;
       scrubFrames = [];
       scrubSpriteSize = { w: 0, h: 0 };
       videoProgress = 0;
@@ -512,11 +556,14 @@
     }
     if (video.id === initializedForId) return;
     initializedForId = video.id;
-    // New video → spinner on until the browser tells us it's ready
+    // New video → loading on until the browser tells us it's ready
     // to play (canplay/playing/loadeddata). Set up-front instead of
     // relying on `loadstart` to avoid a frame of leftover "ready"
-    // state from the previous video.
+    // state from the previous video. videoReady false + loadProgress
+    // null so the new clip fades in from the loading card. (issue #26)
     videoLoading = true;
+    videoReady = false;
+    loadProgress = null;
     loadedVideoSnapshot = JSON.stringify(video);
     loadScrubberFrames(video.id);
     loadParentClips(video);
@@ -722,6 +769,9 @@
   function onVideoLoadedMetadata() {
     if (!videoEl) return;
     videoDuration = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
+    // Duration is now known → the loading bar can switch from
+    // indeterminate to a real percentage. (issue #26)
+    loadProgress = loadProgressFraction(bufferedEndSeconds(), videoEl.duration);
     // Capture the intrinsic dimensions. Width drives zoom / actual-size;
     // height pairs with width to derive aspect ratio so the scrubber can
     // shrink to the actual content rect when the box is letterboxed.
@@ -2014,7 +2064,8 @@
       autoplay
       muted
       loop
-      class="bg-black rounded cursor-pointer block"
+      class="bg-black rounded cursor-pointer block transition-opacity duration-200 motion-reduce:transition-none"
+      class:opacity-0={!videoReady}
       style={[
         // Width drives the size in every mode — we never set max-height
         // here because that's what produced the black pillarbox bars.
@@ -2056,21 +2107,33 @@
       oncanplay={onVideoCanPlay}
       onplaying={onVideoPlaying}
       onwaiting={onVideoWaiting}
+      onprogress={onVideoProgress}
       onclick={togglePlayPause}
     >
       <source src={videoUrl} type="video/mp4" />
       <track kind="captions" />
       Your browser does not support the video tag.
     </video>
-    <!-- Centered loading spinner. Sits in front of the video while
-         the browser is fetching/buffering. Semi-opaque puck behind
-         the spinner so it stays legible against bright video frames
-         and pure-black <video> backgrounds alike. pointer-events:none
-         so click-to-play still goes through. -->
-    {#if videoLoading}
-      <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div class="bg-black/50 rounded-full p-3 backdrop-blur-sm">
-          <span class="loading loading-spinner loading-lg text-white"></span>
+    <!-- Loading card — real buffered-progress bar (issue #26). Delayed
+         + faded (see showLoadingCard) so quick loads don't flash it.
+         Indeterminate while we await metadata, then a determinate
+         "Buffering NN%" once a duration is known. Semi-opaque puck so
+         it stays legible over bright frames and the black <video> bg
+         alike; pointer-events:none so click-to-play still goes through. -->
+    {#if showLoadingCard}
+      <div
+        transition:fade={{ duration: 180 }}
+        class="absolute inset-0 flex items-center justify-center pointer-events-none"
+      >
+        <div class="bg-black/60 rounded-lg px-4 py-3 backdrop-blur-sm flex flex-col items-center gap-2 w-48 max-w-[80%]">
+          <span class="text-white text-xs font-medium">
+            {loadProgress === null ? 'Retrieving video…' : `Buffering ${Math.round(loadProgress * 100)}%`}
+          </span>
+          {#if loadProgress === null}
+            <progress class="progress progress-primary w-full"></progress>
+          {:else}
+            <progress class="progress progress-primary w-full" value={loadProgress * 100} max="100"></progress>
+          {/if}
         </div>
       </div>
     {/if}
