@@ -13,7 +13,7 @@
   import { fade } from 'svelte/transition';
   import { api } from '$lib/api';
   import { loadProgressFraction } from '$lib/videoLoadProgress';
-  import type { Tag, Video, FfprobeResult, ClipSummary } from '$lib/types';
+  import type { Tag, Video, FfprobeResult, ClipSummary, TagSuggestion } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { tagFlash } from '$lib/tagFlash.svelte';
@@ -110,6 +110,85 @@
   // --- Tag edit modal ----------------------------------------------------
   let editTagModalShow = $state(false);
   let editingTag = $state<Tag | null>(null);
+
+  // --- Tag suggestions (issue #10) ---------------------------------------
+  // On-demand: the "Suggest tags" button asks the server which existing tags
+  // match this video's file name / folder path, and offers them as add-chips.
+  let tagSuggestions = $state<TagSuggestion[]>([]);
+  let suggestOpen = $state(false);
+  let suggestLoading = $state(false);
+  let suggestError = $state<string | null>(null);
+  // The video the loaded suggestions belong to — used to close the panel on
+  // navigation without reacting to same-video reassignments (a tag add
+  // reassigns `video` but keeps the id).
+  let suggestPanelVideoId = $state<string | null>(null);
+
+  $effect(() => {
+    const vid = video?.id ?? null;
+    if (vid !== suggestPanelVideoId) {
+      suggestPanelVideoId = vid;
+      suggestOpen = false;
+      tagSuggestions = [];
+      suggestError = null;
+    }
+  });
+
+  async function toggleSuggestions() {
+    suggestOpen = !suggestOpen;
+    if (suggestOpen) await loadSuggestions();
+  }
+
+  async function loadSuggestions() {
+    if (!video) return;
+    const vid = video.id;
+    suggestLoading = true;
+    suggestError = null;
+    try {
+      const res = await api.getTagSuggestions(vid);
+      if (video?.id !== vid) return;
+      tagSuggestions = res;
+    } catch (e) {
+      suggestError = e instanceof Error ? e.message : String(e);
+    } finally {
+      suggestLoading = false;
+    }
+  }
+
+  // Apply one suggested tag — same optimistic-add + rollback shape as
+  // toggleBoundTag, and drops the chip from the suggestion row on success.
+  async function addSuggestion(s: TagSuggestion) {
+    if (!video || video.tags.some(t => t.id === s.tagId)) return;
+    const vid = video.id;
+    const previousTags = video.tags;
+    const previousNeedsReview = video.needsReview;
+    const optimisticTags = [
+      ...video.tags,
+      { id: s.tagId, tagGroupId: s.tagGroupId, tagGroupName: s.tagGroupName, name: s.name }
+    ];
+    const shouldClearReview = previousNeedsReview;
+    video = {
+      ...video,
+      tags: optimisticTags,
+      needsReview: shouldClearReview ? false : video.needsReview
+    };
+    tagSuggestions = tagSuggestions.filter(x => x.tagId !== s.tagId);
+    tagFlash.show(s.name);
+    try {
+      await api.setVideoTags(vid, { tagIds: optimisticTags.map(t => t.id) });
+      if (shouldClearReview) await api.markReviewed(vid);
+      const fresh = await api.getVideo(vid);
+      if (fresh && video?.id === vid) {
+        video = fresh;
+        loadedVideoSnapshot = JSON.stringify(fresh);
+        if (shouldClearReview) await onVideoChanged?.(fresh);
+      }
+    } catch (e) {
+      if (video?.id === vid) {
+        video = { ...video, tags: previousTags, needsReview: previousNeedsReview };
+      }
+      errorMessage = `Failed to add '${s.name}': ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
 
   async function openEditTagModal(tagId: string) {
     try {
@@ -2764,6 +2843,57 @@
         {/if}
       </div>
     {/if}
+
+    <!-- Tag suggestions from the file name / folder path (issue #10).
+         On-demand: the button asks the server which existing tags match,
+         and each result is an add-chip. -->
+    <div class="mt-1">
+      <button
+        type="button"
+        class="btn btn-xs btn-ghost gap-1"
+        onclick={toggleSuggestions}
+        title="Suggest existing tags found in this video's file name and folder path"
+      >
+        <span aria-hidden="true">🏷</span>
+        {suggestOpen ? 'Hide suggestions' : 'Suggest tags'}
+        {#if suggestOpen && !suggestLoading && tagSuggestions.length > 0}
+          <span class="badge badge-xs badge-primary">{tagSuggestions.length}</span>
+        {/if}
+      </button>
+
+      {#if suggestOpen}
+        <div class="mt-1">
+          {#if suggestLoading}
+            <div class="text-xs text-base-content/60">
+              <span class="loading loading-spinner loading-xs"></span> Scanning name &amp; folders…
+            </div>
+          {:else if suggestError}
+            <div class="text-xs text-error">{suggestError}</div>
+          {:else if tagSuggestions.length === 0}
+            <div class="text-xs text-base-content/50 italic">
+              No tag matches found in the file name or folder path.
+            </div>
+          {:else}
+            <div class="flex flex-wrap gap-1">
+              {#each tagSuggestions as s (s.tagId)}
+                <button
+                  type="button"
+                  class="badge badge-outline gap-1 cursor-pointer hover:badge-primary"
+                  onclick={() => addSuggestion(s)}
+                  title={`Add ${s.tagGroupName}: ${s.name} — matched “${s.matchedText}” in ${s.source}`}
+                >
+                  <span aria-hidden="true">＋</span>
+                  <span class="truncate max-w-[12rem]">{s.name}</span>
+                  <span class="opacity-50 text-[0.65rem] uppercase">
+                    {s.source === 'File name' ? 'name' : 'folder'}
+                  </span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
 
   <!-- Marked-for-deletion overlay. The faded content beneath stays

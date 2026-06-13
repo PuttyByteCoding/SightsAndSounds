@@ -45,3 +45,15 @@ public record TagSearchHit(
     string TagGroupName,
     string Name,
     IReadOnlyList<string> Aliases);
+
+// A tag suggested for a video because its name or one of its aliases was found
+// in the video's file name or folder path (issue #10). Source tells the user
+// where it matched ("File name" / "Folder"); MatchedText is the tag text that
+// hit, for display. Tags already on the video are not suggested.
+public record TagSuggestion(
+    Guid TagId,
+    Guid TagGroupId,
+    string TagGroupName,
+    string Name,
+    string Source,
+    string MatchedText);
