@@ -26,8 +26,13 @@
     // Optional "move this file to another folder" action (issue #4).
     // When provided, a small Move… button shows in the card footer.
     onmove?: (video: Video) => void;
+    // When true, the card centers itself in its scroll container when it
+    // becomes active instead of just scrolling to the nearest edge — used
+    // by the player-mode strip to keep the current thumbnail centered
+    // (issue #37). Defaults to the original "nearest" behavior for the grid.
+    centerOnActive?: boolean;
   }
-  let { video, onopen, active = false, onmove }: Props = $props();
+  let { video, onopen, active = false, onmove, centerOnActive = false }: Props = $props();
 
   let cardEl: HTMLDivElement | null = $state(null);
   let imgWrapEl: HTMLDivElement | null = $state(null);
@@ -118,7 +123,13 @@
   // row.
   $effect(() => {
     if (!active || !cardEl) return;
-    cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    cardEl.scrollIntoView({
+      behavior: 'smooth',
+      block: 'nearest',
+      // Player-mode strip centers the current thumbnail (issue #37); the
+      // grid just nudges it into view at the nearest edge.
+      inline: centerOnActive ? 'center' : 'nearest'
+    });
   });
 
   async function onEnter() {

@@ -146,26 +146,6 @@
     viewMode = m;
     if (typeof localStorage !== 'undefined') localStorage.setItem('browseViewMode', m);
   }
-  // 0-based index of the playing video within the current queue (−1 when
-  // nothing is playing or it fell out of the list). Splits the player-mode
-  // strip into the always-visible "previous 2" and the scrollable queue.
-  const playingIdx0 = $derived(
-    playingVideo ? videos.findIndex((v) => v.id === playingVideo!.id) : -1
-  );
-  // The up-to-2 videos immediately before the current one. Rendered in a
-  // non-scrolling section at the left of the strip so they're ALWAYS
-  // visible for stepping back (issue #37) — sticky positioning let them
-  // scroll away. Empty until you've moved past the start of the queue.
-  const stripPrev2 = $derived(
-    playingIdx0 > 0 ? videos.slice(Math.max(0, playingIdx0 - 2), playingIdx0) : []
-  );
-  // The scrollable part of the strip: the current video plus everything
-  // after it (within the loaded window). Slicing from the current video
-  // keeps the pinned previous-2 from also appearing in the scroll. Falls
-  // back to the whole loaded list when nothing is playing yet.
-  const stripQueue = $derived(
-    playingIdx0 > 0 ? visibleVideos.slice(playingIdx0) : visibleVideos
-  );
 
   // --- Section-level collapse ------------------------------------------
   // Each tree-style section in the sidebar (Flags, Favorite Tags,
@@ -1959,40 +1939,34 @@
       </div>
 
       {#if viewMode === 'player'}
-        <!-- Player-mode thumbnail strip (issues #23, #37). The up-to-2
-             videos before the current one live in a NON-scrolling section
-             pinned at the left, so they're always visible for stepping
-             back (CSS sticky used to let them scroll away). The current
-             video + everything after it scroll horizontally beside them;
-             VideoCard's active-card scrollIntoView keeps the current
-             thumbnail in view within that scroll region. -->
-        <div class="flex gap-3 items-start">
-          {#if stripPrev2.length > 0}
-            <div class="flex gap-3 shrink-0 border-r border-base-300 pr-3">
-              {#each stripPrev2 as v (v.id)}
-                <div class="shrink-0" style="width: {thumbWidth}px;">
-                  <VideoCard video={v} onopen={open} onmove={openMoveDialog} active={playingVideo?.id === v.id} />
-                </div>
-              {/each}
+        <!-- Player-mode thumbnail strip (issues #23, #37). One horizontal
+             row of the whole queue; the currently-playing thumbnail is
+             kept CENTERED, with the earlier videos to its left and the
+             upcoming ones to its right. VideoCard centers itself when
+             active (centerOnActive) — near the ends the browser clamps the
+             scroll so it sits as close to center as the queue allows. -->
+        <div class="flex gap-3 overflow-x-auto pb-2">
+          {#each visibleVideos as v (v.id)}
+            <div class="shrink-0" style="width: {thumbWidth}px;">
+              <VideoCard
+                video={v}
+                onopen={open}
+                onmove={openMoveDialog}
+                active={playingVideo?.id === v.id}
+                centerOnActive
+              />
+            </div>
+          {/each}
+          <!-- Horizontal sentinel: the IntersectionObserver loads the
+               next chunk as the user scrolls toward the right end. -->
+          {#if visibleCount < videos.length}
+            <div
+              bind:this={scrollSentinelEl}
+              class="shrink-0 w-32 flex items-center justify-center text-xs text-base-content/50"
+            >
+              Loading more… ({videos.length - visibleCount})
             </div>
           {/if}
-          <div class="flex gap-3 overflow-x-auto pb-2 flex-1 min-w-0">
-            {#each stripQueue as v (v.id)}
-              <div class="shrink-0" style="width: {thumbWidth}px;">
-                <VideoCard video={v} onopen={open} onmove={openMoveDialog} active={playingVideo?.id === v.id} />
-              </div>
-            {/each}
-            <!-- Horizontal sentinel: the IntersectionObserver loads the
-                 next chunk as the user scrolls toward the right end. -->
-            {#if visibleCount < videos.length}
-              <div
-                bind:this={scrollSentinelEl}
-                class="shrink-0 w-32 flex items-center justify-center text-xs text-base-content/50"
-              >
-                Loading more… ({videos.length - visibleCount})
-              </div>
-            {/if}
-          </div>
         </div>
 
         {#if !videosLoading && videos.length === 0}
