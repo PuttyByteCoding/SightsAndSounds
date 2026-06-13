@@ -230,6 +230,37 @@ public static class ApiEndpoints
         }
     }
 
+    // Evicts only the directories whose recursive video count changed when a
+    // file moved between folders (issue #4). A directory's count changes iff
+    // the file entered or left its subtree — i.e. it's an ancestor of exactly
+    // one of {fromDir, toDir}. Directories that are ancestors of both (the
+    // source root for a within-source move) net zero and stay cached, so a
+    // move no longer forces a full re-walk on the next browse.
+    private static void EvictMovedDirs(DirectoryScanCache cache, string? fromDir, string? toDir)
+    {
+        var changed = AncestorKeys(fromDir);
+        changed.SymmetricExceptWith(AncestorKeys(toDir));
+        foreach (var key in changed) cache.Remove(key);
+    }
+
+    // Normalized cache keys for `dir` and every ancestor up to the filesystem
+    // root. Case-insensitive to match the cache. Path.GetDirectoryName flips
+    // to the platform separator, so each level is re-normalized to the
+    // forward-slash form the cache stores.
+    private static HashSet<string> AncestorKeys(string? dir)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var d = dir;
+        while (!string.IsNullOrEmpty(d))
+        {
+            set.Add(PathNormalizer.Normalize(d));
+            var parent = Path.GetDirectoryName(d);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, d, StringComparison.Ordinal)) break;
+            d = parent;
+        }
+        return set;
+    }
+
     // Moves a file from src to dst, reporting byte progress (issue #4).
     // Same-volume moves are an instant File.Move (a rename); cross-volume
     // moves stream the copy in 1 MiB chunks so the UI can show a real
@@ -1836,9 +1867,10 @@ public static class ApiEndpoints
                 MovedAt = DateTime.UtcNow
             });
             await db.SaveChangesAsync(ct);
-            // The file's folder changed on disk → recursive counts for the
-            // source/destination trees are now stale. (issue #4)
-            scanCache.Clear();
+            // Only the folders that gained/lost the file have stale counts —
+            // evict those, not the whole cache, so the next browse stays fast
+            // right after a move. (issue #4)
+            EvictMovedDirs(scanCache, Path.GetDirectoryName(fromPath), targetDir);
             logger.LogInformation(
                 "Moved video {VideoId} ({FileName}) from {From} to {To}",
                 id, fileName, fromPath, dest);
@@ -1911,8 +1943,8 @@ public static class ApiEndpoints
             video.FilePath = PathNormalizer.Normalize(dest);
             move.RevertedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
-            // File moved back on disk → stale recursive counts. (issue #4)
-            scanCache.Clear();
+            // File moved back → evict only the affected folders. (issue #4)
+            EvictMovedDirs(scanCache, Path.GetDirectoryName(move.ToPath), Path.GetDirectoryName(dest));
             logger.LogInformation("Reverted move {MoveId}: {To} -> {From}", moveId, move.ToPath, dest);
             return await ReturnFreshDtoAsync(db, move.VideoId, ct);
         }).WithName("RevertFileMove");
