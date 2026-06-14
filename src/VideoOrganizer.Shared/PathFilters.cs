@@ -26,6 +26,14 @@ public static class PathFilters
         => ExcludedFolderNames.Contains(folderName);
 
     /// <summary>
+    /// True if the file is hidden — its name starts with a dot (".DS_Store",
+    /// "._clip.mp4"). The import tool ignores these in its counts and scan and
+    /// surfaces them in a separate "Hidden files" list instead. (issue #62)
+    /// </summary>
+    public static bool IsHiddenFile(string path)
+        => Path.GetFileName(path).StartsWith('.');
+
+    /// <summary>
     /// True if <paramref name="fullPath"/> passes through any excluded folder between
     /// <paramref name="baseDir"/> and the item itself. Paths that ARE excluded folders
     /// (or are outside baseDir) don't match — the check only hides descendants.

@@ -216,6 +216,7 @@ public static class ApiEndpoints
             foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
             {
                 if (PathFilters.IsInExcludedFolder(file, path)) continue;
+                if (PathFilters.IsHiddenFile(file)) continue; // issue #62
                 if (VideoFileExtensions.IsVideo(file))
                 {
                     count++;
@@ -4087,9 +4088,13 @@ public static class ApiEndpoints
 
                 var importable = new List<string>();
                 var nonImportable = new List<string>();
+                var hidden = new List<string>();
                 foreach (var file in allFiles)
                 {
-                    if (VideoFileExtensions.IsVideo(file)) importable.Add(file);
+                    // Hidden files (dot-prefixed) are surfaced on their own tab
+                    // and never counted as importable or "other". (issue #62)
+                    if (PathFilters.IsHiddenFile(file)) hidden.Add(file);
+                    else if (VideoFileExtensions.IsVideo(file)) importable.Add(file);
                     else nonImportable.Add(file);
                 }
 
@@ -4106,7 +4111,7 @@ public static class ApiEndpoints
                     .Select(p => importableByNormalized[p])
                     .ToList();
 
-                return Results.Ok(new ImportFileListResponse(targetPath, importable, nonImportable, importedFiles));
+                return Results.Ok(new ImportFileListResponse(targetPath, importable, nonImportable, importedFiles, hidden));
             }
             catch (Exception ex)
             {

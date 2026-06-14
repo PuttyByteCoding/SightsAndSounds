@@ -35,6 +35,35 @@ public class PathFiltersTests
         Assert.False(PathFilters.IsExcludedFolderName(name));
     }
 
+    // --- IsHiddenFile -------------------------------------------------------
+
+    [Theory]
+    [InlineData(".DS_Store")]
+    [InlineData("._clip.mp4")]
+    [InlineData(".hidden")]
+    public void IsHiddenFile_DotPrefixedNames_ReturnsTrue(string name)
+    {
+        Assert.True(PathFilters.IsHiddenFile(Join("C:", "videos", name)));
+        Assert.True(PathFilters.IsHiddenFile(name)); // bare name too
+    }
+
+    [Theory]
+    [InlineData("clip.mp4")]
+    [InlineData("my.movie.mkv")]   // dots inside, not a leading dot
+    [InlineData("trailer")]
+    public void IsHiddenFile_NormalNames_ReturnsFalse(string name)
+    {
+        Assert.False(PathFilters.IsHiddenFile(Join("C:", "videos", name)));
+    }
+
+    [Fact]
+    public void IsHiddenFile_DotInParentFolderOnly_ReturnsFalse()
+    {
+        // Only the file name matters — a dot-prefixed *folder* in the path
+        // doesn't make a normal file hidden.
+        Assert.False(PathFilters.IsHiddenFile(Join("C:", ".cache", "clip.mp4")));
+    }
+
     // --- IsInExcludedFolder -------------------------------------------------
     //
     // Use OS-correct separators so Path.GetRelativePath produces the right

@@ -494,6 +494,9 @@ export interface ImportFileListResponse {
   files: string[];
   nonImportableFiles: string[];
   importedFiles: string[];
+  // Hidden (dot-prefixed) files — their own tab; excluded from the other
+  // buckets and the folder counts. (issue #62)
+  hiddenFiles: string[];
 }
 
 export interface ImportFileProgressDto {
