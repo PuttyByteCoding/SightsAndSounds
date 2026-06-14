@@ -1340,11 +1340,14 @@
                 {/if}
               </div>
 
-              <label class="form-control mt-4">
+              <!-- flex flex-col so the label sits ABOVE the textarea like
+                   "Tags to apply" above. `form-control` no longer forces a
+                   column on its own (daisyUI change), which left the inline
+                   span + inline-block textarea on the same row (issue #86). -->
+              <label class="form-control mt-4 flex flex-col items-start">
                 <span class="label-text font-medium">Notes</span>
                 <!-- Multi-line textarea so longer notes are visible without
-                     horizontal scrolling. mt-2 puts a clear gap under the
-                     "Notes" label. -->
+                     horizontal scrolling. mt-2 puts a clear gap under the label. -->
                 <textarea
                   class="textarea textarea-bordered textarea-sm w-1/4 mt-2"
                   rows="3"
