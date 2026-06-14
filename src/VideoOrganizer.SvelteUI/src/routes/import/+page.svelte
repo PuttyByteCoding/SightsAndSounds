@@ -90,6 +90,50 @@
     initialTagPickerInput = '';
   }
 
+  // Keyboard nav for the "Tags to apply" dropdown — mirrors the EditTagsPanel
+  // composer so the picker feels the same (issue #65): arrow keys move a
+  // highlight, Enter selects, Escape closes; the create-new row is badged NEW.
+  let initialTagHighlight = $state(-1);
+  const initialTagDropCount = $derived(
+    initialTagSuggestions.length + (initialTagPickerInput.trim().length > 0 ? 1 : 0)
+  );
+  function addInitialTag(h: { tagId: string; name: string }) {
+    if (!initialTagIds.includes(h.tagId)) initialTagIds = [...initialTagIds, h.tagId];
+    initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
+    initialTagPickerInput = '';
+    initialTagSuggestions = [];
+    initialTagHighlight = -1;
+  }
+  function selectInitialTagAt(i: number) {
+    if (i >= 0 && i < initialTagSuggestions.length) addInitialTag(initialTagSuggestions[i]);
+    else if (initialTagPickerInput.trim().length > 0) openCreateTag(initialTagPickerInput.trim());
+  }
+  function onInitialTagKeydown(e: KeyboardEvent) {
+    const total = initialTagDropCount;
+    if (total === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      initialTagHighlight = (initialTagHighlight + 1) % total;
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      initialTagHighlight = initialTagHighlight <= 0 ? total - 1 : initialTagHighlight - 1;
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (initialTagHighlight >= 0) {
+        selectInitialTagAt(initialTagHighlight);
+        return;
+      }
+      // No highlight: add an exact existing match if there is one, else create.
+      const q = initialTagPickerInput.trim().toLowerCase();
+      const exact = initialTagSuggestions.findIndex(h => h.name.toLowerCase() === q);
+      if (exact >= 0) addInitialTag(initialTagSuggestions[exact]);
+      else if (initialTagPickerInput.trim().length > 0) openCreateTag(initialTagPickerInput.trim());
+    } else if (e.key === 'Escape') {
+      initialTagSuggestions = [];
+      initialTagHighlight = -1;
+    }
+  }
+
   // File list — keyed by folder path so the right pane can aggregate
   // across the full multi-selection. Each entry is what the API
   // returned for that single folder; the table below derives totals
@@ -1173,8 +1217,11 @@
                       class="input input-bordered input-sm w-full"
                       placeholder="Type to search tags…"
                       value={initialTagPickerInput}
+                      autocomplete="off"
+                      onkeydown={onInitialTagKeydown}
                       oninput={async (e) => {
                         initialTagPickerInput = (e.target as HTMLInputElement).value;
+                        initialTagHighlight = -1;
                         const q = initialTagPickerInput.trim();
                         initialTagSuggestions = q
                           ? (await api.searchTags(q)).filter(h => !initialTagIds.includes(h.tagId))
@@ -1183,33 +1230,32 @@
                     />
                     {#if initialTagSuggestions.length > 0 || initialTagPickerInput.trim().length > 0}
                       <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow max-h-60 overflow-y-auto">
-                        {#each initialTagSuggestions as h (h.tagId)}
+                        {#each initialTagSuggestions as h, i (h.tagId)}
                           <button
                             type="button"
-                            class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm flex justify-between"
-                            onmousedown={() => {
-                              initialTagIds = [...initialTagIds, h.tagId];
-                              initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
-                              initialTagPickerInput = '';
-                              initialTagSuggestions = [];
-                            }}
+                            class="w-full text-left px-2 py-1 text-sm flex justify-between {initialTagHighlight === i ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
+                            onmousedown={() => addInitialTag(h)}
+                            onmouseenter={() => (initialTagHighlight = i)}
                           >
                             <span>{h.name}</span>
-                            <span class="text-xs text-base-content/50">{h.tagGroupName}</span>
+                            <span class="text-xs opacity-60">{h.tagGroupName}</span>
                           </button>
                         {/each}
                         {#if initialTagPickerInput.trim().length > 0}
-                          <!-- Create-from-search escape hatch: typed text
-                               that doesn't exist yet (or that the user
-                               wants in a different group) becomes a new
-                               tag via TagEditModal, where the Group
-                               select offers every tag group. -->
+                          {@const createIdx = initialTagSuggestions.length}
+                          <!-- Create-from-search escape hatch: typed text that
+                               doesn't exist yet (or that the user wants in a
+                               different group) becomes a new tag via
+                               TagEditModal. Badged NEW + arrow-navigable like
+                               the EditTagsPanel composer (issue #65). -->
                           <button
                             type="button"
-                            class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm text-primary {initialTagSuggestions.length > 0 ? 'border-t border-base-300' : ''}"
+                            class="w-full text-left px-2 py-1 text-sm flex items-center gap-2 {initialTagSuggestions.length > 0 ? 'border-t border-base-300' : ''} {initialTagHighlight === createIdx ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
                             onmousedown={() => openCreateTag(initialTagPickerInput.trim())}
+                            onmouseenter={() => (initialTagHighlight = createIdx)}
                           >
-                            + Create new tag “{initialTagPickerInput.trim()}”…
+                            <span class="badge badge-accent badge-xs">NEW</span>
+                            <span>Create tag “{initialTagPickerInput.trim()}”…</span>
                           </button>
                         {/if}
                       </div>
