@@ -1320,6 +1320,7 @@
   bind:show={showCreateTagModal}
   tag={null}
   initialName={createTagInitialName}
+  focusGroup={true}
   onSaved={onTagCreated}
 />
 

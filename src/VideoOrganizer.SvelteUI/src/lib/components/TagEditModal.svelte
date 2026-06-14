@@ -27,6 +27,10 @@
     show: boolean;
     onSaved?: (tag: Tag) => void;
     onCanceled?: () => void;
+    // When opening to create a tag with no group preselected (e.g. from the
+    // Import tool, issue #65), start with the cursor in a blank Group field so
+    // the user picks/creates a group before anything else.
+    focusGroup?: boolean;
   }
 
   let {
@@ -35,7 +39,8 @@
     initialName = '',
     show = $bindable(false),
     onSaved,
-    onCanceled
+    onCanceled,
+    focusGroup = false
   }: Props = $props();
 
   let name = $state('');
@@ -58,6 +63,40 @@
   let groups = $state<TagGroup[]>([]);
   let groupsLoading = false;
   let selectedGroupId = $state<string | undefined>(undefined);
+
+  // Group field is a create-capable typeahead (issue #65): type to filter
+  // groups, pick an existing one, or pick "Create … " to make a new group on
+  // save. groupInput is the editable text; selectedGroupId is set when it
+  // resolves to an existing group, undefined when it'll become a new group.
+  let groupInput = $state('');
+  let groupOpen = $state(false);
+  let groupInputEl: HTMLInputElement | null = $state(null);
+
+  const groupExactMatch = $derived(
+    groups.find(g => g.name.trim().toLowerCase() === groupInput.trim().toLowerCase())
+  );
+  const groupMatches = $derived.by(() => {
+    const q = groupInput.trim().toLowerCase();
+    const list = q ? groups.filter(g => g.name.toLowerCase().includes(q)) : groups;
+    return list.slice(0, 12);
+  });
+  // True when the typed text is a non-empty name that isn't an existing group.
+  const groupIsNew = $derived(groupInput.trim().length > 0 && !groupExactMatch);
+
+  function pickGroup(g: TagGroup) {
+    selectedGroupId = g.id;
+    groupInput = g.name;
+    groupOpen = false;
+  }
+  function onGroupInput(value: string) {
+    groupInput = value;
+    groupOpen = true;
+    // Resolve to an existing group when the text matches one exactly; else it
+    // becomes a new group on save.
+    selectedGroupId = groups.find(
+      g => g.name.trim().toLowerCase() === value.trim().toLowerCase()
+    )?.id;
+  }
 
   const isEdit = $derived(tag !== null && tag !== undefined);
 
@@ -116,13 +155,15 @@
       aliases = [];
       isFavorite = false;
       notes = '';
-      selectedGroupId = tagGroupId;
+      selectedGroupId = focusGroup ? undefined : tagGroupId;
     }
     error = null;
     aliasInput = '';
-    // Always land on the Name input — Enter then accepts the (pre-filled or
-    // typed) name with default aliases/favorite/notes. Tab to reach those.
-    queueMicrotask(() => nameInputEl?.focus());
+    groupInput = ''; // filled from the resolved group's name once groups load
+    groupOpen = false;
+    // Import opens straight onto a blank Group field (issue #65); otherwise the
+    // Name input, where Enter accepts the (pre-filled or typed) name.
+    queueMicrotask(() => ((focusGroup && !tag) ? groupInputEl : nameInputEl)?.focus());
   });
 
   // Load the group list the first time the modal opens (either mode).
@@ -134,17 +175,21 @@
   $effect(() => {
     if (!show) return;
     untrack(() => {
-      if (groups.length > 0) {
-        if (!selectedGroupId && !tag) selectedGroupId = groups[0]?.id;
-        return;
-      }
+      const afterLoad = () => {
+        // Default to the first group in create mode — but NOT when the host
+        // wants a blank Group field (import, issue #65).
+        if (!selectedGroupId && !tag && !focusGroup) selectedGroupId = groups[0]?.id;
+        // Reflect the resolved group in the input, unless the user already
+        // started typing (a new group name).
+        if (selectedGroupId && groupInput.trim().length === 0) {
+          groupInput = groups.find(g => g.id === selectedGroupId)?.name ?? '';
+        }
+      };
+      if (groups.length > 0) { afterLoad(); return; }
       if (groupsLoading) return;
       groupsLoading = true;
       api.listTagGroups()
-        .then(gs => {
-          groups = gs;
-          if (!selectedGroupId && !tag) selectedGroupId = gs[0]?.id;
-        })
+        .then(gs => { groups = gs; afterLoad(); })
         .catch(e => {
           error = e instanceof Error ? e.message : 'Failed to load tag groups';
         })
@@ -173,6 +218,22 @@
     saving = true;
     error = null;
     try {
+      // Resolve the group: the selected existing one, or create a new group
+      // from the typed name (issue #65).
+      let groupId = selectedGroupId;
+      if (!groupId) {
+        const newName = groupInput.trim();
+        if (!newName) { error = 'Pick or name a tag group first.'; saving = false; return; }
+        const existing = groups.find(g => g.name.trim().toLowerCase() === newName.toLowerCase());
+        if (existing) {
+          groupId = existing.id;
+        } else {
+          const grp = await api.createTagGroup({ name: newName });
+          groups = [...groups, grp];
+          groupId = grp.id;
+        }
+      }
+
       let saved: Tag;
       if (tag) {
         await api.updateTag(tag.id, {
@@ -181,21 +242,17 @@
           isFavorite,
           sortOrder: tag.sortOrder,
           notes,
-          tagGroupId: selectedGroupId
+          tagGroupId: groupId
         });
         saved = await api.getTag(tag.id);
-      } else if (selectedGroupId) {
+      } else {
         saved = await api.createTag({
-          tagGroupId: selectedGroupId,
+          tagGroupId: groupId,
           name: trimmed,
           aliases,
           isFavorite,
           notes
         });
-      } else {
-        error = 'Pick a tag group first.';
-        saving = false;
-        return;
       }
       show = false;
       onSaved?.(saved);
@@ -300,11 +357,40 @@
              video↔tag links are by id). -->
         <div class="flex items-center gap-2 mb-1">
           <span class="label-text w-20 shrink-0">Group</span>
-          <select class="select select-bordered flex-1" bind:value={selectedGroupId}>
-            {#each groups as g (g.id)}
-              <option value={g.id}>{g.name}</option>
-            {/each}
-          </select>
+          <div class="relative flex-1">
+            <input
+              bind:this={groupInputEl}
+              type="text"
+              class="input input-bordered w-full pr-12"
+              placeholder="Type to find or create a group"
+              value={groupInput}
+              autocomplete="off"
+              oninput={(e) => onGroupInput((e.target as HTMLInputElement).value)}
+              onfocus={() => (groupOpen = true)}
+              onblur={() => setTimeout(() => (groupOpen = false), 150)}
+            />
+            {#if groupIsNew}
+              <span class="badge badge-accent badge-sm absolute right-2 top-1/2 -translate-y-1/2">NEW</span>
+            {/if}
+            {#if groupOpen && (groupMatches.length > 0 || groupIsNew)}
+              <div class="absolute z-20 mt-1 w-full bg-base-300 border-2 border-primary rounded-md shadow-2xl ring-4 ring-primary/30 max-h-56 overflow-auto">
+                {#each groupMatches as g (g.id)}
+                  <button
+                    type="button"
+                    class="w-full text-left px-3 py-2 hover:bg-base-200"
+                    onmousedown={() => pickGroup(g)}
+                  >{g.name}</button>
+                {/each}
+                {#if groupIsNew}
+                  <button
+                    type="button"
+                    class="w-full text-left px-3 py-2 hover:bg-base-200 text-accent"
+                    onmousedown={() => (groupOpen = false)}
+                  >+ Create new group “{groupInput.trim()}”</button>
+                {/if}
+              </div>
+            {/if}
+          </div>
         </div>
         {#if tag && selectedGroupId !== tag.tagGroupId}
           <p class="text-xs text-info mb-3 ml-22">
@@ -416,7 +502,7 @@
           type="button"
           class="btn btn-soft btn-primary btn-cta"
           onclick={save}
-          disabled={saving || !name.trim() || (!isEdit && !selectedGroupId)}
+          disabled={saving || !name.trim() || (!isEdit && !selectedGroupId && groupInput.trim().length === 0)}
         >
           {saving ? 'Saving…' : (isEdit ? 'Save' : 'Create')}
         </button>
