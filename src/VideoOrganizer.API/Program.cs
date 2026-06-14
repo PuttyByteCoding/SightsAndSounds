@@ -189,6 +189,9 @@ builder.Services.AddSingleton<DirectoryScanCache>();
 // (issue #32)
 builder.Services.AddSingleton<BackupService>();
 
+// On-screen-text OCR via the tesseract CLI (issue #5).
+builder.Services.AddSingleton<OcrService>();
+
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
 // Centralized pause flags for the three workers. Toggled by

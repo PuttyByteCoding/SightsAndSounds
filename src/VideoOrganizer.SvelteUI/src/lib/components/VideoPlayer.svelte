@@ -385,6 +385,34 @@
   let videoProgress = $state(0);
   let videoCurrentTime = $state(0);
   let videoDuration = $state(0);
+
+  // --- On-screen text OCR (issue #5) -------------------------------------
+  // "Read text" grabs the frame at the playhead and OCRs it server-side.
+  let ocrOpen = $state(false);
+  let ocrLoading = $state(false);
+  let ocrText = $state('');
+  let ocrAtSeconds = $state(0);
+  let ocrError = $state<string | null>(null);
+
+  async function readTextAtPlayhead() {
+    if (!video) return;
+    const vid = video.id;
+    const t = videoCurrentTime;
+    ocrOpen = true;
+    ocrLoading = true;
+    ocrError = null;
+    try {
+      const res = await api.ocrVideoFrame(vid, t);
+      if (video?.id !== vid) return;
+      ocrText = res.text;
+      ocrAtSeconds = res.timeSeconds;
+    } catch (e) {
+      ocrError = e instanceof Error ? e.message : String(e);
+      ocrText = '';
+    } finally {
+      ocrLoading = false;
+    }
+  }
   // Hover tracking for the in-video scrubber overlay. When false, the
   // scrubber fades out so it doesn't obscure the picture; when true (or
   // while actively scrubbing via scrubHoverX), it's fully visible.
@@ -2923,6 +2951,47 @@
                 </button>
               {/each}
             </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <!-- On-screen text OCR (issue #5). Reads the frame at the playhead. -->
+    <div class="mt-1">
+      <button
+        type="button"
+        class="btn btn-xs btn-ghost gap-1"
+        onclick={readTextAtPlayhead}
+        disabled={ocrLoading}
+        title="Read the text on screen at the current frame (OCR)"
+      >
+        <span aria-hidden="true">🔤</span>
+        {ocrLoading ? 'Reading…' : 'Read text'}
+      </button>
+
+      {#if ocrOpen}
+        <div class="mt-1">
+          {#if ocrLoading}
+            <div class="text-xs text-base-content/60">
+              <span class="loading loading-spinner loading-xs"></span> Reading the frame…
+            </div>
+          {:else if ocrError}
+            <div class="text-xs text-error whitespace-pre-wrap">{ocrError}</div>
+          {:else if ocrText.trim().length === 0}
+            <div class="text-xs text-base-content/50 italic">
+              No text found at {formatClock(ocrAtSeconds)}.
+            </div>
+          {:else}
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-xs text-base-content/60">Text at {formatClock(ocrAtSeconds)}</span>
+              <button
+                type="button"
+                class="btn btn-xs btn-ghost"
+                onclick={() => navigator.clipboard?.writeText(ocrText)}
+                title="Copy text"
+              >Copy</button>
+            </div>
+            <pre class="text-xs whitespace-pre-wrap bg-base-200 rounded p-2 max-h-40 overflow-auto">{ocrText}</pre>
           {/if}
         </div>
       {/if}
