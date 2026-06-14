@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Run all tests. Placeholder for now — no test projects exist.
+# Run all tests — backend (.NET) + frontend (SvelteUI).
 #
-# Discovers .NET test projects by scanning src/ for csprojs that
-# reference Microsoft.NET.Test.Sdk; that's the canonical "this is a
-# test project" marker. Frontend tests would run via `npm test` in
-# SvelteUI; the script checks whether that script is defined and
+# Discovers .NET test projects by scanning the whole repo for csprojs
+# that reference Microsoft.NET.Test.Sdk (the canonical "this is a test
+# project" marker) — this covers both src/ (VideoOrganizer.UnitTests)
+# and tests/ (VideoOrganizer.Tests). Frontend tests run via `npm test`
+# in SvelteUI; the script checks whether that script is defined and
 # skips with a warning if not.
-#
-# Once test projects exist, this will run them. Today it's a no-op
-# that exits 0 with a friendly note so the pipeline still wires up.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,7 +34,8 @@ list_test_projects() {
     if grep -q 'Microsoft\.NET\.Test\.Sdk' "$csproj" 2>/dev/null; then
       echo "$csproj"
     fi
-  done < <(find "$REPO_ROOT/src" -name '*.csproj' -not -path '*/obj/*')
+  done < <(find "$REPO_ROOT" -name '*.csproj' \
+    -not -path '*/obj/*' -not -path '*/bin/*' -not -path '*/node_modules/*')
 }
 
 dotnet_test() {
@@ -50,7 +49,10 @@ dotnet_test() {
   while IFS= read -r csproj; do
     found=1
     log test "$csproj"
-    if ! dotnet test "$csproj" --configuration Release --nologo --no-restore; then
+    # No --no-restore: each test project (and its referenced projects) must
+    # restore on a clean checkout — ci/build.sh only restores API + Import, so
+    # the test projects wouldn't otherwise be restored (e.g. on a CI runner).
+    if ! dotnet test "$csproj" --configuration Release --nologo; then
       warn test "$csproj — FAILED"
       failed=1
     fi

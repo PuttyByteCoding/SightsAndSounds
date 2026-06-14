@@ -1,0 +1,58 @@
+name: CI
+
+# Remote safety net for the same checks the local pipeline runs (ci/all.sh).
+# Gates every PR into dev (and direct pushes to dev) so a red branch can't be
+# merged just because someone forgot to run ci/all.sh locally.
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same PR/branch cancels the in-progress run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/VideoOrganizer.SvelteUI/package-lock.json
+
+      # ffmpeg + ffprobe so the hermetic media integration tests (#98) actually
+      # run instead of skipping. Ubuntu's ffmpeg includes libx264/libx265.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      # ci/check.sh's migration smoke step shells out to `dotnet ef`.
+      - name: Install dotnet-ef
+        run: |
+          dotnet tool install --global dotnet-ef
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      # ci/check.sh runs svelte-check *before* ci/build.sh does `npm ci`, so the
+      # SvelteUI deps must already be present when ci/all.sh starts.
+      - name: Install SvelteUI dependencies
+        working-directory: src/VideoOrganizer.SvelteUI
+        run: npm ci
+
+      # The exact same entry point developers run locally: check + build + test.
+      - name: Run CI (check + build + test)
+        run: bash ci/all.sh
