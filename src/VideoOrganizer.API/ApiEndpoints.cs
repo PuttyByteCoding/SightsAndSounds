@@ -1603,6 +1603,90 @@ public static class ApiEndpoints
             return Results.NoContent();
         }).WithName("DeleteVideoSet");
 
+        // Dry-run spot check for a proposed re-root (issue #32). Counts the
+        // videos that would be repointed and stats a small sample at the new
+        // base so the caller can confirm the mapping before committing. Reads
+        // only — never touches the DB or files.
+        videoSets.MapPost("/{id:guid}/re-root/preview", async (
+            Guid id, ReRootRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var set = await db.VideoSets.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct);
+            if (set is null) return Results.NotFound();
+
+            var newBase = PathNormalizer.Normalize(req.NewPath ?? string.Empty).TrimEnd('/');
+            if (newBase.Length == 0) return Results.BadRequest(new { error = "A new path is required." });
+            var oldBase = PathNormalizer.Normalize(set.Path).TrimEnd('/');
+            var oldPrefix = oldBase + "/";
+
+            var query = db.Videos.AsNoTracking()
+                .Where(v => v.FilePath == oldBase || v.FilePath.StartsWith(oldPrefix));
+            var total = await query.CountAsync(ct);
+            const int sampleSize = 10;
+            var sample = await query
+                .OrderBy(v => v.FilePath).Take(sampleSize)
+                .Select(v => v.FilePath).ToListAsync(ct);
+
+            var examples = new List<ReRootPreviewItem>(sample.Count);
+            var found = 0;
+            foreach (var oldPath in sample)
+            {
+                var newPath = newBase + oldPath[oldBase.Length..];
+                bool exists;
+                try { exists = File.Exists(newPath); }
+                catch { exists = false; }
+                if (exists) found++;
+                examples.Add(new ReRootPreviewItem(oldPath, newPath, exists));
+            }
+
+            return Results.Ok(new ReRootPreview(
+                total, sample.Count, found, sample.Count - found,
+                TryDirectoryExists(newBase, logger), examples));
+        }).WithName("ReRootVideoSetPreview");
+
+        // Commit a re-root (issue #32): change the source Path and rewrite the
+        // FilePath prefix on every video under it, atomically. This is what
+        // lets a source "move" (e.g. S:/Videos → /mnt/videos after migrating
+        // to Linux) without orphaning the library — every Video.FilePath is an
+        // absolute path matched by prefix, not an FK, so the source path and
+        // the child paths must change together.
+        videoSets.MapPost("/{id:guid}/re-root", async (
+            Guid id, ReRootRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var set = await db.VideoSets.FirstOrDefaultAsync(s => s.Id == id, ct);
+            if (set is null) return Results.NotFound();
+
+            var newBase = PathNormalizer.Normalize(req.NewPath ?? string.Empty).TrimEnd('/');
+            if (newBase.Length == 0) return Results.BadRequest(new { error = "A new path is required." });
+            var oldBase = PathNormalizer.Normalize(set.Path).TrimEnd('/');
+            if (string.Equals(oldBase, newBase, StringComparison.Ordinal))
+            {
+                // Nothing to move — only normalization differed (or no change).
+                set.Path = newBase;
+                await db.SaveChangesAsync(ct);
+                return Results.Ok(new { reRooted = 0, newPath = newBase });
+            }
+
+            var oldPrefix = oldBase + "/";
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
+            // Single UPDATE: swap the old base prefix for the new one on every
+            // child path. Substring(oldBase.Length) keeps the leading slash +
+            // the rest of the relative path intact.
+            var reRooted = await db.Videos
+                .Where(v => v.FilePath == oldBase || v.FilePath.StartsWith(oldPrefix))
+                .ExecuteUpdateAsync(s => s.SetProperty(
+                    v => v.FilePath, v => newBase + v.FilePath.Substring(oldBase.Length)), ct);
+            set.Path = newBase;
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+
+            logger.LogInformation(
+                "VideoSet {VideoSetId} '{Name}' re-rooted {OldPath}→{NewPath} — {Count} videos repointed",
+                set.Id, set.Name, oldBase, newBase, reRooted);
+            return Results.Ok(new { reRooted, newPath = newBase });
+        }).WithName("ReRootVideoSet");
+
         // === Backups (issue #32) ============================================
         var backup = api.MapGroup("/backup").WithTags("Backup");
 
