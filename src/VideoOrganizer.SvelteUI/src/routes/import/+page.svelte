@@ -1340,17 +1340,16 @@
                 {/if}
               </div>
 
-              <label class="form-control">
+              <label class="form-control mt-4">
                 <span class="label-text font-medium">Notes</span>
-                <!-- Single-line input (was a 2-row textarea). Multi-line
-                     notes via paste still flow through; the field just
-                     scrolls horizontally to match the height of every
-                     other one-line input in this form. -->
-                <input
-                  type="text"
-                  class="input input-bordered input-sm w-1/4"
+                <!-- Multi-line textarea so longer notes are visible without
+                     horizontal scrolling. mt-2 puts a clear gap under the
+                     "Notes" label. -->
+                <textarea
+                  class="textarea textarea-bordered textarea-sm w-1/4 mt-2"
+                  rows="3"
                   bind:value={importNotes}
-                />
+                ></textarea>
               </label>
             </div>
           {/if}
