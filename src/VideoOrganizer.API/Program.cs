@@ -185,6 +185,10 @@ builder.Services.AddSingleton<FileMoveProgress>();
 // file move/undo and by the Sources refresh button. (issue #4)
 builder.Services.AddSingleton<DirectoryScanCache>();
 
+// Database backup/restore — JSON snapshots + (later) SQLite full backups,
+// written under Backup:Directory. (issue #32)
+builder.Services.AddSingleton<BackupService>();
+
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
 // Centralized pause flags for the three workers. Toggled by

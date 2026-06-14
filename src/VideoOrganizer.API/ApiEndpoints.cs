@@ -1603,6 +1603,37 @@ public static class ApiEndpoints
             return Results.NoContent();
         }).WithName("DeleteVideoSet");
 
+        // === Backups (issue #32) ============================================
+        var backup = api.MapGroup("/backup").WithTags("Backup");
+
+        // Quick local snapshot: dump every table to a timestamped JSON file in
+        // the backups folder.
+        backup.MapPost("/snapshot", async (
+            VideoOrganizerDbContext db, BackupService svc,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var info = await svc.CreateJsonSnapshotAsync(db, ct);
+            logger.LogInformation(
+                "Created JSON snapshot backup {File} ({Bytes} bytes)", info.FileName, info.SizeBytes);
+            return Results.Ok(info);
+        }).WithName("CreateBackupSnapshot");
+
+        backup.MapGet("/", (BackupService svc) => Results.Ok(svc.List())).WithName("ListBackups");
+
+        backup.MapGet("/{fileName}/download", (string fileName, BackupService svc) =>
+        {
+            var path = svc.ResolvePath(fileName);
+            if (path is null) return Results.NotFound();
+            var contentType = fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                ? "application/json"
+                : "application/octet-stream";
+            return Results.File(path, contentType, fileName);
+        }).WithName("DownloadBackup");
+
+        backup.MapDelete("/{fileName}", (string fileName, BackupService svc) =>
+            svc.Delete(fileName) ? Results.NoContent() : Results.NotFound())
+            .WithName("DeleteBackup");
+
         // === Videos =========================================================
 
         api.MapGet("/videos/count", async (VideoOrganizerDbContext db, CancellationToken ct) =>

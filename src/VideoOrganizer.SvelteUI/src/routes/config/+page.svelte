@@ -7,7 +7,7 @@
     defaultSettings
   } from '$lib/playbackSettings.svelte';
   import { api } from '$lib/api';
-  import type { VideoSet } from '$lib/types';
+  import type { VideoSet, BackupInfo } from '$lib/types';
   import {
     applySortClick,
     ariaSort,
@@ -19,6 +19,52 @@
     saveColumnWidths,
     type SortEntry,
   } from '$lib/tableUtils.svelte';
+
+  // --- Backups (issue #32) -------------------------------------------------
+  let backups = $state<BackupInfo[]>([]);
+  let backupBusy = $state(false);
+  let backupError = $state<string | null>(null);
+  let backupMsg = $state<string | null>(null);
+
+  async function loadBackups() {
+    try {
+      backups = await api.listBackups();
+    } catch (e: any) {
+      backupError = e?.message ?? 'Failed to load backups';
+    }
+  }
+  async function quickSnapshot() {
+    backupBusy = true;
+    backupError = null;
+    backupMsg = null;
+    try {
+      const info = await api.createBackupSnapshot();
+      backupMsg = `Snapshot saved: ${info.fileName}`;
+      await loadBackups();
+    } catch (e: any) {
+      backupError = e?.message ?? 'Snapshot failed';
+    } finally {
+      backupBusy = false;
+    }
+  }
+  async function removeBackup(fileName: string) {
+    if (!confirm(`Delete backup “${fileName}”?`)) return;
+    try {
+      await api.deleteBackup(fileName);
+      await loadBackups();
+    } catch (e: any) {
+      backupError = e?.message ?? 'Delete failed';
+    }
+  }
+  function fmtSize(n: number): string {
+    if (n < 1024) return `${n} B`;
+    const u = ['KB', 'MB', 'GB'];
+    let i = -1;
+    let x = n;
+    do { x /= 1024; i++; } while (x >= 1024 && i < u.length - 1);
+    return `${x.toFixed(1)} ${u[i]}`;
+  }
+  onMount(loadBackups);
 
   // Sort + width state for the Sources table at the bottom of this page.
   type SourceCol = 'name' | 'path' | 'enabled' | 'status';
@@ -679,6 +725,61 @@
                 <td class="text-right space-x-1">
                   <button type="button" class="btn btn-xs btn-soft btn-accent border border-accent/50" onclick={() => openEdit(s)}>Edit</button>
                   <button type="button" class="btn btn-xs btn-soft btn-error border border-error/50" onclick={() => requestDelete(s)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
+
+  <!-- ========= Backups (issue #32) ========= -->
+  <section class="mt-8">
+    <h2 class="text-2xl font-semibold mb-2">Backups</h2>
+    <p class="text-sm text-base-content/70 mb-4">
+      A quick snapshot writes a JSON dump of the whole database (tags, sources,
+      videos, and their metadata) to the server's backups folder. Your video
+      files on disk are not part of the backup.
+    </p>
+
+    <div class="flex flex-wrap items-center gap-3 mb-3">
+      <button class="btn btn-primary btn-sm" onclick={quickSnapshot} disabled={backupBusy}>
+        {#if backupBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
+        Quick snapshot
+      </button>
+      {#if backupMsg}<span class="text-sm text-success">{backupMsg}</span>{/if}
+      {#if backupError}<span class="text-sm text-error">{backupError}</span>{/if}
+    </div>
+
+    {#if backups.length === 0}
+      <p class="text-sm text-base-content/50 italic">No backups yet.</p>
+    {:else}
+      <div class="overflow-x-auto">
+        <table class="table table-sm w-auto">
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Type</th>
+              <th class="text-right">Size</th>
+              <th>Created</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each backups as b (b.fileName)}
+              <tr>
+                <td class="font-mono text-xs break-all">{b.fileName}</td>
+                <td class="uppercase text-xs">{b.type}</td>
+                <td class="text-right tabular-nums">{fmtSize(b.sizeBytes)}</td>
+                <td class="text-xs">{new Date(b.createdUtc).toLocaleString()}</td>
+                <td class="whitespace-nowrap">
+                  <a class="btn btn-ghost btn-xs" href={api.backupDownloadUrl(b.fileName)} download>
+                    Download
+                  </a>
+                  <button class="btn btn-ghost btn-xs text-error" onclick={() => removeBackup(b.fileName)}>
                     Delete
                   </button>
                 </td>
