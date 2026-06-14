@@ -231,7 +231,7 @@ export interface SetPropertyValuesRequest {
   values: PropertyValueWrite[];
 }
 
-// One backup file (issue #32). type: 'json' (quick snapshot) | 'sqlite' (full).
+// One backup file (issue #32). type: 'json' (the quick snapshot).
 export interface BackupInfo {
   fileName: string;
   type: string;
