@@ -1777,10 +1777,16 @@
                     </span>
                     <button
                       type="button"
-                      class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
+                      class="flex-1 min-w-0 text-left truncate py-1 hover:underline {t.hiddenByDefault ? 'text-base-content/45' : ''}"
                       onclick={() => pickTag(t)}
-                      title={slot ? `In filter: ${slot}` : `Filter by ${g.name}: ${t.name}`}
+                      title={t.hiddenByDefault
+                        ? `Hidden by default — filter for "${t.name}" to see its videos`
+                        : slot ? `In filter: ${slot}` : `Filter by ${g.name}: ${t.name}`}
                     >{t.name}</button>
+                    {#if t.hiddenByDefault}
+                      <!-- Hidden-by-default marker (issue #84). -->
+                      <span class="shrink-0 text-[10px] italic text-base-content/40" title="Hidden by default">(default hidden)</span>
+                    {/if}
                     <span class="shrink-0 text-xs tabular-nums opacity-50">{t.videoCount}</span>
                     <button
                       type="button"
