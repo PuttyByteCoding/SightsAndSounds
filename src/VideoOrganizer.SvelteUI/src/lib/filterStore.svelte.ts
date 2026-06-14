@@ -126,19 +126,6 @@ function _FilterStore() {
     apply(tag, kind);
   }
 
-  // Replace the entire active filter with just the pending item in the
-  // chosen bucket — backs the FilterDialog "Clear Existing Filter & Set"
-  // action (vs applyPending, which adds to the current filter).
-  function applyPendingReplacingAll(kind: 'required' | 'optional' | 'excluded') {
-    if (!pending) return;
-    const tag = pending;
-    pending = null;
-    required = kind === 'required' ? [tag] : [];
-    optional = kind === 'optional' ? [tag] : [];
-    excluded = kind === 'excluded' ? [tag] : [];
-    persist();
-  }
-
   function cancelPending() { pending = null; }
 
   function remove(tag: FilterTag) {
@@ -166,7 +153,6 @@ function _FilterStore() {
     has,
     requestAdd,
     applyPending,
-    applyPendingReplacingAll,
     apply,
     cycle,
     cancelPending,
