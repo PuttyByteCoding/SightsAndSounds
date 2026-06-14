@@ -25,6 +25,7 @@
   import TagEditModal from '$lib/components/TagEditModal.svelte';
   import FolderTreeNode from '$lib/components/FolderTreeNode.svelte';
   import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
+  import StartupStatus from '$lib/components/StartupStatus.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { planFilteredQueue } from '$lib/browseQueue';
   import { pillClass, filterSlot, filterSlotClass } from '$lib/tagColors';
@@ -32,6 +33,18 @@
   let videos = $state<Video[]>([]);
   let videosLoading = $state(false);
   let loadError = $state<string | null>(null);
+
+  // Slow-load diagnostics (issue #71). The page's two heavy first loads —
+  // the sidebar (tag groups / tags for the filter tree) and the first video
+  // queue — flip these flags when they finish. If both aren't done within
+  // SLOW_LOAD_MS of mount, we pop the StartupStatus dialog so the user can
+  // see exactly which component load is dragging instead of staring at a
+  // blank grid. Mirrors the temporary landing page at routes/+page.svelte.
+  const SLOW_LOAD_MS = 2000;
+  let sidebarReady = $state(false);
+  let firstVideosReady = $state(false);
+  const pageReady = $derived(sidebarReady && firstVideosReady);
+  let showLoadStatus = $state(false);
 
   let groups = $state<TagGroup[]>([]);
   let tagsByGroup = $state<Record<string, Tag[]>>({});
@@ -220,6 +233,15 @@
     if (storedView === 'player' || storedView === 'grid') {
       viewMode = storedView;
     }
+
+    // Slow-load watchdog (issue #71): if the page hasn't finished its two
+    // heavy first loads within SLOW_LOAD_MS, pop the diagnostics dialog.
+    // Suppressed for the empty-install redirect (pageReady is already set on
+    // that path before we navigate away).
+    const slowLoadTimer = setTimeout(() => {
+      if (!pageReady && !isEmptyInstall) showLoadStatus = true;
+    }, SLOW_LOAD_MS);
+    return () => clearTimeout(slowLoadTimer);
   });
 
   // Save on each change. Cheap (a few writes per drag) and keeps the
@@ -377,7 +399,7 @@
     // Empty-install case: loadSidebar has navigated to /import. Skip
     // the filter call so we don't pop a transient error banner during
     // the navigation.
-    if (isEmptyInstall) return;
+    if (isEmptyInstall) { firstVideosReady = true; return; }
     videosLoading = true;
     loadError = null;
     try {
@@ -417,6 +439,9 @@
       loadError = e?.message ?? 'Failed to load videos';
     } finally {
       videosLoading = false;
+      // First video load is done (success or error) — the grid is no longer
+      // "still loading", so the slow-load dialog shouldn't fire for it.
+      firstVideosReady = true;
     }
   }
 
@@ -522,6 +547,7 @@
       sets = await api.listVideoSets();
       if (sets.length === 0) {
         isEmptyInstall = true;
+        sidebarReady = true;
         goto('/import', { replaceState: true });
         return;
       }
@@ -531,6 +557,7 @@
         // replaceState keeps the back-button history clean so the
         // user doesn't get bounced /browse → /import → /browse.
         isEmptyInstall = true;
+        sidebarReady = true;
         goto('/import', { replaceState: true });
         return;
       }
@@ -545,6 +572,11 @@
       await loadFolderRoots();
     } catch (e: any) {
       loadError = e?.message ?? 'Failed to load sidebar';
+    } finally {
+      // Sidebar load is done (success or error) — clears its half of the
+      // slow-load gate so the dialog only fires while work is genuinely
+      // still in flight.
+      sidebarReady = true;
     }
   }
 
@@ -2275,4 +2307,36 @@
   }}
 />
 <TagEditModal bind:show={editTagModalShow} tag={editingTag} onSaved={onTagSavedFromSidebar} />
+
+<!-- Slow-load diagnostics dialog (issue #71). Pops when the Videos page
+     hasn't finished its sidebar + first-queue loads within SLOW_LOAD_MS, so
+     a refresh/reload that stalls shows exactly which component is dragging
+     instead of a blank grid. Same probe table as the startup landing page. -->
+{#if showLoadStatus}
+  <div class="modal modal-open" role="dialog" aria-modal="true">
+    <div class="modal-box max-w-3xl">
+      <header class="mb-3">
+        <h3 class="text-lg font-semibold">Still loading…</h3>
+        <p class="text-sm text-base-content/70 mt-1">
+          The Videos page is taking more than {(SLOW_LOAD_MS / 1000).toFixed(0)} seconds
+          to load. These checks time the data fetches that drive first paint —
+          anything over 2 seconds is highlighted. The page keeps loading behind
+          this dialog.
+        </p>
+      </header>
+
+      <StartupStatus />
+
+      <div class="modal-action">
+        <button class="btn" onclick={() => (showLoadStatus = false)}>Close</button>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Close"
+      onclick={() => (showLoadStatus = false)}
+    ></button>
+  </div>
+{/if}
 
