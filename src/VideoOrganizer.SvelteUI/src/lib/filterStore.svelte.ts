@@ -23,11 +23,56 @@ function keyOf(t: FilterTag) {
   return `${t.type}::${t.value.toLowerCase()}`;
 }
 
+// Persist the active filter so it survives reload / restart (issue #89). Only
+// the three buckets are stored; `pending` is transient (an in-flight picker
+// choice) and never persisted.
+const STORAGE_KEY = 'browseFilterV1';
+type Persisted = { required: FilterTag[]; optional: FilterTag[]; excluded: FilterTag[] };
+
+function loadPersisted(): Persisted {
+  const empty: Persisted = { required: [], optional: [], excluded: [] };
+  if (typeof localStorage === 'undefined') return empty;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return empty;
+    const p = JSON.parse(raw);
+    // Defensive shape guard — a corrupt / outdated blob must not break the page.
+    const arr = (x: unknown): FilterTag[] =>
+      Array.isArray(x)
+        ? x.filter(
+            (t): t is FilterTag =>
+              !!t && typeof t.type === 'string' && typeof t.value === 'string' && typeof t.label === 'string'
+          )
+        : [];
+    return { required: arr(p?.required), optional: arr(p?.optional), excluded: arr(p?.excluded) };
+  } catch {
+    return empty;
+  }
+}
+
 function _FilterStore() {
-  let required = $state<FilterTag[]>([]);
-  let optional = $state<FilterTag[]>([]);
-  let excluded = $state<FilterTag[]>([]);
+  const initial = loadPersisted();
+  let required = $state<FilterTag[]>(initial.required);
+  let optional = $state<FilterTag[]>(initial.optional);
+  let excluded = $state<FilterTag[]>(initial.excluded);
   let pending = $state<FilterTag | null>(null);
+
+  // Write the current buckets back to localStorage. Called after every
+  // mutation. videoId is dropped — it's a transient "remove from this video"
+  // context that would be stale on the next load.
+  function persist() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const strip = (list: FilterTag[]) =>
+        list.map((t) => ({ type: t.type, value: t.value, label: t.label, tagGroupName: t.tagGroupName }));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ required: strip(required), optional: strip(optional), excluded: strip(excluded) })
+      );
+    } catch {
+      /* storage full / disabled — non-fatal, filter just won't persist */
+    }
+  }
 
   function isEmpty() {
     return required.length + optional.length + excluded.length === 0;
@@ -58,6 +103,7 @@ function _FilterStore() {
     if (kind === 'required') required = [...required, tag];
     else if (kind === 'optional') optional = [...optional, tag];
     else excluded = [...excluded, tag];
+    persist();
   }
 
   // Advance a tag to the next filter bucket, wrapping around:
@@ -90,6 +136,7 @@ function _FilterStore() {
     required = kind === 'required' ? [tag] : [];
     optional = kind === 'optional' ? [tag] : [];
     excluded = kind === 'excluded' ? [tag] : [];
+    persist();
   }
 
   function cancelPending() { pending = null; }
@@ -99,6 +146,7 @@ function _FilterStore() {
     required = required.filter((t) => keyOf(t) !== k);
     optional = optional.filter((t) => keyOf(t) !== k);
     excluded = excluded.filter((t) => keyOf(t) !== k);
+    persist();
   }
 
   function clear() {
@@ -106,6 +154,7 @@ function _FilterStore() {
     optional = [];
     excluded = [];
     pending = null;
+    persist();
   }
 
   return {
