@@ -144,9 +144,6 @@
       </button>
       {#if snapshotMsg}<span class="text-sm text-success">{snapshotMsg}</span>{/if}
     </div>
-    <p class="text-xs text-base-content/50">
-      A full backup to SQLite is coming in a follow-up.
-    </p>
   </section>
 
   <!-- Existing backups -->

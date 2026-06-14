@@ -6,9 +6,8 @@ using VideoOrganizer.Shared.Dto;
 
 namespace VideoOrganizer.API.Services;
 
-// Database backup (issue #32). Self-contained, no external tooling.
-//   · JSON snapshot — a quick one-file dump of every table.
-//   · SQLite full backup — a portable .sqlite (follow-up PR).
+// Database backup (issue #32). Self-contained, no external tooling: a JSON
+// snapshot is a quick one-file dump of every table.
 // The API runs on the host (not containerized), so backups can be written to
 // any directory the user picks. The chosen directory is persisted to a small
 // per-user settings file so it survives restarts; default is
@@ -94,8 +93,7 @@ public sealed class BackupService
         var dir = Directory;
         if (!System.IO.Directory.Exists(dir)) return new();
         return System.IO.Directory.EnumerateFiles(dir)
-            .Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
-                     || f.EndsWith(".sqlite", StringComparison.OrdinalIgnoreCase))
+            .Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
             .Select(f => new FileInfo(f))
             .OrderByDescending(fi => fi.LastWriteTimeUtc)
             .Select(ToInfo)
