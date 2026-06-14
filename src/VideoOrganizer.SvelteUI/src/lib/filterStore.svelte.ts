@@ -60,6 +60,19 @@ function _FilterStore() {
     else excluded = [...excluded, tag];
   }
 
+  // Advance a tag to the next filter bucket, wrapping around:
+  //   Required → Optional → Excluded → Required
+  // Backs the "click a filter-bar chip to cycle its slot" gesture (issue
+  // #80). A tag not currently in any bucket lands in Required. Removal is
+  // still the chip's separate × button.
+  function cycle(tag: FilterTag) {
+    const k = keyOf(tag);
+    if (required.some((t) => keyOf(t) === k)) apply(tag, 'optional');
+    else if (optional.some((t) => keyOf(t) === k)) apply(tag, 'excluded');
+    else if (excluded.some((t) => keyOf(t) === k)) apply(tag, 'required');
+    else apply(tag, 'required');
+  }
+
   function applyPending(kind: 'required' | 'optional' | 'excluded') {
     if (!pending) return;
     const tag = pending;
@@ -106,6 +119,7 @@ function _FilterStore() {
     applyPending,
     applyPendingReplacingAll,
     apply,
+    cycle,
     cancelPending,
     remove,
     clear

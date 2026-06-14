@@ -1801,9 +1801,15 @@
                     <!-- Filter chip — max-w + truncate so long
                          labels ellipsize instead of pushing the
                          row to wrap or scroll. Same pattern reused
-                         by Optional / Excluded below. -->
-                    <span class="badge {filterSlotClass('required')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
-                      <span class="truncate min-w-0">{t.label}</span>
+                         by Optional / Excluded below. Clicking the
+                         label cycles the slot (issue #80); × removes. -->
+                    <span class="badge {filterSlotClass('required')} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
+                      <button
+                        type="button"
+                        class="truncate min-w-0 cursor-pointer"
+                        onclick={() => filterStore.cycle(t)}
+                        title={`${t.label} — Required. Click to cycle: Required → Optional → Excluded`}
+                      >{t.label}</button>
                       <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
@@ -1813,8 +1819,13 @@
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Optional</span>
                   {#each filterStore.optional as t (`opt-${t.type}-${t.value}`)}
-                    <span class="badge {filterSlotClass('optional')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
-                      <span class="truncate min-w-0">{t.label}</span>
+                    <span class="badge {filterSlotClass('optional')} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
+                      <button
+                        type="button"
+                        class="truncate min-w-0 cursor-pointer"
+                        onclick={() => filterStore.cycle(t)}
+                        title={`${t.label} — Optional. Click to cycle: Required → Optional → Excluded`}
+                      >{t.label}</button>
                       <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
@@ -1824,8 +1835,13 @@
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Excluded</span>
                   {#each filterStore.excluded as t (`exc-${t.type}-${t.value}`)}
-                    <span class="badge {filterSlotClass('excluded')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
-                      <span class="truncate min-w-0">{t.label}</span>
+                    <span class="badge {filterSlotClass('excluded')} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
+                      <button
+                        type="button"
+                        class="truncate min-w-0 cursor-pointer"
+                        onclick={() => filterStore.cycle(t)}
+                        title={`${t.label} — Excluded. Click to cycle: Required → Optional → Excluded`}
+                      >{t.label}</button>
                       <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
