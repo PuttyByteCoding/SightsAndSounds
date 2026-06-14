@@ -1854,6 +1854,7 @@
                  ANDed vs ORed vs negated. -->
             <div class="bg-base-100 border border-base-300 rounded-box px-3 py-2 mb-2 flex items-center gap-3 flex-wrap">
               <h2 class="font-semibold text-sm shrink-0">Filter:</h2>
+              <button class="btn btn-xs shrink-0" onclick={() => filterStore.clear()}>Clear Filters</button>
               {#if filterStore.required.length > 0}
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Required</span>
@@ -1907,7 +1908,6 @@
                   {/each}
                 </div>
               {/if}
-              <button class="btn btn-xs ml-auto shrink-0" onclick={() => filterStore.clear()}>Clear</button>
             </div>
           {/if}
 
