@@ -40,6 +40,7 @@ import type {
   Video,
   VideoSet,
   VideoSetInput,
+  ReRootPreview,
   RuntimeInfo,
   FfprobeResult,
   FlagCounts,
@@ -98,6 +99,18 @@ export const api = {
     request<void>(`/api/video-sets/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
   getVideoSetOrphanCount: (id: string) =>
     request<{ count: number }>(`/api/video-sets/${id}/orphan-count`),
+  // Re-root: spot-check a proposed new base path (no writes), then commit
+  // the move (rewrites the source path + every child video's FilePath). (#32)
+  reRootVideoSetPreview: (id: string, newPath: string) =>
+    request<ReRootPreview>(`/api/video-sets/${id}/re-root/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ newPath })
+    }),
+  reRootVideoSet: (id: string, newPath: string) =>
+    request<{ reRooted: number; newPath: string }>(`/api/video-sets/${id}/re-root`, {
+      method: 'POST',
+      body: JSON.stringify({ newPath })
+    }),
 
   // --- Workers -------------------------------------------------------------
 

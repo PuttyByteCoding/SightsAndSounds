@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
-  import type { VideoSet } from '$lib/types';
+  import type { VideoSet, ReRootPreview } from '$lib/types';
   import {
     applySortClick,
     ariaSort,
@@ -125,23 +125,24 @@
   let renameError = $state<string | null>(null);
   let renameInput: HTMLInputElement | null = $state(null);
 
-  // Inline path edit. Same shape as the name rename above so the
-  // template can mirror the pencil-toggles-input pattern. Path
-  // changes are higher-stakes than name changes — every Video row
-  // under the old prefix becomes an orphan — so commitPathEdit
-  // first probes the orphan count and routes through a confirm
-  // modal before actually saving.
+  // Inline path edit ("Change location"). Same shape as the name rename
+  // above so the template can mirror the pencil-toggles-input pattern.
+  // Path changes are higher-stakes than name changes: every Video.FilePath
+  // under the old prefix has to move with the source or it orphans. So a
+  // path change re-roots — it rewrites the source path AND every child
+  // video's FilePath together — and routes through a confirm modal that
+  // spot-checks a sample of files at the new location first (issue #32).
   let pathEditingId = $state<string | null>(null);
   let pathEditValue = $state('');
   let pathEditSaving = $state(false);
   let pathEditError = $state<string | null>(null);
   let pathEditInput: HTMLInputElement | null = $state(null);
-  // When set, a confirmation modal asks the user whether to
-  // proceed with a path change that would orphan N videos. Only
-  // shown when count > 0 — a no-orphan rename saves silently.
+  // When set, a confirmation modal previews the re-root: how many videos
+  // move and whether a sample of them is reachable at the new base path.
   let pathChangeConfirm = $state<
-    { set: VideoSet; oldPath: string; newPath: string; orphans: number } | null
+    { set: VideoSet; oldPath: string; newPath: string; preview: ReRootPreview } | null
   >(null);
+  let pathPreviewLoading = $state(false);
 
   function startPathEdit(s: VideoSet) {
     pathEditingId = s.id;
@@ -180,39 +181,30 @@
       cancelPathEdit();
       return;
     }
-    pathEditSaving = true;
+    pathPreviewLoading = true;
     pathEditError = null;
     try {
-      // Probe orphan count so the confirm modal can quote a
-      // number. The endpoint counts Video rows whose FilePath
-      // starts with the source's *current* (old) path.
-      const { count } = await api.getVideoSetOrphanCount(s.id);
-      if (count > 0) {
-        pathChangeConfirm = { set: s, oldPath: s.path, newPath: next, orphans: count };
-        return; // doSavePath fires from the modal's Confirm button
-      }
-      // No orphans — save silently.
-      await doSavePath(s, next);
+      // Spot-check the move before committing: how many videos would be
+      // repointed, and is a sample of them actually reachable at the new
+      // base? The confirm modal renders the result.
+      const preview = await api.reRootVideoSetPreview(s.id, next);
+      pathChangeConfirm = { set: s, oldPath: s.path, newPath: next, preview };
     } catch (e) {
       pathEditError = e instanceof Error ? e.message : String(e);
     } finally {
-      pathEditSaving = false;
+      pathPreviewLoading = false;
     }
   }
 
-  // Actual API write. Split out so the no-orphan fast path and
-  // the confirmed-orphan path can both reach it.
-  async function doSavePath(s: VideoSet, newPath: string) {
+  // Commit the re-root: rewrites the source path + every child FilePath
+  // together so the library follows the source to its new location.
+  async function confirmPathChange() {
+    const c = pathChangeConfirm;
+    if (!c) return;
     pathEditSaving = true;
     pathEditError = null;
     try {
-      await api.updateVideoSet(s.id, {
-        id: s.id,
-        name: s.name,
-        path: newPath,
-        enabled: s.enabled,
-        sortOrder: s.sortOrder
-      });
+      await api.reRootVideoSet(c.set.id, c.newPath);
       await loadSets();
       cancelPathEdit();
       pathChangeConfirm = null;
@@ -221,12 +213,6 @@
     } finally {
       pathEditSaving = false;
     }
-  }
-
-  async function confirmPathChange() {
-    const c = pathChangeConfirm;
-    if (!c) return;
-    await doSavePath(c.set, c.newPath);
   }
   function cancelPathChangeConfirm() {
     if (pathEditSaving) return;
@@ -372,6 +358,13 @@
     try {
       const existing = sets.find((s) => s.id === editing!.id);
       if (existing) {
+        // A path change on an existing source has to re-root, or every
+        // video under it orphans. Re-root first (rewrites the path + child
+        // FilePaths), then save name/enabled. updateVideoSet alone would
+        // move the source out from under its videos. (issue #32)
+        if (body.path !== existing.path) {
+          await api.reRootVideoSet(existing.id, body.path);
+        }
         await api.updateVideoSet(editing.id, body);
       } else {
         await api.createVideoSet(body);
@@ -572,23 +565,23 @@
                         bind:value={pathEditValue}
                         onpaste={onInlinePathPaste}
                         onkeydown={(e) => onPathEditKey(e, s)}
-                        disabled={pathEditSaving}
+                        disabled={pathEditSaving || pathPreviewLoading}
                         placeholder="C:/MyVideos or /mnt/videos"
                       />
                       <button
                         type="button"
                         class="btn btn-xs btn-soft btn-primary btn-cta shrink-0"
                         onclick={() => commitPathEdit(s)}
-                        disabled={pathEditSaving}
+                        disabled={pathEditSaving || pathPreviewLoading}
                       >
-                        {#if pathEditSaving}<span class="loading loading-spinner loading-xs"></span>{/if}
+                        {#if pathPreviewLoading}<span class="loading loading-spinner loading-xs"></span>{/if}
                         Save
                       </button>
                       <button
                         type="button"
                         class="btn btn-xs btn-cancel shrink-0"
                         onclick={cancelPathEdit}
-                        disabled={pathEditSaving}
+                        disabled={pathEditSaving || pathPreviewLoading}
                       >Cancel</button>
                     </div>
                     {#if pathEditError}<div class="text-error text-xs mt-1">{pathEditError}</div>{/if}
@@ -735,37 +728,76 @@
   </div>
 {/if}
 
-<!-- ========= Path-change orphan warning =========
-     Shown when an inline path edit would leave Video rows pointing
-     at a prefix that no source covers anymore. The save still
-     succeeds (the API doesn't block path changes), but the orphans
-     stop being browsable / streamable until another source covers
-     them or their FilePaths are rewritten. Surfacing the count up-
-     front lets the user back out before the change lands. -->
+<!-- ========= Re-root confirm (Change location) =========
+     A path change moves the source AND every video under it together
+     (re-root), so the library doesn't orphan. Before committing we
+     spot-check a sample of the moved files at the new base path so the
+     user can confirm the mapping is right (e.g. after migrating the
+     library to a Linux mount). (issue #32) -->
 {#if pathChangeConfirm}
   {@const c = pathChangeConfirm}
+  {@const p = c.preview}
+  {@const allFound = p.sampled > 0 && p.missing === 0}
   <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="path-change-title">
     <div class="modal-box space-y-3">
-      <h3 id="path-change-title" class="text-lg font-bold">Change source path?</h3>
+      <h3 id="path-change-title" class="text-lg font-bold">Change source location?</h3>
       <p class="text-sm text-base-content/80">
-        Update
+        Move
         <span class="font-semibold {c.set.enabled ? '' : 'line-through text-base-content/60'}"
-        >{c.set.name}</span>{#if !c.set.enabled}<span class="text-xs italic text-base-content/50 ml-1">(Disabled)</span>{/if}?
+        >{c.set.name}</span>{#if !c.set.enabled}<span class="text-xs italic text-base-content/50 ml-1">(Disabled)</span>{/if}
+        and re-point its videos.
       </p>
       <div class="text-xs space-y-1">
         <div><span class="text-base-content/60">From:</span> <code class="font-mono">{c.oldPath}</code></div>
         <div><span class="text-base-content/60">To:</span> <code class="font-mono">{c.newPath}</code></div>
       </div>
-      <div class="alert alert-warning text-sm">
-        This will orphan <span class="font-semibold">{c.orphans}</span>
-        {c.orphans === 1 ? 'video' : 'videos'} whose paths are under
-        <code>{c.oldPath}</code>. The video records remain in the
-        database but won't stream or appear in listings until another
-        source covers them.
+
+      <div class="text-sm">
+        <span class="font-semibold">{p.totalAffected}</span>
+        {p.totalAffected === 1 ? 'video' : 'videos'} will be re-pointed to the new location.
       </div>
+
+      {#if !p.newBaseExists}
+        <div class="alert alert-warning text-sm">
+          The new folder <code>{c.newPath}</code> isn't reachable from the
+          server right now. You can still proceed, but the videos won't
+          stream until the path exists.
+        </div>
+      {/if}
+
+      {#if p.sampled > 0}
+        <!-- Spot check: stat'd a sample of the moved files at the new base. -->
+        <div class="alert {allFound ? 'alert-success' : 'alert-warning'} text-sm flex-col items-start gap-1">
+          <span>
+            Spot check: <span class="font-semibold">{p.found}/{p.sampled}</span>
+            sampled files found at the new location.
+          </span>
+          {#if !allFound}
+            <span class="text-xs opacity-80">
+              Some samples weren't found — double-check the new path points at the
+              same folder the files actually live in.
+            </span>
+          {/if}
+        </div>
+        <details class="text-xs">
+          <summary class="cursor-pointer text-base-content/60">Show sampled files</summary>
+          <ul class="mt-1 space-y-0.5">
+            {#each p.examples as ex (ex.oldPath)}
+              <li class="flex items-start gap-1 font-mono break-all">
+                <span class={ex.exists ? 'text-success' : 'text-error'}>{ex.exists ? '✓' : '✕'}</span>
+                <span>{ex.newPath}</span>
+              </li>
+            {/each}
+          </ul>
+        </details>
+      {:else}
+        <div class="text-sm text-base-content/70">
+          No videos are stored under this source yet — only the source path changes.
+        </div>
+      {/if}
+
       <div class="modal-action">
-        <!-- Cancel autofocused so accidental Enter dismisses
-             instead of orphaning N videos. -->
+        <!-- Cancel autofocused so accidental Enter dismisses. -->
         <!-- svelte-ignore a11y_autofocus -->
         <button
           type="button"
@@ -776,12 +808,12 @@
         >Cancel</button>
         <button
           type="button"
-          class="btn btn-soft btn-warning border border-warning/50"
+          class="btn {allFound || p.sampled === 0 ? 'btn-soft btn-primary btn-cta' : 'btn-soft btn-warning border border-warning/50'}"
           onclick={confirmPathChange}
           disabled={pathEditSaving}
         >
           {#if pathEditSaving}<span class="loading loading-spinner loading-xs"></span>{/if}
-          Change path
+          Move &amp; re-point
         </button>
       </div>
     </div>

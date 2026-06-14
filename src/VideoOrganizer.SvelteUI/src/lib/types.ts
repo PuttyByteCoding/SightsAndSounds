@@ -643,6 +643,22 @@ export interface VideoSet {
 
 export type VideoSetInput = Omit<VideoSet, 'pathExists'>;
 
+// Re-root spot check (issue #32): a dry-run of moving a source to a new base
+// path, with a sample of child files stat'd at the proposed location.
+export interface ReRootPreviewItem {
+  oldPath: string;
+  newPath: string;
+  exists: boolean;
+}
+export interface ReRootPreview {
+  totalAffected: number;
+  sampled: number;
+  found: number;
+  missing: number;
+  newBaseExists: boolean;
+  examples: ReRootPreviewItem[];
+}
+
 // --- Data validation -------------------------------------------------------
 
 // GET /api/validation/missing-files. A Video row whose FilePath no
