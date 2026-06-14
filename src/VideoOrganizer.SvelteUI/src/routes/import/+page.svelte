@@ -1340,7 +1340,7 @@
                 {/if}
               </div>
 
-              <label class="form-control w-1/4">
+              <label class="form-control">
                 <span class="label-text font-medium">Notes</span>
                 <!-- Single-line input (was a 2-row textarea). Multi-line
                      notes via paste still flow through; the field just
@@ -1348,7 +1348,7 @@
                      other one-line input in this form. -->
                 <input
                   type="text"
-                  class="input input-bordered input-sm w-full"
+                  class="input input-bordered input-sm w-1/4"
                   bind:value={importNotes}
                 />
               </label>
