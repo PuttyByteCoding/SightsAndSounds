@@ -88,6 +88,60 @@ public sealed class BackupService
         return ToInfo(new FileInfo(path));
     }
 
+    // Read + deserialize a JSON snapshot by file name (path-traversal guarded
+    // via ResolvePath). Throws if the file is missing, not a .json, or empty.
+    public async Task<DbSnapshot> ReadSnapshotAsync(string fileName, CancellationToken ct)
+    {
+        if (!fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Only JSON snapshots can be restored.");
+        var path = ResolvePath(fileName)
+            ?? throw new InvalidOperationException($"Backup '{fileName}' not found.");
+        await using var fs = File.OpenRead(path);
+        var snap = await JsonSerializer.DeserializeAsync<DbSnapshot>(fs, SnapshotJson, ct);
+        return snap ?? throw new InvalidOperationException("Snapshot is empty or unreadable.");
+    }
+
+    // Replace the entire database with a snapshot, in one transaction. Clears
+    // every table children-first, then re-inserts parents-first (the snapshot
+    // lists are already in dependency order). The caller is expected to take a
+    // pre-restore safety snapshot first so this is undoable.
+    public async Task RestoreAsync(VideoOrganizerDbContext db, DbSnapshot snap, CancellationToken ct)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+        // Wipe children → parents so no FK is violated mid-clear.
+        await db.FileMoveLogs.ExecuteDeleteAsync(ct);
+        await db.DuplicateCandidates.ExecuteDeleteAsync(ct);
+        await db.VideoPropertyValues.ExecuteDeleteAsync(ct);
+        await db.TagPropertyValues.ExecuteDeleteAsync(ct);
+        await db.VideoTags.ExecuteDeleteAsync(ct);
+        await db.Videos.ExecuteDeleteAsync(ct);
+        await db.PropertyDefinitions.ExecuteDeleteAsync(ct);
+        await db.Tags.ExecuteDeleteAsync(ct);
+        await db.TagGroups.ExecuteDeleteAsync(ct);
+        await db.VideoSets.ExecuteDeleteAsync(ct);
+
+        // Re-insert parents → children. SaveChanges topologically orders the
+        // inserts (including Video's self-referencing ParentVideoId) so a
+        // single call satisfies Postgres's immediate FK checks.
+        db.VideoSets.AddRange(snap.VideoSets);
+        db.TagGroups.AddRange(snap.TagGroups);
+        db.Tags.AddRange(snap.Tags);
+        db.PropertyDefinitions.AddRange(snap.PropertyDefinitions);
+        db.Videos.AddRange(snap.Videos);
+        db.VideoTags.AddRange(snap.VideoTags);
+        db.TagPropertyValues.AddRange(snap.TagPropertyValues);
+        db.VideoPropertyValues.AddRange(snap.VideoPropertyValues);
+        db.DuplicateCandidates.AddRange(snap.DuplicateCandidates);
+        db.FileMoveLogs.AddRange(snap.FileMoveLogs);
+        await db.SaveChangesAsync(ct);
+
+        await tx.CommitAsync(ct);
+        // Drop the now-stale tracked entities so the context doesn't carry the
+        // freshly-inserted graph into subsequent requests on this scope.
+        db.ChangeTracker.Clear();
+    }
+
     public List<BackupInfo> List()
     {
         var dir = Directory;
