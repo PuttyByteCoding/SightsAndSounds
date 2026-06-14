@@ -66,6 +66,9 @@ export interface Tag {
   sortOrder: number;
   notes: string;
   videoCount: number;
+  // Videos with this tag are hidden from the grid unless explicitly
+  // filtered for (issue #84).
+  hiddenByDefault?: boolean;
 }
 
 export interface CreateTagGroupRequest {

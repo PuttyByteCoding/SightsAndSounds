@@ -52,6 +52,7 @@
     { href: '/browse', label: 'Videos', icon: 'M4 5h16v3H4V5zm0 5h7v9H4v-9zm9 0h7v4h-7v-4zm0 6h7v3h-7v-3z' },
     { href: '/history', label: 'History', icon: 'M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V3zm-1 5v5l4 2 .72-1.45L13.5 12V8H12z' },
     { href: '/tags',   label: 'Tag Management', icon: 'M21.41 11.58l-9-9A2 2 0 0 0 11 2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 .59 1.42l9 9a2 2 0 0 0 2.83 0l7-7a2 2 0 0 0 0-2.84ZM7 7.5A1.5 1.5 0 1 1 7 4.5a1.5 1.5 0 0 1 0 3Z' },
+    { href: '/hidden-tags', label: 'Hidden Tags', icon: 'M12 7a5 5 0 0 1 5 5c0 .65-.13 1.27-.36 1.84l2.92 2.92A11.8 11.8 0 0 0 23 12c-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.73 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46A11.8 11.8 0 0 0 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 21 21 19.73 3.27 2 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65a3 3 0 0 0 3 3c.22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53a5 5 0 0 1-5-5c0-.79.2-1.53.53-2.2z' },
     { href: '/import', label: 'Import Tool', icon: 'M12 2a1 1 0 0 1 1 1v8h8a1 1 0 1 1 0 2h-8v8a1 1 0 1 1-2 0v-8H3a1 1 0 1 1 0-2h8V3a1 1 0 0 1 1-1Z' },
     { href: '/sources', label: 'Sources', icon: 'M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z' },
     { href: '/keyboard-shortcuts', label: 'Keyboard Shortcuts', icon: 'M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm2 3v2h2V8H6zm4 0v2h2V8h-2zm4 0v2h2V8h-2zm4 0v2h2V8h-2zM6 12v2h2v-2H6zm4 0v2h8v-2h-8zm10 0v2h2v-2h-2zM8 16v2h8v-2H8z' },

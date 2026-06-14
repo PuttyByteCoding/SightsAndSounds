@@ -376,6 +376,12 @@ export const api = {
     }),
   updateTag: (id: string, req: UpdateTagRequest) =>
     request<void>(`/api/tags/${id}`, { method: 'PUT', body: JSON.stringify(req) }),
+  // Toggle just the "hidden by default" flag (issue #84).
+  setTagHiddenByDefault: (id: string, hidden: boolean) =>
+    request<void>(`/api/tags/${id}/hidden-by-default`, {
+      method: 'PUT',
+      body: JSON.stringify({ hidden })
+    }),
   deleteTag: (id: string) =>
     request<void>(`/api/tags/${id}`, { method: 'DELETE' }),
   mergeTags: (req: MergeTagsRequest) =>
