@@ -231,6 +231,14 @@ export interface SetPropertyValuesRequest {
   values: PropertyValueWrite[];
 }
 
+// One backup file (issue #32). type: 'json' (quick snapshot) | 'sqlite' (full).
+export interface BackupInfo {
+  fileName: string;
+  type: string;
+  sizeBytes: number;
+  createdUtc: string;
+}
+
 // --- Video DTOs ------------------------------------------------------------
 
 export interface ChapterMarker {

@@ -1,4 +1,5 @@
 import type {
+  BackupInfo,
   BulkCreateTagsRequest,
   BulkCreateTagsResponse,
   CreateClipRequest,
@@ -457,6 +458,15 @@ export const api = {
     return request<LogEvent[]>(`/api/logs${s ? `?${s}` : ''}`);
   },
   getRuntimeInfo: () => request<RuntimeInfo>('/api/runtime-info'),
+
+  // --- Backups (issue #32) -------------------------------------------------
+  createBackupSnapshot: () =>
+    request<BackupInfo>('/api/backup/snapshot', { method: 'POST' }),
+  listBackups: () => request<BackupInfo[]>('/api/backup'),
+  deleteBackup: (fileName: string) =>
+    request<void>(`/api/backup/${encodeURIComponent(fileName)}`, { method: 'DELETE' }),
+  backupDownloadUrl: (fileName: string) =>
+    `/api/backup/${encodeURIComponent(fileName)}/download`,
 
   // refresh=true bypasses the server's per-folder scan cache and re-walks
   // the filesystem — backs the Sources refresh button. (issue #4)
