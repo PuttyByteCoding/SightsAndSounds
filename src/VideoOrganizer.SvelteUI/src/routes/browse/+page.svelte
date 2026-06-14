@@ -45,6 +45,12 @@
   let firstVideosReady = $state(false);
   const pageReady = $derived(sidebarReady && firstVideosReady);
   let showLoadStatus = $state(false);
+  // Auto-close the slow-load dialog the moment both heavy loads finish, so a
+  // load that just barely crosses 2s flashes the dialog and dismisses itself
+  // rather than forcing the user to close it.
+  $effect(() => {
+    if (pageReady) showLoadStatus = false;
+  });
 
   let groups = $state<TagGroup[]>([]);
   let tagsByGroup = $state<Record<string, Tag[]>>({});
