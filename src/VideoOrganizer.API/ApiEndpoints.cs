@@ -1907,8 +1907,24 @@ public static class ApiEndpoints
             var optional = filter?.Optional ?? new();
             var excluded = filter?.Excluded ?? new();
 
+            // Hidden-by-default tags (issue #84): videos carrying one are
+            // suppressed UNLESS the user explicitly filters for that tag
+            // (Required/Optional). Tags the user opted into via the filter are
+            // removed from the auto-hide set so "filter for it to see it" works.
+            var referencedTagIds = required.Concat(optional)
+                .Where(f => f.Type == FilterRefType.Tag && Guid.TryParse(f.Value, out _))
+                .Select(f => Guid.Parse(f.Value))
+                .ToHashSet();
+            var autoHideTagIds = (await db.Tags.AsNoTracking()
+                    .Where(t => t.HiddenByDefault)
+                    .Select(t => t.Id)
+                    .ToListAsync(ct))
+                .Where(id => !referencedTagIds.Contains(id))
+                .ToHashSet();
+
             var matched = candidates.Where(v =>
             {
+                if (autoHideTagIds.Count > 0 && v.VideoTags.Any(vt => autoHideTagIds.Contains(vt.TagId))) return false;
                 if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
                 if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
                 if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
@@ -3279,7 +3295,7 @@ public static class ApiEndpoints
             var dtos = rows.Select(t => new TagDto(
                 t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty,
                 t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes,
-                counts.TryGetValue(t.Id, out var c) ? c : 0)).ToList();
+                counts.TryGetValue(t.Id, out var c) ? c : 0, t.HiddenByDefault)).ToList();
             return Results.Ok(dtos);
         }).WithName("ListTags");
 
@@ -3292,7 +3308,7 @@ public static class ApiEndpoints
             var count = await db.VideoTags.CountAsync(vt => vt.TagId == id, ct);
             return Results.Ok(new TagDto(
                 t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty,
-                t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, count));
+                t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, count, t.HiddenByDefault));
         }).WithName("GetTag");
 
         tagsGroup.MapPost("/", async (
@@ -3313,7 +3329,8 @@ public static class ApiEndpoints
                 Aliases = req.Aliases?.ToList() ?? new(),
                 IsFavorite = req.IsFavorite,
                 SortOrder = req.SortOrder,
-                Notes = req.Notes
+                Notes = req.Notes,
+                HiddenByDefault = req.HiddenByDefault
             };
             db.Tags.Add(t);
             await db.SaveChangesAsync(ct);
@@ -3323,7 +3340,7 @@ public static class ApiEndpoints
                 "Created Tag {TagId} '{Name}' in TagGroup {TagGroupId} '{GroupName}' ({AliasCount} aliases)",
                 t.Id, t.Name, t.TagGroupId, grp.Name, t.Aliases.Count);
             return Results.Created($"/api/tags/{t.Id}",
-                new TagDto(t.Id, t.TagGroupId, grp.Name, t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, 0));
+                new TagDto(t.Id, t.TagGroupId, grp.Name, t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, 0, t.HiddenByDefault));
         }).WithName("CreateTag");
 
         // POST /api/tags/bulk — create many tags in one request (issue #49).
@@ -3411,6 +3428,7 @@ public static class ApiEndpoints
             t.IsFavorite = req.IsFavorite;
             t.SortOrder = req.SortOrder;
             t.Notes = req.Notes;
+            t.HiddenByDefault = req.HiddenByDefault;
             t.TagGroupId = targetGroupId;
             await db.SaveChangesAsync(ct);
 
@@ -3435,6 +3453,22 @@ public static class ApiEndpoints
             }
             return Results.NoContent();
         }).WithName("UpdateTag");
+
+        // Toggle just the "hidden by default" flag (issue #84). Lightweight so
+        // the filter-tree tag modal and the Hidden-by-default page can flip it
+        // without round-tripping a full tag edit.
+        tagsGroup.MapPut("/{id:guid}/hidden-by-default", async (
+            Guid id, SetHiddenByDefaultRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var t = await db.Tags.FirstOrDefaultAsync(x => x.Id == id, ct);
+            if (t is null) return Results.NotFound();
+            t.HiddenByDefault = req.Hidden;
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Tag {TagId} '{Name}' HiddenByDefault set to {Hidden}", t.Id, t.Name, req.Hidden);
+            return Results.NoContent();
+        }).WithName("SetTagHiddenByDefault");
 
         tagsGroup.MapDelete("/{id:guid}", async (
             Guid id, VideoOrganizerDbContext db,

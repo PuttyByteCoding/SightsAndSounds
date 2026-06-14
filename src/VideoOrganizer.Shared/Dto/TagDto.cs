@@ -11,7 +11,8 @@ public record TagDto(
     bool IsFavorite,
     int SortOrder,
     string Notes,
-    int VideoCount = 0);
+    int VideoCount = 0,
+    bool HiddenByDefault = false);
 
 public record CreateTagRequest(
     Guid TagGroupId,
@@ -19,7 +20,12 @@ public record CreateTagRequest(
     IReadOnlyList<string>? Aliases = null,
     bool IsFavorite = false,
     int SortOrder = 0,
-    string Notes = "");
+    string Notes = "",
+    bool HiddenByDefault = false);
+
+// Lightweight toggle for a tag's "hidden by default" flag (issue #84) — used
+// by the filter-tree tag modal and the Hidden-by-default management page.
+public record SetHiddenByDefaultRequest(bool Hidden);
 
 // Create many tags in one request (issue #49). Names are trimmed; blanks are
 // ignored; names that collide with an existing tag in the group (or repeat
@@ -43,7 +49,8 @@ public record UpdateTagRequest(
     bool IsFavorite,
     int SortOrder,
     string Notes,
-    Guid? TagGroupId = null);
+    Guid? TagGroupId = null,
+    bool HiddenByDefault = false);
 
 // Merge sources into target. All Videos referencing any source tag are
 // re-pointed at target; sources are then deleted. Target must not appear
