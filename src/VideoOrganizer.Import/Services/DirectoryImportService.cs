@@ -51,6 +51,7 @@ public class DirectoryImportService
         var files = Directory.EnumerateFiles(directoryPath, "*.*", searchOption)
             .Where(f => VideoFileExtensions.IsVideo(f))
             .Where(f => !PathFilters.IsInExcludedFolder(f, directoryPath))
+            .Where(f => !PathFilters.IsHiddenFile(f)) // issue #62
             .ToList();
 
         _logger.LogInformation("Found {Count} video files in {Path}", files.Count, directoryPath);

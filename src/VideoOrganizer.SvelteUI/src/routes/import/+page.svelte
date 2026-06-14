@@ -96,7 +96,7 @@
   // (Will Import / Already Imported / Other) by walking the map. A
   // single-folder selection collapses to one entry, behaving exactly
   // like the pre-multi-select implementation did.
-  type FolderFiles = { files: string[]; nonImportable: string[]; imported: string[] };
+  type FolderFiles = { files: string[]; nonImportable: string[]; imported: string[]; hidden: string[] };
   let filesByFolder = $state<Map<string, FolderFiles>>(new Map());
   // Aggregated views — what the existing template binds against.
   // Replaced direct assignments with deriveds so any flip in
@@ -109,6 +109,11 @@
   const nonImportableFileList = $derived.by<string[]>(() => {
     const out: string[] = [];
     for (const v of filesByFolder.values()) out.push(...v.nonImportable);
+    return out;
+  });
+  const hiddenFileList = $derived.by<string[]>(() => {
+    const out: string[] = [];
+    for (const v of filesByFolder.values()) out.push(...v.hidden);
     return out;
   });
   const importedFilesSet = $derived.by<Set<string>>(() => {
@@ -128,7 +133,7 @@
   // 'pending' = video files not yet in the DB (the actionable bucket).
   // 'imported' = videos already imported (won't be re-imported).
   // 'other'    = non-video files (images, .nfo, etc.).
-  let activeFileTab = $state<'pending' | 'imported' | 'other'>('pending');
+  let activeFileTab = $state<'pending' | 'imported' | 'other' | 'hidden'>('pending');
 
   // Collapsibles
   let showTagsSection = $state(true);
@@ -197,7 +202,9 @@
       ? pendingFiles
       : activeFileTab === 'imported'
         ? alreadyImportedFiles
-        : nonImportableFileList;
+        : activeFileTab === 'hidden'
+          ? hiddenFileList
+          : nonImportableFileList;
     if (q.length === 0) return source;
     return source.filter((f) => f.toLowerCase().includes(q));
   });
@@ -596,7 +603,8 @@
           next.set(p, {
             files: res.files,
             nonImportable: res.nonImportableFiles,
-            imported: res.importedFiles
+            imported: res.importedFiles,
+            hidden: res.hiddenFiles
           });
         } catch (e) {
           formError = toMessage(`Failed to list files for ${p}`, e);
@@ -976,16 +984,16 @@
            handleImport surfaces a transient formSuccess toast and the
            Background Tasks page owns live progress for every job. -->
 
-      <!-- File list — three buckets surfaced as tabs so the user can see at
-           a glance what's actionable (Will Import) vs noise (Already Imported,
-           Not a Video). Search filters the active tab. -->
+      <!-- File list — buckets surfaced as tabs so the user can see at a glance
+           what's actionable (Will Import) vs noise (Already Imported, Not a
+           Video, Hidden Files). Search filters the active tab. -->
       {#if folderSelected}
         <section class="card bg-base-200 p-4 space-y-3">
           {#if filesLoading}
             <div class="flex items-center gap-2 text-base-content/70">
               <span class="loading loading-spinner loading-sm"></span> Loading files...
             </div>
-          {:else if fileList.length === 0 && nonImportableFileList.length === 0}
+          {:else if fileList.length === 0 && nonImportableFileList.length === 0 && hiddenFileList.length === 0}
             <div class="flex items-center justify-between gap-2">
               <span class="text-base-content/60 text-sm italic">Folder is empty.</span>
               <!-- Still expose the refresh affordance in the empty
@@ -1038,6 +1046,18 @@
                   {nonImportableFileList.length}
                 </span>
               </button>
+              <button
+                type="button"
+                role="tab"
+                class="tab gap-2 {activeFileTab === 'hidden' ? 'tab-active' : ''}"
+                onclick={() => (activeFileTab = 'hidden')}
+                title="Dot-prefixed files — ignored by the import"
+              >
+                Hidden Files
+                <span class="badge badge-sm font-bold tabular-nums badge-ghost">
+                  {hiddenFileList.length}
+                </span>
+              </button>
             </div>
 
             <div class="flex flex-wrap items-center gap-2">
@@ -1047,7 +1067,7 @@
                 placeholder="Filter files by name..."
                 bind:value={fileSearch}
               />
-              {#if activeFileTab !== 'other'}
+              {#if activeFileTab === 'pending' || activeFileTab === 'imported'}
                 <label class="label cursor-pointer gap-2">
                   <input type="checkbox" class="checkbox checkbox-sm" bind:checked={showThumbnails} />
                   <span class="label-text text-sm">Thumbnails</span>
@@ -1057,6 +1077,7 @@
                 Showing {visibleFiles.length} of
                 {activeFileTab === 'pending' ? pendingFiles.length
                  : activeFileTab === 'imported' ? alreadyImportedFiles.length
+                 : activeFileTab === 'hidden' ? hiddenFileList.length
                  : nonImportableFileList.length}
               </span>
               <!-- Manual refresh — invalidates the per-folder cache
