@@ -1861,6 +1861,50 @@ public static class ApiEndpoints
             return Results.NoContent();
         }).WithName("DeleteVideo");
 
+        // GET /api/videos/{id}/ocr?t=<seconds> — read on-screen text from the
+        // frame at time t (issue #5). Snapshots that frame with ffmpeg and runs
+        // it through the tesseract CLI. 503 (with an install hint) when
+        // tesseract isn't available.
+        api.MapGet("/videos/{id:guid}/ocr", async (
+            Guid id, double? t, VideoOrganizerDbContext db, OcrService ocr,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (!File.Exists(video.FilePath))
+                return Results.BadRequest(new { error = "The video's file is missing on disk." });
+
+            var seconds = Math.Max(0, t ?? 0);
+            // PNG (lossless) reads better than a JPEG snapshot for OCR.
+            var tmp = Path.Combine(Path.GetTempPath(), $"ocr_{Guid.NewGuid():N}.png");
+            try
+            {
+                var snapshot = await FFmpeg.Conversions.FromSnippet.Snapshot(
+                    video.FilePath, tmp, TimeSpan.FromSeconds(seconds));
+                await snapshot.Start(ct);
+
+                var text = await ocr.RecognizeAsync(tmp, ct);
+                return Results.Ok(new OcrResultDto(seconds, text));
+            }
+            catch (OcrService.OcrUnavailableException ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: 503);
+            }
+            catch (OperationCanceledException)
+            {
+                return Results.StatusCode(499);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "OCR failed for video {VideoId} at {Seconds}s", id, seconds);
+                return Results.Problem("Failed to read text from the frame.");
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort cleanup */ }
+            }
+        }).WithName("OcrVideoFrame");
+
         // POST /api/library/remove-folder — drop every imported video under a
         // folder from the library (issue #53). Files on disk are NOT touched;
         // only the DB rows go, and EF cascades take their tags, properties,

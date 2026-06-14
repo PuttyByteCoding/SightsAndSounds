@@ -10,6 +10,7 @@ import type {
   ImportedFolder,
   ImportScanProgress,
   MoveProgress,
+  OcrResult,
   FileMoveLog,
   ImportFailedFileRow,
   ImportFileListResponse,
@@ -179,6 +180,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body)
     }),
+
+  // OCR the on-screen text at time t (seconds) of the video (issue #5).
+  ocrVideoFrame: (id: string, t: number) =>
+    request<OcrResult>(`/api/videos/${id}/ocr?t=${encodeURIComponent(String(t))}`),
 
   // Tags whose name/alias appears in this video's file name or folder path,
   // excluding ones already applied (issue #10).

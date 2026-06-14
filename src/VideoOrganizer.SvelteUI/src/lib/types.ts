@@ -130,6 +130,12 @@ export interface TagSearchHit {
   aliases: string[];
 }
 
+// Text read off the video frame at timeSeconds via OCR (issue #5).
+export interface OcrResult {
+  timeSeconds: number;
+  text: string;
+}
+
 // A tag suggested for a video because its name/alias was found in the file
 // name or folder path (issue #10). source: 'File name' | 'Folder'.
 export interface TagSuggestion {
