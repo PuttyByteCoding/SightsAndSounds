@@ -1736,6 +1736,63 @@ public static class ApiEndpoints
             svc.Delete(fileName) ? Results.NoContent() : Results.NotFound())
             .WithName("DeleteBackup");
 
+        // Restore the whole database from a JSON snapshot (issue #32). Takes a
+        // pre-restore safety snapshot first so a bad restore is undoable, then
+        // replaces every table from the file in one transaction. After this the
+        // caller should re-check each source's path (a snapshot from another
+        // machine carries that machine's paths) and re-root any that moved.
+        backup.MapPost("/{fileName}/restore", async (
+            string fileName, VideoOrganizerDbContext db, BackupService svc,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            DbSnapshot snap;
+            try
+            {
+                snap = await svc.ReadSnapshotAsync(fileName, ct);
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+
+            // Safety net: snapshot the current DB before overwriting it.
+            BackupInfo safety;
+            try
+            {
+                safety = await svc.CreateJsonSnapshotAsync(db, ct);
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"Aborted — couldn't take a pre-restore safety snapshot: {ex.Message}"
+                });
+            }
+
+            try
+            {
+                await svc.RestoreAsync(db, snap, ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Restore from {File} failed; data left unchanged", fileName);
+                return Results.Problem(
+                    $"Restore failed: {ex.Message}. Your data is unchanged; a safety snapshot was saved as {safety.FileName}.");
+            }
+
+            logger.LogWarning(
+                "Restored database from {File} — {Videos} videos, {Tags} tags, {Sets} sources. Pre-restore safety snapshot: {Safety}",
+                fileName, snap.Videos.Count, snap.Tags.Count, snap.VideoSets.Count, safety.FileName);
+            return Results.Ok(new
+            {
+                restoredFrom = fileName,
+                safetySnapshot = safety.FileName,
+                videos = snap.Videos.Count,
+                tags = snap.Tags.Count,
+                videoSets = snap.VideoSets.Count
+            });
+        }).WithName("RestoreBackup");
+
         // === Videos =========================================================
 
         api.MapGet("/videos/count", async (VideoOrganizerDbContext db, CancellationToken ct) =>

@@ -485,6 +485,16 @@ export const api = {
     }),
   deleteBackup: (fileName: string) =>
     request<void>(`/api/backup/${encodeURIComponent(fileName)}`, { method: 'DELETE' }),
+  // Replace the whole DB from a JSON snapshot. The server takes a pre-restore
+  // safety snapshot first and returns its name. (#32)
+  restoreBackup: (fileName: string) =>
+    request<{
+      restoredFrom: string;
+      safetySnapshot: string;
+      videos: number;
+      tags: number;
+      videoSets: number;
+    }>(`/api/backup/${encodeURIComponent(fileName)}/restore`, { method: 'POST' }),
   backupDownloadUrl: (fileName: string) =>
     `/api/backup/${encodeURIComponent(fileName)}/download`,
 
