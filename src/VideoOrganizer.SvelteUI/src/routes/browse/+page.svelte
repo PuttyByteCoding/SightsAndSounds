@@ -27,7 +27,7 @@
   import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { planFilteredQueue } from '$lib/browseQueue';
-  import { pillClass, filterSlot, filterSlotClass } from '$lib/tagColors';
+  import { pillClass, filterSlot, filterSlotClass, filterSlotDot } from '$lib/tagColors';
 
   let videos = $state<Video[]>([]);
   let videosLoading = $state(false);
@@ -185,13 +185,18 @@
   // to localStorage.
   type SectionKey = 'flags' | 'favorites' | 'related' | 'folders' | 'tagGroups';
   const SECTION_KEYS: readonly SectionKey[] = ['flags', 'favorites', 'related', 'folders', 'tagGroups'];
-  let sectionCollapsed = $state<Record<SectionKey, boolean>>({
+  // Default collapsed state per section, used when the user has no stored
+  // preference. Related Tags defaults collapsed — it's a long, noisy,
+  // grid-derived list that's mostly in the way during heavy tagging /
+  // dev (issue #80). The user's own toggle still persists and wins.
+  const SECTION_DEFAULTS: Record<SectionKey, boolean> = {
     flags: false,
     favorites: false,
-    related: false,
+    related: true,
     folders: false,
     tagGroups: false
-  });
+  };
+  let sectionCollapsed = $state<Record<SectionKey, boolean>>({ ...SECTION_DEFAULTS });
   function toggleSection(k: SectionKey) {
     sectionCollapsed[k] = !sectionCollapsed[k];
     if (typeof localStorage !== 'undefined') {
@@ -210,7 +215,10 @@
     }
     sidebarCollapsed = localStorage.getItem('browseSidebarCollapsed') === '1';
     for (const k of SECTION_KEYS) {
-      sectionCollapsed[k] = localStorage.getItem(`browseSection_${k}_collapsed`) === '1';
+      // Honor a stored preference; otherwise fall back to the section's
+      // default collapsed state (Related Tags starts collapsed).
+      const stored = localStorage.getItem(`browseSection_${k}_collapsed`);
+      sectionCollapsed[k] = stored === null ? SECTION_DEFAULTS[k] : stored === '1';
     }
     const storedSort = localStorage.getItem('browseSortMode');
     if (storedSort && SORT_MODES.some(m => m.value === storedSort)) {
@@ -1537,7 +1545,11 @@
                       class="flex items-center gap-1 hover:bg-base-200 rounded"
                       style="padding-left: 0.75rem"
                     >
-                      <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+                      <!-- Filter-membership dot: a tag currently in the
+                           filter shows a slot-colored dot (issue #80). -->
+                      <span class="shrink-0 w-5 h-5 flex items-center justify-center" title={slot ? `In filter: ${slot}` : undefined}>
+                        {#if slot}<span class="w-2 h-2 rounded-full {filterSlotDot(slot)}"></span>{/if}
+                      </span>
                       <button
                         type="button"
                         class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
@@ -1720,7 +1732,11 @@
                     class="flex items-center gap-1 hover:bg-base-200 rounded"
                     style="padding-left: 0.75rem"
                   >
-                    <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+                    <!-- Filter-membership dot: a tag currently in the
+                         filter shows a slot-colored dot (issue #80). -->
+                    <span class="shrink-0 w-5 h-5 flex items-center justify-center" title={slot ? `In filter: ${slot}` : undefined}>
+                      {#if slot}<span class="w-2 h-2 rounded-full {filterSlotDot(slot)}"></span>{/if}
+                    </span>
                     <button
                       type="button"
                       class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
