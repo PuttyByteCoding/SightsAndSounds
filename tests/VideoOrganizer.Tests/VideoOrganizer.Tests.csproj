@@ -20,6 +20,10 @@
          (The FakeLogger type is in Microsoft.Extensions.Logging.Testing namespace
          but ships as part of the Diagnostics.Testing package since .NET 8.) -->
     <PackageReference Include="Microsoft.Extensions.Diagnostics.Testing" Version="9.0.0" />
+    <!-- Lets the ffmpeg-backed integration tests skip (not fail) when ffmpeg/
+         ffprobe aren't on PATH — e.g. a dev box without it. CI installs ffmpeg,
+         so there the tests actually run. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
   </ItemGroup>
 
   <ItemGroup>
