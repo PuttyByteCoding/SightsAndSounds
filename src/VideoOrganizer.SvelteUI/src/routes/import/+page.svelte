@@ -1244,7 +1244,7 @@
                    imported video. Uses /api/tags/search for autocomplete. -->
               <div class="form-control">
                 <span class="label-text font-medium">Tags to apply</span>
-                <div class="mt-1 flex gap-2">
+                <div class="mt-1 flex gap-2 w-1/4">
                   <div class="relative flex-1">
                     <input
                       class="input input-bordered input-sm w-full"
@@ -1340,7 +1340,7 @@
                 {/if}
               </div>
 
-              <label class="form-control">
+              <label class="form-control w-1/4">
                 <span class="label-text font-medium">Notes</span>
                 <!-- Single-line input (was a 2-row textarea). Multi-line
                      notes via paste still flow through; the field just
