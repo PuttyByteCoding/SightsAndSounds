@@ -9,6 +9,7 @@
     VideoSet
   } from '$lib/types';
   import { breadcrumbs } from '$lib/pathHelpers';
+  import { pillClass } from '$lib/tagColors';
   import TagEditModal from '$lib/components/TagEditModal.svelte';
 
   // --- State ----------------------------------------------------------------
@@ -68,38 +69,69 @@
   let initialTagPickerInput = $state('');
   let initialTagSuggestions = $state<{ tagId: string; name: string; tagGroupName: string }[]>([]);
   let initialTagLabels = $state<Record<string, string>>({});
+  // id → tag-group name, so applied-tag pills can be colored by group via
+  // pillClass() exactly like the EditTagsPanel composer (issue #65).
+  let initialTagGroups = $state<Record<string, string>>({});
   let importNotes = $state('');
 
-  // Create-tag modal (TagEditModal in create mode, with its Group select)
-  // launched from the picker's "+ New Tag" button or the dropdown's
-  // "+ Create" row. On save the new tag is auto-applied to the import.
-  let showCreateTagModal = $state(false);
+  // Tag create/edit modal. Mirrors the EditTagsPanel composer: launched in
+  // CREATE mode (editingTag = null) from the picker's "+ New Tag" button or
+  // the dropdown's "+ Create" row, and in EDIT mode (editingTag set) from a
+  // pill's name / pencil ✎. On save the tag is applied (create) or its pill
+  // is refreshed in place (edit). Unlike the composer there's no default Tag
+  // Group — create opens straight onto a blank Group field (focusGroup).
+  let showTagModal = $state(false);
+  let editingTag = $state<Tag | null>(null);
   let createTagInitialName = $state('');
 
   function openCreateTag(prefill: string) {
+    editingTag = null;
     createTagInitialName = prefill;
     initialTagSuggestions = [];
-    showCreateTagModal = true;
+    initialTagPickerOpen = false;
+    showTagModal = true;
   }
 
-  function onTagCreated(saved: Tag) {
+  // Pencil / pill click → edit the tag itself (name, aliases, group, …) via
+  // the same TagEditModal in edit mode. VideoTagSummary-style search hits lack
+  // aliases/notes, so fetch the full Tag first.
+  async function openEditTag(tid: string) {
+    try {
+      editingTag = await api.getTag(tid);
+      createTagInitialName = '';
+      showTagModal = true;
+    } catch (e) {
+      formError = toMessage('Failed to load tag', e);
+    }
+  }
+
+  // Single onSaved for both modes. Create: add the new tag to the import.
+  // Edit: the id is already applied, so this just refreshes the pill's label
+  // and group color (name and/or group may have changed).
+  function onTagSaved(saved: Tag) {
     if (!initialTagIds.includes(saved.id)) {
       initialTagIds = [...initialTagIds, saved.id];
     }
     initialTagLabels = { ...initialTagLabels, [saved.id]: saved.name };
+    initialTagGroups = { ...initialTagGroups, [saved.id]: saved.tagGroupName };
     initialTagPickerInput = '';
+    editingTag = null;
   }
 
   // Keyboard nav for the "Tags to apply" dropdown — mirrors the EditTagsPanel
   // composer so the picker feels the same (issue #65): arrow keys move a
   // highlight, Enter selects, Escape closes; the create-new row is badged NEW.
   let initialTagHighlight = $state(-1);
+  // Dropdown open flag so the suggestion list closes on blur (matching the
+  // composer's onblur-close) instead of lingering after the field loses focus.
+  let initialTagPickerOpen = $state(false);
   const initialTagDropCount = $derived(
     initialTagSuggestions.length + (initialTagPickerInput.trim().length > 0 ? 1 : 0)
   );
-  function addInitialTag(h: { tagId: string; name: string }) {
+  function addInitialTag(h: { tagId: string; name: string; tagGroupName: string }) {
     if (!initialTagIds.includes(h.tagId)) initialTagIds = [...initialTagIds, h.tagId];
     initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
+    initialTagGroups = { ...initialTagGroups, [h.tagId]: h.tagGroupName };
     initialTagPickerInput = '';
     initialTagSuggestions = [];
     initialTagHighlight = -1;
@@ -131,6 +163,7 @@
     } else if (e.key === 'Escape') {
       initialTagSuggestions = [];
       initialTagHighlight = -1;
+      initialTagPickerOpen = false;
     }
   }
 
@@ -1219,16 +1252,19 @@
                       value={initialTagPickerInput}
                       autocomplete="off"
                       onkeydown={onInitialTagKeydown}
+                      onfocus={() => (initialTagPickerOpen = true)}
+                      onblur={() => setTimeout(() => (initialTagPickerOpen = false), 200)}
                       oninput={async (e) => {
                         initialTagPickerInput = (e.target as HTMLInputElement).value;
                         initialTagHighlight = -1;
+                        initialTagPickerOpen = true;
                         const q = initialTagPickerInput.trim();
                         initialTagSuggestions = q
                           ? (await api.searchTags(q)).filter(h => !initialTagIds.includes(h.tagId))
                           : [];
                       }}
                     />
-                    {#if initialTagSuggestions.length > 0 || initialTagPickerInput.trim().length > 0}
+                    {#if initialTagPickerOpen && (initialTagSuggestions.length > 0 || initialTagPickerInput.trim().length > 0)}
                       <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow max-h-60 overflow-y-auto">
                         {#each initialTagSuggestions as h, i (h.tagId)}
                           <button
@@ -1271,11 +1307,33 @@
                 {#if initialTagIds.length > 0}
                   <div class="flex flex-wrap gap-1 mt-2">
                     {#each initialTagIds as tid (tid)}
-                      <span class="badge badge-primary gap-1">
-                        {initialTagLabels[tid] ?? tid}
-                        <button onclick={() => {
-                          initialTagIds = initialTagIds.filter(x => x !== tid);
-                        }}>×</button>
+                      <!-- Group-colored pill with pencil-edit + remove, a
+                           faithful copy of the EditTagsPanel composer pill
+                           (issue #65). pillClass hashes the group name to the
+                           same palette used everywhere else. -->
+                      <span class="badge {pillClass(tid, initialTagGroups[tid])} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
+                        <button
+                          type="button"
+                          class="cursor-pointer truncate min-w-0"
+                          onclick={() => openEditTag(tid)}
+                          title="Edit tag"
+                        >{initialTagLabels[tid] ?? tid}</button>
+                        <button
+                          type="button"
+                          class="opacity-70 hover:opacity-100 shrink-0"
+                          onclick={() => openEditTag(tid)}
+                          title="Edit tag"
+                          aria-label="Edit {initialTagLabels[tid] ?? tid}"
+                        >✎</button>
+                        <button
+                          type="button"
+                          class="shrink-0"
+                          onclick={() => {
+                            initialTagIds = initialTagIds.filter(x => x !== tid);
+                          }}
+                          title="Remove from import"
+                          aria-label="Remove {initialTagLabels[tid] ?? tid}"
+                        >×</button>
                       </span>
                     {/each}
                   </div>
@@ -1359,15 +1417,17 @@
   </label>
 </div>
 
-<!-- Create-tag modal — TagEditModal in create mode (tag=null, no fixed
-     tagGroupId) shows a Group select over every tag group. onSaved
-     auto-applies the new tag to this import's "Tags to apply" list. -->
+<!-- Tag create/edit modal. Create mode (tag=null, focusGroup) shows a Group
+     select over every tag group with no default selection and auto-applies
+     the new tag to this import's "Tags to apply" list. Edit mode (tag set,
+     opened from a pill's name/pencil) edits the tag in place and refreshes
+     the pill. One onSaved handles both. -->
 <TagEditModal
-  bind:show={showCreateTagModal}
-  tag={null}
+  bind:show={showTagModal}
+  tag={editingTag}
   initialName={createTagInitialName}
-  focusGroup={true}
-  onSaved={onTagCreated}
+  focusGroup={editingTag === null}
+  onSaved={onTagSaved}
 />
 
 {#if showAddSetDialog}
