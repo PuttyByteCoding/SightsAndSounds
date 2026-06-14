@@ -1652,6 +1652,7 @@ public static class ApiEndpoints
         // the child paths must change together.
         videoSets.MapPost("/{id:guid}/re-root", async (
             Guid id, ReRootRequest req, VideoOrganizerDbContext db,
+            ThumbnailWarmingSignal thumbSignal,
             ILogger<Program> logger, CancellationToken ct) =>
         {
             var set = await db.VideoSets.FirstOrDefaultAsync(s => s.Id == id, ct);
@@ -1684,6 +1685,14 @@ public static class ApiEndpoints
             logger.LogInformation(
                 "VideoSet {VideoSetId} '{Name}' re-rooted {OldPath}→{NewPath} — {Count} videos repointed",
                 set.Id, set.Name, oldBase, newBase, reRooted);
+
+            // Wake the thumbnail warmer (issue #96). Re-rooting is the "moved to
+            // a new machine" path: the source files were unreachable at their old
+            // paths when the warmer last ran (so it skipped them and went to
+            // sleep), and the sprite cache from the old machine isn't here. Now
+            // that the paths point at reachable files again, signal the worker so
+            // it regenerates the missing sprites instead of leaving them 404ing.
+            thumbSignal.Signal();
             return Results.Ok(new { reRooted, newPath = newBase });
         }).WithName("ReRootVideoSet");
 
@@ -1743,6 +1752,7 @@ public static class ApiEndpoints
         // machine carries that machine's paths) and re-root any that moved.
         backup.MapPost("/{fileName}/restore", async (
             string fileName, VideoOrganizerDbContext db, BackupService svc,
+            ThumbnailWarmingSignal thumbSignal,
             ILogger<Program> logger, CancellationToken ct) =>
         {
             DbSnapshot snap;
@@ -1783,6 +1793,13 @@ public static class ApiEndpoints
             logger.LogWarning(
                 "Restored database from {File} — {Videos} videos, {Tags} tags, {Sets} sources. Pre-restore safety snapshot: {Safety}",
                 fileName, snap.Videos.Count, snap.Tags.Count, snap.VideoSets.Count, safety.FileName);
+
+            // Wake the thumbnail warmer (issue #96). The restored sprite cache
+            // lives on whatever machine made the snapshot, not here. If the
+            // restored paths are already reachable on this machine the worker can
+            // regenerate immediately; if they aren't, it harmlessly finds nothing
+            // pending and a later re-root will signal it again.
+            thumbSignal.Signal();
             return Results.Ok(new
             {
                 restoredFrom = fileName,
