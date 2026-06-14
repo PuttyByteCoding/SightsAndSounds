@@ -1620,6 +1620,24 @@ public static class ApiEndpoints
 
         backup.MapGet("/", (BackupService svc) => Results.Ok(svc.List())).WithName("ListBackups");
 
+        // Where backups are written (a host directory — the API runs locally,
+        // so no volume needed). GET reports it + whether it's writable; PUT
+        // changes it (validated + persisted).
+        backup.MapGet("/settings", (BackupService svc) => Results.Ok(svc.GetSettings()))
+            .WithName("GetBackupSettings");
+
+        backup.MapPut("/settings", (SetBackupDirectoryRequest req, BackupService svc) =>
+        {
+            try
+            {
+                return Results.Ok(svc.SetDirectory(req.Directory));
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        }).WithName("SetBackupDirectory");
+
         backup.MapGet("/{fileName}/download", (string fileName, BackupService svc) =>
         {
             var path = svc.ResolvePath(fileName);

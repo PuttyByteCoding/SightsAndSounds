@@ -9,3 +9,12 @@ public record BackupInfo(
     long SizeBytes,
     DateTime CreatedUtc
 );
+
+// Where backups are stored + whether that directory is writable (issue #32).
+public record BackupSettings(
+    string Directory,
+    bool Writable,
+    string? Error
+);
+
+public record SetBackupDirectoryRequest(string Directory);

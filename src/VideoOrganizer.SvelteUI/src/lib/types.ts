@@ -239,6 +239,13 @@ export interface BackupInfo {
   createdUtc: string;
 }
 
+// Where backups are stored + whether that directory is writable (issue #32).
+export interface BackupSettings {
+  directory: string;
+  writable: boolean;
+  error: string | null;
+}
+
 // --- Video DTOs ------------------------------------------------------------
 
 export interface ChapterMarker {

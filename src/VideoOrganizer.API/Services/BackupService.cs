@@ -6,19 +6,20 @@ using VideoOrganizer.Shared.Dto;
 
 namespace VideoOrganizer.API.Services;
 
-// Database backup (issue #32). Self-contained, no external tooling, so it
-// behaves identically on Windows and the Linux deployment:
-//   · JSON snapshot — a quick one-file dump of every table (this PR).
+// Database backup (issue #32). Self-contained, no external tooling.
+//   · JSON snapshot — a quick one-file dump of every table.
 //   · SQLite full backup — a portable .sqlite (follow-up PR).
-// Files live under Backup:Directory (default <app base>/backups).
+// The API runs on the host (not containerized), so backups can be written to
+// any directory the user picks. The chosen directory is persisted to a small
+// per-user settings file so it survives restarts; default is
+// <LocalAppData>/SightsAndSounds/backups, overridable by Backup:Directory.
 public sealed class BackupService
 {
-    private readonly string _dir;
+    private readonly string _defaultDir;
+    private readonly string _settingsPath;
+    private string? _overrideDir;
 
-    // Indented + cycle-safe. AsNoTracking queries leave navigation properties
-    // null, and WhenWritingNull keeps them out of the file, so each table is a
-    // clean array of its own columns.
-    private static readonly JsonSerializerOptions JsonOpts = new()
+    private static readonly JsonSerializerOptions SnapshotJson = new()
     {
         WriteIndented = true,
         ReferenceHandler = ReferenceHandler.IgnoreCycles,
@@ -27,20 +28,42 @@ public sealed class BackupService
 
     public BackupService(IConfiguration config)
     {
-        _dir = config["Backup:Directory"] is { Length: > 0 } d
+        var appData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "SightsAndSounds");
+        _settingsPath = Path.Combine(appData, "backup-settings.json");
+        _defaultDir = config["Backup:Directory"] is { Length: > 0 } d
             ? d
-            : Path.Combine(AppContext.BaseDirectory, "backups");
+            : Path.Combine(appData, "backups");
+        _overrideDir = LoadOverride();
     }
 
-    public string BackupsDirectory
+    // Where backups are written: the user-set directory, else the default.
+    public string Directory =>
+        string.IsNullOrWhiteSpace(_overrideDir) ? _defaultDir : _overrideDir!;
+
+    public BackupSettings GetSettings()
     {
-        get { Directory.CreateDirectory(_dir); return _dir; }
+        var (writable, error) = CheckWritable(Directory);
+        return new BackupSettings(Directory, writable, error);
     }
 
-    // Snapshot the whole database to a single timestamped JSON file.
+    public BackupSettings SetDirectory(string? dir)
+    {
+        dir = (dir ?? string.Empty).Trim();
+        if (dir.Length == 0) throw new InvalidOperationException("A directory is required.");
+        var (writable, error) = CheckWritable(dir);
+        if (!writable) throw new InvalidOperationException($"Can't use that directory: {error}");
+        _overrideDir = dir;
+        SaveOverride(dir);
+        return new BackupSettings(dir, true, null);
+    }
+
+    // Quick local snapshot: dump every table to a timestamped JSON file.
     public async Task<BackupInfo> CreateJsonSnapshotAsync(VideoOrganizerDbContext db, CancellationToken ct)
     {
-        var dir = BackupsDirectory;
+        var dir = Directory;
+        System.IO.Directory.CreateDirectory(dir);
         var snapshot = new DbSnapshot
         {
             SchemaVersion = 1,
@@ -61,15 +84,16 @@ public sealed class BackupService
         var path = Path.Combine(dir, fileName);
         await using (var fs = File.Create(path))
         {
-            await JsonSerializer.SerializeAsync(fs, snapshot, JsonOpts, ct);
+            await JsonSerializer.SerializeAsync(fs, snapshot, SnapshotJson, ct);
         }
         return ToInfo(new FileInfo(path));
     }
 
     public List<BackupInfo> List()
     {
-        if (!Directory.Exists(_dir)) return new();
-        return Directory.EnumerateFiles(_dir)
+        var dir = Directory;
+        if (!System.IO.Directory.Exists(dir)) return new();
+        return System.IO.Directory.EnumerateFiles(dir)
             .Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
                      || f.EndsWith(".sqlite", StringComparison.OrdinalIgnoreCase))
             .Select(f => new FileInfo(f))
@@ -84,7 +108,7 @@ public sealed class BackupService
     {
         if (string.IsNullOrWhiteSpace(fileName)) return null;
         if (fileName.Contains('/') || fileName.Contains('\\') || fileName.Contains("..")) return null;
-        var path = Path.Combine(_dir, fileName);
+        var path = Path.Combine(Directory, fileName);
         return File.Exists(path) ? path : null;
     }
 
@@ -94,6 +118,47 @@ public sealed class BackupService
         if (path is null) return false;
         File.Delete(path);
         return true;
+    }
+
+    private static (bool writable, string? error) CheckWritable(string dir)
+    {
+        try
+        {
+            System.IO.Directory.CreateDirectory(dir);
+            var probe = Path.Combine(dir, $".write_test_{Guid.NewGuid():N}");
+            File.WriteAllText(probe, string.Empty);
+            File.Delete(probe);
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    private string? LoadOverride()
+    {
+        try
+        {
+            if (!File.Exists(_settingsPath)) return null;
+            var stored = JsonSerializer.Deserialize<StoredSettings>(File.ReadAllText(_settingsPath));
+            return stored?.Directory;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void SaveOverride(string dir)
+    {
+        System.IO.Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!);
+        File.WriteAllText(_settingsPath, JsonSerializer.Serialize(new StoredSettings { Directory = dir }));
+    }
+
+    private sealed class StoredSettings
+    {
+        public string? Directory { get; set; }
     }
 
     private static BackupInfo ToInfo(FileInfo fi) => new(

@@ -1,5 +1,6 @@
 import type {
   BackupInfo,
+  BackupSettings,
   BulkCreateTagsRequest,
   BulkCreateTagsResponse,
   CreateClipRequest,
@@ -463,6 +464,12 @@ export const api = {
   createBackupSnapshot: () =>
     request<BackupInfo>('/api/backup/snapshot', { method: 'POST' }),
   listBackups: () => request<BackupInfo[]>('/api/backup'),
+  getBackupSettings: () => request<BackupSettings>('/api/backup/settings'),
+  setBackupDirectory: (directory: string) =>
+    request<BackupSettings>('/api/backup/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ directory })
+    }),
   deleteBackup: (fileName: string) =>
     request<void>(`/api/backup/${encodeURIComponent(fileName)}`, { method: 'DELETE' }),
   backupDownloadUrl: (fileName: string) =>
