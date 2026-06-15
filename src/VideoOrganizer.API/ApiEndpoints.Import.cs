@@ -39,7 +39,8 @@ public static partial class ApiEndpoints
         {
             var (messages, isCompleted, error, fileStatuses) = progressTracker.GetStatus(jobId);
             return Results.Ok(new ImportProgressResponse(messages, isCompleted, error, fileStatuses));
-        }).WithName("GetImportProgress");
+        }).Produces<ImportProgressResponse>(StatusCodes.Status200OK)
+          .WithName("GetImportProgress");
 
         import.MapPost("/pause", (WorkerPauseStatus pause) =>
         {
@@ -101,7 +102,8 @@ public static partial class ApiEndpoints
                     new ImportTaskProgressDto(total, md5Done, Math.Max(0, md5Pending), md5Failed));
             }).ToList();
             return Results.Ok(result);
-        }).WithName("ListImportJobs");
+        }).Produces<List<ImportJobSummaryDto>>(StatusCodes.Status200OK)
+          .WithName("ListImportJobs");
 
         import.MapDelete("/jobs/completed", (ImportProgressTracker progressTracker) =>
         {
@@ -111,11 +113,13 @@ public static partial class ApiEndpoints
 
         import.MapGet("/failed-files", (ImportProgressTracker progressTracker) =>
             Results.Ok(progressTracker.GetFailedFiles())
-        ).WithName("ListFailedImportFiles");
+        ).Produces<List<ImportFailedFileDto>>(StatusCodes.Status200OK)
+         .WithName("ListFailedImportFiles");
 
         import.MapGet("/queue", (ImportProgressTracker progressTracker) =>
             Results.Ok(progressTracker.GetQueueFiles())
-        ).WithName("ListImportQueue");
+        ).Produces<List<ImportQueueFileDto>>(StatusCodes.Status200OK)
+         .WithName("ListImportQueue");
 
         import.MapGet("/browse", async (
             VideoOrganizerDbContext db, string? path, ImportScanProgress progress,
@@ -258,7 +262,8 @@ public static partial class ApiEndpoints
             {
                 progress.End();
             }
-        }).WithName("BrowseDirectory");
+        }).Produces<ImportBrowseResponse>(StatusCodes.Status200OK)
+          .WithName("BrowseDirectory");
 
         // GET /api/import/imported-folders — flat, filterable destination list
         // for the move dialog: every distinct folder that already holds an
@@ -309,7 +314,8 @@ public static partial class ApiEndpoints
 
             result.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
             return Results.Ok(result);
-        }).WithName("ListImportedFolders");
+        }).Produces<List<ImportedFolder>>(StatusCodes.Status200OK)
+          .WithName("ListImportedFolders");
 
         // Live progress for an in-flight /import/browse scan. The Import
         // page polls this (~500ms) to show a climbing "Discovered N video
@@ -320,7 +326,8 @@ public static partial class ApiEndpoints
         {
             var (scanning, discovered) = progress.Snapshot();
             return Results.Ok(new ImportScanProgressDto(scanning, discovered));
-        }).WithName("GetImportScanProgress");
+        }).Produces<ImportScanProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetImportScanProgress");
 
         import.MapGet("/files", async (
             VideoOrganizerDbContext db, string directoryPath, ILogger<Program> logger,
@@ -375,7 +382,8 @@ public static partial class ApiEndpoints
                 logger.LogError(ex, "Error listing files for directory {Path}", directoryPath);
                 return Results.Problem("Failed to list files");
             }
-        }).WithName("ListImportFiles");
+        }).Produces<ImportFileListResponse>(StatusCodes.Status200OK)
+          .WithName("ListImportFiles");
 
         import.MapGet("/thumbnail", async (
             VideoOrganizerDbContext db, string path, ILogger<Program> logger, HttpContext http, CancellationToken ct) =>

@@ -53,7 +53,8 @@ public static partial class ApiEndpoints
             _playlists[playlistId] = playlist;
             logger.LogInformation("Created random playlist {PlaylistId} with {Count} videos", playlistId, shuffled.Count);
             return Results.Ok(playlist);
-        }).WithName("CreateRandomPlaylist");
+        }).Produces<PlaylistDto>(StatusCodes.Status200OK)
+          .WithName("CreateRandomPlaylist");
 
         playlists.MapPost("/even", async (
             PlaylistFilterRequest? filter,
@@ -96,7 +97,8 @@ public static partial class ApiEndpoints
             logger.LogInformation("Created even-distribution playlist {PlaylistId} with {Count} videos",
                 playlistId, ordered.Count);
             return Results.Ok(playlist);
-        }).WithName("CreateEvenDistributionPlaylist");
+        }).Produces<PlaylistDto>(StatusCodes.Status200OK)
+          .WithName("CreateEvenDistributionPlaylist");
 
         playlists.MapGet("/{id:guid}", (Guid id, ILogger<Program> logger) =>
         {
@@ -106,7 +108,8 @@ public static partial class ApiEndpoints
                 return Results.NotFound();
             }
             return Results.Ok(playlist);
-        }).WithName("GetPlaylist");
+        }).Produces<PlaylistDto>(StatusCodes.Status200OK)
+          .WithName("GetPlaylist");
 
         playlists.MapGet("/{playlistId:guid}/navigation/{videoId:guid}",
             (Guid playlistId, Guid videoId, ILogger<Program> logger) =>
@@ -122,6 +125,7 @@ public static partial class ApiEndpoints
                 ? playlist.VideoIds[currentIndex + 1] : (Guid?)null;
             return Results.Ok(new PlaylistNavigationDto(
                 videoId, nextVideoId, previousVideoId, currentIndex, playlist.VideoIds.Count));
-        }).WithName("GetPlaylistNavigation");
+        }).Produces<PlaylistNavigationDto>(StatusCodes.Status200OK)
+          .WithName("GetPlaylistNavigation");
     }
 }

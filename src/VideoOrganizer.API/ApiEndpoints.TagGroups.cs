@@ -56,7 +56,8 @@ public static partial class ApiEndpoints
                 counts.GetValueOrDefault(g.Id, 0),
                 Math.Max(0, totalVideos - videosWithTagInGroup.GetValueOrDefault(g.Id, 0)))).ToList();
             return Results.Ok(rows);
-        }).WithName("ListTagGroups");
+        }).Produces<List<TagGroupDto>>(StatusCodes.Status200OK)
+          .WithName("ListTagGroups");
 
         tagGroups.MapGet("/{id:guid}", async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
         {
@@ -64,7 +65,8 @@ public static partial class ApiEndpoints
             if (g is null) return Results.NotFound();
             var count = await db.Tags.CountAsync(t => t.TagGroupId == id, ct);
             return Results.Ok(new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, count));
-        }).WithName("GetTagGroup");
+        }).Produces<TagGroupDto>(StatusCodes.Status200OK)
+          .WithName("GetTagGroup");
 
         tagGroups.MapPost("/", async (
             CreateTagGroupRequest req, VideoOrganizerDbContext db,
@@ -89,7 +91,8 @@ public static partial class ApiEndpoints
                 g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes);
             return Results.Created($"/api/tag-groups/{g.Id}",
                 new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, 0));
-        }).WithName("CreateTagGroup");
+        }).Produces<TagGroupDto>(StatusCodes.Status201Created)
+          .WithName("CreateTagGroup");
 
         tagGroups.MapPut("/{id:guid}", async (
             Guid id, UpdateTagGroupRequest req, VideoOrganizerDbContext db,
