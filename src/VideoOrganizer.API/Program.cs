@@ -215,14 +215,25 @@ builder.Services.AddCors(options =>
 // Scalar wraps it for the interactive UI (mapped below at /swagger).
 builder.Services.AddOpenApi(options =>
 {
-    // Domain.Models and Shared.Dto each define same-named enums
-    // (CameraTypes, VideoQuality, VideoCodec, VideoDimensionFormat).
-    // The default schema-id strategy uses Type.Name, so the two
-    // collide and produce a broken document with $refs pointing at
-    // the wrong schema. Disambiguate on FullName instead — '.' isn't
-    // a legal char inside a $ref path so we replace it with '_'.
+    // Schema reference ids → clean, stable names so the spec is readable and
+    // frontend type generation (issue #125) produces sane names.
+    //   - Inline generics + arrays (List<T>, IReadOnlyList<T>, T[]) instead of
+    //     emitting assembly-qualified named schemas per instantiation (the old
+    //     FullName strategy produced monstrosities like
+    //     "System_Collections_Generic_IReadOnlyList`1[[System_Guid, ...]]").
+    //   - Domain.Models and Shared.Dto both define same-named enums (CameraTypes,
+    //     VideoQuality, VideoCodec, VideoDimensionFormat, VideoBlockTypes); the
+    //     Shared DTOs are the public contract, so they keep the clean short name
+    //     and the Domain enums get a "Domain" prefix — without this, two types map
+    //     to one id and the document breaks.
     options.CreateSchemaReferenceId = jsonTypeInfo =>
-        jsonTypeInfo.Type.FullName?.Replace('.', '_') ?? jsonTypeInfo.Type.Name;
+    {
+        var type = jsonTypeInfo.Type;
+        if (type.IsGenericType || type.IsArray) return null; // inline → array schema
+        return type is { Namespace: "VideoOrganizer.Domain.Models", IsEnum: true }
+            ? "Domain" + type.Name
+            : type.Name;
+    };
 
     // The default Info.Title is the assembly name, which renders as the
     // unhelpful bare "API" header in Scalar. Set something meaningful so
