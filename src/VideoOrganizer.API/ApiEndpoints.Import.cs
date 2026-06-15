@@ -219,7 +219,7 @@ public static partial class ApiEndpoints
                 var fullPath = Path.GetFullPath(path);
                 var containingSet = sets.FirstOrDefault(s =>
                     fullPath.StartsWith(Path.GetFullPath(s.Path), StringComparison.Ordinal));
-                if (containingSet is null) return Results.Forbid();
+                if (containingSet is null) return Results.StatusCode(403);
 
                 var issue = DescribeDirectoryIssue(fullPath);
                 if (issue is not null) return Results.NotFound(issue);
@@ -331,7 +331,7 @@ public static partial class ApiEndpoints
                 var targetPath = Path.GetFullPath(directoryPath);
                 var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
                 if (!enabledRoots.Any(r => targetPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                    return Results.Forbid();
+                    return Results.StatusCode(403);
 
                 var fileIssue = DescribeDirectoryIssue(targetPath);
                 if (fileIssue is not null) return Results.NotFound(fileIssue);
@@ -387,7 +387,7 @@ public static partial class ApiEndpoints
 
                 var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
                 if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                    return Results.Forbid();
+                    return Results.StatusCode(403);
                 if (!VideoFileExtensions.IsVideo(fullPath)) return Results.BadRequest();
 
                 var mtime = File.GetLastWriteTimeUtc(fullPath);

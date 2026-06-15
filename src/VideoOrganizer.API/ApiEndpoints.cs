@@ -2313,7 +2313,7 @@ public static partial class ApiEndpoints
             Guid id, VideoOrganizerDbContext db, HttpContext http,
             ILogger<Program> logger, CancellationToken ct) =>
         {
-            if (!IsLocalRequest(http)) return Results.Forbid();
+            if (!IsLocalRequest(http)) return Results.StatusCode(403);
 
             var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
@@ -2323,7 +2323,7 @@ public static partial class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             var fullPath = Path.GetFullPath(video.FilePath);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             try
             {
@@ -2392,7 +2392,7 @@ public static partial class ApiEndpoints
             Guid id, VideoOrganizerDbContext db, HttpContext http,
             ILogger<Program> logger, CancellationToken ct) =>
         {
-            if (!IsLocalRequest(http)) return Results.Forbid();
+            if (!IsLocalRequest(http)) return Results.StatusCode(403);
 
             var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
@@ -2402,7 +2402,7 @@ public static partial class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             var fullPath = Path.GetFullPath(video.FilePath);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             var dir = Path.GetDirectoryName(fullPath);
             if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
@@ -2460,7 +2460,7 @@ public static partial class ApiEndpoints
             Guid id, VideoOrganizerDbContext db, HttpContext http,
             ILogger<Program> logger, CancellationToken ct) =>
         {
-            if (!IsLocalRequest(http)) return Results.Forbid();
+            if (!IsLocalRequest(http)) return Results.StatusCode(403);
 
             var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
@@ -2470,7 +2470,7 @@ public static partial class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             var fullPath = Path.GetFullPath(video.FilePath);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             try
             {
@@ -2665,7 +2665,7 @@ public static partial class ApiEndpoints
             var fullPath = Path.GetFullPath(path);
             var enabledRoots = await dbContext.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             var contentType = Path.GetExtension(fullPath).ToLowerInvariant() switch
             {
@@ -2701,7 +2701,7 @@ public static partial class ApiEndpoints
             var fullPath = Path.GetFullPath(path);
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             var prefix = fullPath.Replace('\\', '/').TrimEnd('/');
             var query = IncludeForVideoDto(db.Videos)
@@ -2735,7 +2735,7 @@ public static partial class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             var fullPath = Path.GetFullPath(path);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             var mtime = File.GetLastWriteTimeUtc(fullPath);
             var keySource = $"poster|{fullPath}|{mtime.Ticks}";
@@ -2787,7 +2787,7 @@ public static partial class ApiEndpoints
             var fullPath = Path.GetFullPath(path);
             var enabledRoots = await dbContext.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             try
             {
