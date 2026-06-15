@@ -19,6 +19,31 @@ public class LenientEnumConverterFactory : JsonConverterFactory
         var converterType = typeof(LenientEnumConverter<>).MakeGenericType(typeToConvert);
         return (JsonConverter?)Activator.CreateInstance(converterType);
     }
+
+    // Maps PascalCase enum names to camelCase wire values. Handles leading all-caps
+    // prefixes correctly: "HEVC" -> "hevc", "UHD8k" -> "uhd8k", "HD1080p" -> "hd1080p",
+    // "XMLParser" -> "xmlParser", "CellPhone" -> "cellPhone".
+    // Lives here (non-generic) so both the converter and the OpenAPI enum-schema
+    // transformer can share it.
+    public static string ToWireCamelCase(string name)
+    {
+        if (string.IsNullOrEmpty(name) || !char.IsUpper(name[0])) return name;
+
+        int n = 0;
+        while (n < name.Length && char.IsUpper(name[n])) n++;
+
+        if (n == 1) return char.ToLowerInvariant(name[0]) + name.Substring(1);
+        if (n == name.Length) return name.ToLowerInvariant();
+
+        // n >= 2, and name[n] exists.
+        // If name[n] is a letter (i.e. lowercase — we already exited the upper run),
+        // the last upper in the run starts the next word, so preserve it.
+        // Otherwise (digit, underscore, etc.) lowercase the entire upper run.
+        var chars = name.ToCharArray();
+        int lowerUntil = char.IsLetter(name[n]) ? n - 1 : n;
+        for (int i = 0; i < lowerUntil; i++) chars[i] = char.ToLowerInvariant(chars[i]);
+        return new string(chars);
+    }
 }
 
 /// <summary>
@@ -81,7 +106,7 @@ public class LenientEnumConverter<TEnum> : JsonConverter<TEnum> where TEnum : st
                 var enumName = value.ToString();
                 if (!string.IsNullOrEmpty(enumName))
                 {
-                    writer.WriteStringValue(ToWireCamelCase(enumName));
+                    writer.WriteStringValue(LenientEnumConverterFactory.ToWireCamelCase(enumName));
                 }
                 else
                 {
@@ -100,28 +125,5 @@ public class LenientEnumConverter<TEnum> : JsonConverter<TEnum> where TEnum : st
             // Fallback: write as number
             writer.WriteNumberValue(Convert.ToInt32(value));
         }
-    }
-
-    // Maps PascalCase enum names to camelCase wire values. Handles leading all-caps
-    // prefixes correctly: "HEVC" -> "hevc", "UHD8k" -> "uhd8k", "HD1080p" -> "hd1080p",
-    // "XMLParser" -> "xmlParser", "CellPhone" -> "cellPhone".
-    public static string ToWireCamelCase(string name)
-    {
-        if (string.IsNullOrEmpty(name) || !char.IsUpper(name[0])) return name;
-
-        int n = 0;
-        while (n < name.Length && char.IsUpper(name[n])) n++;
-
-        if (n == 1) return char.ToLowerInvariant(name[0]) + name.Substring(1);
-        if (n == name.Length) return name.ToLowerInvariant();
-
-        // n >= 2, and name[n] exists.
-        // If name[n] is a letter (i.e. lowercase — we already exited the upper run),
-        // the last upper in the run starts the next word, so preserve it.
-        // Otherwise (digit, underscore, etc.) lowercase the entire upper run.
-        var chars = name.ToCharArray();
-        int lowerUntil = char.IsLetter(name[n]) ? n - 1 : n;
-        for (int i = 0; i < lowerUntil; i++) chars[i] = char.ToLowerInvariant(chars[i]);
-        return new string(chars);
     }
 }

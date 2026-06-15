@@ -25,7 +25,7 @@ public class LenientEnumConverterTests
     [InlineData("a", "a")]
     public void ToWireCamelCase_HandlesEdgeCases(string input, string expected)
     {
-        Assert.Equal(expected, LenientEnumConverter<TestEnum>.ToWireCamelCase(input));
+        Assert.Equal(expected, LenientEnumConverterFactory.ToWireCamelCase(input));
     }
 
     // --- JSON read --------------------------------------------------------
