@@ -31,14 +31,34 @@ public sealed class OpenApiSpecTests
             .GetProperty("components").GetProperty("schemas")
             .EnumerateObject().Select(p => p.Name).ToList();
 
-        // These are response-only DTOs the frontend depends on. The schema ref
-        // ids are namespace-mangled (e.g. VideoOrganizer_Shared_Dto_VideoDto), so
-        // match by substring rather than exact name.
+        // Clean schema-id strategy (#125 step 2): DTOs are referenced by their
+        // plain short name now.
         foreach (var dto in new[] { "VideoDto", "TagDto", "TagGroupDto", "DuplicateCandidateDto", "BackupInfo" })
         {
-            Assert.True(
-                schemaNames.Any(n => n.Contains(dto, StringComparison.Ordinal)),
-                $"OpenAPI spec should include a schema for {dto} (have: {schemaNames.Count} schemas)");
+            Assert.Contains(dto, schemaNames);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Spec_schema_names_are_clean()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+
+        var res = await _api.Client.GetAsync("/openapi/v1.json");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var schemaNames = doc.RootElement
+            .GetProperty("components").GetProperty("schemas")
+            .EnumerateObject().Select(p => p.Name).ToList();
+
+        // No namespace-mangled prefixes and no assembly-qualified generic
+        // monstrosities (the old FullName strategy emitted both).
+        foreach (var name in schemaNames)
+        {
+            Assert.DoesNotContain("VideoOrganizer_", name);
+            Assert.DoesNotContain("[[", name);
+            Assert.DoesNotContain("`", name);
         }
     }
 }
