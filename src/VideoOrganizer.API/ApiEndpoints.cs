@@ -754,7 +754,8 @@ public static partial class ApiEndpoints
             var limit = Math.Clamp(take ?? 1000, 1, 5000);
             var since = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(minutes);
             return Results.Ok(buf.SnapshotRecent(since, limit));
-        }).WithName("GetLogs");
+        }).Produces<List<LogEvent>>(StatusCodes.Status200OK)
+          .WithName("GetLogs");
 
         // === Global search ==================================================
         // Powers the Ctrl+K command palette on the frontend. v1 returns
@@ -894,7 +895,8 @@ public static partial class ApiEndpoints
                 TotalCount: totalCount,
                 Truncated: totalCount > off + lim,
                 Results: results));
-        }).WithName("Search");
+        }).Produces<SearchResponse>(StatusCodes.Status200OK)
+          .WithName("Search");
 
         // === Runtime info ===================================================
         // Tells the frontend whether the request came in over the loopback
@@ -912,7 +914,8 @@ public static partial class ApiEndpoints
                    : OperatingSystem.IsLinux() ? "linux"
                    : "other";
             return Results.Ok(new RuntimeInfoDto(IsLocalRequest(http), os));
-        }).WithName("GetRuntimeInfo");
+        }).Produces<RuntimeInfoDto>(StatusCodes.Status200OK)
+          .WithName("GetRuntimeInfo");
 
         // === Data validation ================================================
         // Diagnostic endpoints powering the /data-validation page:
@@ -990,7 +993,8 @@ public static partial class ApiEndpoints
                 .OrderBy(m => m.SourceName)
                 .ThenBy(m => m.FilePath)
                 .ToList());
-        }).WithName("GetValidationMissingFiles");
+        }).Produces<List<MissingVideoFileDto>>(StatusCodes.Status200OK)
+          .WithName("GetValidationMissingFiles");
 
         // POST /validation/missing-files/purge — remove DB rows for videos
         // whose file is gone from disk. Deliberately DB-only: the file is
@@ -1039,7 +1043,8 @@ public static partial class ApiEndpoints
                 SkippedPresent: skippedPresent.Count,
                 NotFound: notFound,
                 SkippedPresentIds: skippedPresent));
-        }).WithName("PurgeValidationMissingFiles");
+        }).Produces<PurgeMissingFilesResultDto>(StatusCodes.Status200OK)
+          .WithName("PurgeValidationMissingFiles");
 
         api.MapGet("/validation/extra-files", async (
             VideoOrganizerDbContext db, Guid? sourceId, bool? includeDisabled,
@@ -1104,7 +1109,8 @@ public static partial class ApiEndpoints
                 .OrderBy(x => x.SourceName)
                 .ThenBy(x => x.FilePath)
                 .ToList());
-        }).WithName("GetValidationExtraFiles");
+        }).Produces<List<ExtraDiskFileDto>>(StatusCodes.Status200OK)
+          .WithName("GetValidationExtraFiles");
 
         // GET /validation/md5-candidates — list of videos eligible
         // for MD5 re-verification. Skips clips (share parent's file),
@@ -1155,7 +1161,8 @@ public static partial class ApiEndpoints
                 .OrderBy(r => r.SourceName)
                 .ThenBy(r => r.FilePath)
                 .ToList());
-        }).WithName("GetValidationMd5Candidates");
+        }).Produces<List<Md5CandidateDto>>(StatusCodes.Status200OK)
+          .WithName("GetValidationMd5Candidates");
 
         // POST /validation/md5-check/{id} — recompute the MD5 of one
         // video's file and compare against the stored hash. Streams
@@ -1216,7 +1223,8 @@ public static partial class ApiEndpoints
                     FileSize: video.FileSize, FileExists: true,
                     Error: ex.Message));
             }
-        }).WithName("PostValidationMd5Check");
+        }).Produces<Md5CheckResultDto>(StatusCodes.Status200OK)
+          .WithName("PostValidationMd5Check");
 
         // === Thumbnails worker ==============================================
 
@@ -1327,7 +1335,8 @@ public static partial class ApiEndpoints
                     v.Id, v.FileName, v.FilePath, v.FileSize, v.ThumbnailsFailedError))
                 .ToListAsync(ct);
             return Results.Ok(rows);
-        }).WithName("GetFailedThumbnails");
+        }).Produces<List<WorkerFailedRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetFailedThumbnails");
 
         api.MapGet("/thumbnails/queue", async (
             ThumbnailWarmingProgressTracker progress,
@@ -1352,7 +1361,8 @@ public static partial class ApiEndpoints
                 rows = rows.Where(r => !string.Equals(r.FilePath, curPath, StringComparison.Ordinal)).ToList();
             }
             return Results.Ok(rows);
-        }).WithName("GetThumbnailQueue");
+        }).Produces<List<WorkerQueueRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetThumbnailQueue");
 
         // === Md5 worker =====================================================
 
@@ -1451,7 +1461,8 @@ public static partial class ApiEndpoints
             var result = rows.Select(r => new Md5DuplicateRowDto(
                 r.Id, r.FileName, r.FilePath, r.FileSize, r.Md5, sizeByMd5[r.Md5])).ToList();
             return Results.Ok(result);
-        }).WithName("GetMd5Duplicates");
+        }).Produces<List<Md5DuplicateRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetMd5Duplicates");
 
         api.MapGet("/md5-backfill/failed", async (VideoOrganizerDbContext db, CancellationToken ct) =>
         {
@@ -1463,7 +1474,8 @@ public static partial class ApiEndpoints
                     v.Id, v.FileName, v.FilePath, v.FileSize, v.Md5FailedError))
                 .ToListAsync(ct);
             return Results.Ok(rows);
-        }).WithName("GetFailedMd5");
+        }).Produces<List<WorkerFailedRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetFailedMd5");
 
         api.MapGet("/md5-backfill/queue", async (
             Md5BackfillProgressTracker progress,
@@ -1483,7 +1495,8 @@ public static partial class ApiEndpoints
                 rows = rows.Where(r => !string.Equals(r.FilePath, filePath, StringComparison.Ordinal)).ToList();
             }
             return Results.Ok(rows);
-        }).WithName("GetMd5BackfillQueue");
+        }).Produces<List<WorkerQueueRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetMd5BackfillQueue");
 
         // === Video sets =====================================================
 
@@ -1531,7 +1544,8 @@ public static partial class ApiEndpoints
             var isClip = await scoped.CountAsync(v => v.ParentVideoId.HasValue, ct);
             return Results.Ok(new FlagCountsDto(
                 favorite, needsReview, playbackIssue, markedForDeletion, isClip));
-        }).WithName("GetFlagCounts");
+        }).Produces<FlagCountsDto>(StatusCodes.Status200OK)
+          .WithName("GetFlagCounts");
 
         // GET /api/videos — simple AND-of-tags filter. Repeatable ?tagId=
         // narrows by every passed tag. For richer filtering, use POST
@@ -1559,7 +1573,8 @@ public static partial class ApiEndpoints
 
             var videos = await query.ToListAsync(ct);
             return Results.Ok(videos.Select(ToDto).ToList());
-        }).WithName("GetVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetVideos");
 
         api.MapPost("/videos/filter", async (
             PlaylistFilterRequest? filter,
@@ -1631,7 +1646,8 @@ public static partial class ApiEndpoints
             }).ToList();
 
             return Results.Ok(matched.Select(ToDto).ToList());
-        }).WithName("FilterVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("FilterVideos");
 
         api.MapGet("/videos/{id:guid}", async (VideoOrganizerDbContext db, Guid id, CancellationToken ct) =>
         {
@@ -1639,7 +1655,8 @@ public static partial class ApiEndpoints
                 .AsNoTracking()
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
             return video is null ? Results.NotFound() : Results.Ok(ToDto(video));
-        }).WithName("GetVideoById");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("GetVideoById");
 
         // Related videos: rank other videos by overlap with the current
         // video's tags. Tags weighted equally regardless of group.
@@ -1695,14 +1712,16 @@ public static partial class ApiEndpoints
                 .ToList();
 
             return Results.Ok(ranked.Select(ToDto).ToList());
-        }).WithName("GetRelatedVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetRelatedVideos");
 
         api.MapPost("/videos", async (VideoOrganizerDbContext db, Video video, CancellationToken ct) =>
         {
             db.Videos.Add(video);
             await db.SaveChangesAsync(ct);
             return Results.CreatedAtRoute("GetVideoById", new { id = video.Id }, video);
-        }).WithName("CreateVideo");
+        }).Produces<Video>(StatusCodes.Status201Created)
+          .WithName("CreateVideo");
 
         // PUT /api/videos/{id} — full editable-field update. Tags managed via
         // /videos/{id}/tags, properties via /videos/{id}/properties.
@@ -1808,7 +1827,8 @@ public static partial class ApiEndpoints
             logger.LogInformation(
                 "Removed folder {Folder} from library — {Count} video(s) purged", folder, victims.Count);
             return Results.Ok(new RemoveFolderResponse(victims.Count));
-        }).WithName("RemoveLibraryFolder");
+        }).Produces<RemoveFolderResponse>(StatusCodes.Status200OK)
+          .WithName("RemoveLibraryFolder");
 
         // POST /api/videos/{id}/move — move the video's file into another
         // folder under some enabled source (within or across sources).
@@ -1881,7 +1901,8 @@ public static partial class ApiEndpoints
                 "Moved video {VideoId} ({FileName}) from {From} to {To}",
                 id, fileName, fromPath, dest);
             return await ReturnFreshDtoAsync(db, id, ct);
-        }).WithName("MoveVideo");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("MoveVideo");
 
         // GET /api/videos/{id}/move-progress — live byte progress for an
         // in-flight move/undo of this video; idle when nothing is moving it.
@@ -1891,7 +1912,8 @@ public static partial class ApiEndpoints
             return active && vid == id
                 ? Results.Ok(new MoveProgressDto(true, copied, total, phase))
                 : Results.Ok(new MoveProgressDto(false, 0, 0, "idle"));
-        }).WithName("GetMoveProgress");
+        }).Produces<MoveProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetMoveProgress");
 
         // GET /api/file-moves — recent moves, newest first, for the Moves
         // list + Undo. (issue #4)
@@ -1908,7 +1930,8 @@ public static partial class ApiEndpoints
                     m.RevertedAt.HasValue ? m.RevertedAt.Value.ToString("o") : null))
                 .ToListAsync(ct);
             return Results.Ok(moves);
-        }).WithName("ListFileMoves");
+        }).Produces<List<FileMoveLogDto>>(StatusCodes.Status200OK)
+          .WithName("ListFileMoves");
 
         // POST /api/file-moves/{moveId}/revert — undo a move by putting the
         // file back at its original path and restoring the row. (issue #4)
@@ -1953,7 +1976,8 @@ public static partial class ApiEndpoints
             EvictMovedDirs(scanCache, Path.GetDirectoryName(move.ToPath), Path.GetDirectoryName(dest));
             logger.LogInformation("Reverted move {MoveId}: {To} -> {From}", moveId, move.ToPath, dest);
             return await ReturnFreshDtoAsync(db, move.VideoId, ct);
-        }).WithName("RevertFileMove");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("RevertFileMove");
 
         // PUT /api/videos/{id}/tags — replace the tag set for a video.
         // Enforces TagGroup.AllowMultiple = false for single-value groups.
@@ -2104,21 +2128,24 @@ public static partial class ApiEndpoints
         {
             return await MarkAndMoveAsync(id, "_ToDelete",
                 v => v.MarkedForDeletion = true, db, logger, ct);
-        }).WithName("MarkVideoForDeletion");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("MarkVideoForDeletion");
 
         api.MapPost("/videos/{id:guid}/unmark-for-deletion", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
             return await UnmarkAndRestoreAsync(id, "_ToDelete",
                 v => v.MarkedForDeletion = false, db, logger, ct);
-        }).WithName("UnmarkVideoForDeletion");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("UnmarkVideoForDeletion");
 
         api.MapPost("/videos/{id:guid}/mark-playback-issue", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
             return await MarkAndMoveAsync(id, "_PlaybackIssue",
                 v => v.PlaybackIssue = true, db, logger, ct);
-        }).WithName("MarkVideoPlaybackIssue");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("MarkVideoPlaybackIssue");
 
         // NeedsReview is structural but has no file-system side effect — just a
         // bool flip. Setting NeedsReview = false ("mark reviewed") is the
@@ -2148,7 +2175,8 @@ public static partial class ApiEndpoints
         {
             return await UnmarkAndRestoreAsync(id, "_PlaybackIssue",
                 v => v.PlaybackIssue = false, db, logger, ct);
-        }).WithName("UnmarkVideoPlaybackIssue");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("UnmarkVideoPlaybackIssue");
 
         // Favorite is a plain boolean — no file-system side effect, just a
         // user-set flag rendered as ★ throughout the UI.
@@ -2276,7 +2304,8 @@ public static partial class ApiEndpoints
                     v.Id, v.FileName, v.ClipStartSeconds!.Value, v.ClipEndSeconds!.Value))
                 .ToListAsync(ct);
             return Results.Ok(clips);
-        }).WithName("GetClipsOfParent");
+        }).Produces<List<ClipSummaryDto>>(StatusCodes.Status200OK)
+          .WithName("GetClipsOfParent");
 
         api.MapGet("/videos/marked-for-deletion", async (
             VideoOrganizerDbContext db, CancellationToken ct) =>
@@ -2287,7 +2316,8 @@ public static partial class ApiEndpoints
                 .OrderBy(v => v.FilePath)
                 .ToListAsync(ct);
             return Results.Ok(videos.Select(ToDto).ToList());
-        }).WithName("GetMarkedForDeletionVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetMarkedForDeletionVideos");
 
         // List of videos flagged with PlaybackIssue. Mirrors the
         // marked-for-deletion list and powers the /playback-issues
@@ -2301,7 +2331,8 @@ public static partial class ApiEndpoints
                 .OrderBy(v => v.FilePath)
                 .ToListAsync(ct);
             return Results.Ok(videos.Select(ToDto).ToList());
-        }).WithName("GetPlaybackIssueVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetPlaybackIssueVideos");
 
         // Reveal the file in the host OS's file manager (Explorer /
         // Finder / xdg-open). Loopback-gated: launching processes for a
@@ -2517,7 +2548,8 @@ public static partial class ApiEndpoints
                     "ffprobe failed for video {VideoId} at {Path}", video.Id, fullPath);
                 return Results.Problem($"ffprobe failed: {ex.Message}");
             }
-        }).WithName("RunFfprobeOnVideo");
+        }).Produces<FfprobeResultDto>(StatusCodes.Status200OK)
+          .WithName("RunFfprobeOnVideo");
 
         api.MapPost("/videos/{id:guid}/purge", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
@@ -2722,7 +2754,8 @@ public static partial class ApiEndpoints
             }
 
             return Results.Ok(list.Select(ToDto).ToList());
-        }).WithName("GetVideosByFolder");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetVideosByFolder");
 
         api.MapGet("/videos/{id:guid}/poster.jpg", async (
             VideoOrganizerDbContext db, Guid id, ILogger<Program> logger, HttpContext http, CancellationToken ct) =>

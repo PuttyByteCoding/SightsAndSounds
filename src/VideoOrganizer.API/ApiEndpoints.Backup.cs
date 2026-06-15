@@ -25,14 +25,18 @@ public static partial class ApiEndpoints
             logger.LogInformation(
                 "Created JSON snapshot backup {File} ({Bytes} bytes)", info.FileName, info.SizeBytes);
             return Results.Ok(info);
-        }).WithName("CreateBackupSnapshot");
+        }).Produces<BackupInfo>(StatusCodes.Status200OK)
+          .WithName("CreateBackupSnapshot");
 
-        backup.MapGet("/", (BackupService svc) => Results.Ok(svc.List())).WithName("ListBackups");
+        backup.MapGet("/", (BackupService svc) => Results.Ok(svc.List()))
+            .Produces<List<BackupInfo>>(StatusCodes.Status200OK)
+            .WithName("ListBackups");
 
         // Where backups are written (a host directory — the API runs locally,
         // so no volume needed). GET reports it + whether it's writable; PUT
         // changes it (validated + persisted).
         backup.MapGet("/settings", (BackupService svc) => Results.Ok(svc.GetSettings()))
+            .Produces<BackupSettings>(StatusCodes.Status200OK)
             .WithName("GetBackupSettings");
 
         backup.MapPut("/settings", (SetBackupDirectoryRequest req, BackupService svc) =>
@@ -45,7 +49,8 @@ public static partial class ApiEndpoints
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
-        }).WithName("SetBackupDirectory");
+        }).Produces<BackupSettings>(StatusCodes.Status200OK)
+          .WithName("SetBackupDirectory");
 
         backup.MapGet("/{fileName}/download", (string fileName, BackupService svc) =>
         {

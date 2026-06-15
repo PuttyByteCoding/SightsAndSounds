@@ -54,7 +54,8 @@ public static partial class ApiEndpoints
                 t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes,
                 counts.TryGetValue(t.Id, out var c) ? c : 0, t.HiddenByDefault)).ToList();
             return Results.Ok(dtos);
-        }).WithName("ListTags");
+        }).Produces<List<TagDto>>(StatusCodes.Status200OK)
+          .WithName("ListTags");
 
         tagsGroup.MapGet("/{id:guid}", async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
         {
@@ -66,7 +67,8 @@ public static partial class ApiEndpoints
             return Results.Ok(new TagDto(
                 t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty,
                 t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, count, t.HiddenByDefault));
-        }).WithName("GetTag");
+        }).Produces<TagDto>(StatusCodes.Status200OK)
+          .WithName("GetTag");
 
         tagsGroup.MapPost("/", async (
             CreateTagRequest req, VideoOrganizerDbContext db,
@@ -98,7 +100,8 @@ public static partial class ApiEndpoints
                 t.Id, t.Name, t.TagGroupId, grp.Name, t.Aliases.Count);
             return Results.Created($"/api/tags/{t.Id}",
                 new TagDto(t.Id, t.TagGroupId, grp.Name, t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, 0, t.HiddenByDefault));
-        }).WithName("CreateTag");
+        }).Produces<TagDto>(StatusCodes.Status201Created)
+          .WithName("CreateTag");
 
         // POST /api/tags/bulk — create many tags in one request (issue #49).
         // The Tag Management paste box used to fire one POST per name, which
@@ -147,7 +150,8 @@ public static partial class ApiEndpoints
                 "Bulk-created {Created} tag(s) in TagGroup {TagGroupId} ({Skipped} skipped)",
                 toAdd.Count, req.TagGroupId, skipped);
             return Results.Ok(new BulkCreateTagsResponse(toAdd.Count, skipped));
-        }).WithName("BulkCreateTags");
+        }).Produces<BulkCreateTagsResponse>(StatusCodes.Status200OK)
+          .WithName("BulkCreateTags");
 
         tagsGroup.MapPut("/{id:guid}", async (
             Guid id, UpdateTagRequest req, VideoOrganizerDbContext db,
@@ -364,7 +368,8 @@ public static partial class ApiEndpoints
             }
 
             return Results.Ok(hits);
-        }).WithName("SearchTags");
+        }).Produces<List<TagSearchHit>>(StatusCodes.Status200OK)
+          .WithName("SearchTags");
 
         // Replace property values on a tag.
         tagsGroup.MapPut("/{id:guid}/properties", async (

@@ -28,7 +28,8 @@ public static partial class ApiEndpoints
                     p.TagGroupId, p.Required, p.SortOrder, p.Notes))
                 .ToListAsync(ct);
             return Results.Ok(rows);
-        }).WithName("ListProperties");
+        }).Produces<List<PropertyDefinitionDto>>(StatusCodes.Status200OK)
+          .WithName("ListProperties");
 
         props.MapPost("/", async (
             CreatePropertyDefinitionRequest req, VideoOrganizerDbContext db,
@@ -62,7 +63,8 @@ public static partial class ApiEndpoints
                 new PropertyDefinitionDto(def.Id, def.Name,
                     (PropertyDataTypeDto)def.DataType, (PropertyScopeDto)def.Scope,
                     def.TagGroupId, def.Required, def.SortOrder, def.Notes));
-        }).WithName("CreateProperty");
+        }).Produces<PropertyDefinitionDto>(StatusCodes.Status201Created)
+          .WithName("CreateProperty");
 
         props.MapPut("/{id:guid}", async (
             Guid id, UpdatePropertyDefinitionRequest req, VideoOrganizerDbContext db,

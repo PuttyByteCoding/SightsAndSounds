@@ -61,7 +61,8 @@ public static partial class ApiEndpoints
                 "Flagged duplicate candidate {CandidateId}: {VideoAId} ('{FileA}') vs {VideoBId} ('{FileB}')",
                 candidate.Id, aId, a.FileName, bId, b.FileName);
             return Results.Created($"/api/duplicates/{candidate.Id}", ToDuplicateDto(candidate, a, b));
-        }).WithName("CreateDuplicateCandidate");
+        }).Produces<DuplicateCandidateDto>(StatusCodes.Status201Created)
+          .WithName("CreateDuplicateCandidate");
 
         duplicates.MapGet("/", async (
             string? status, VideoOrganizerDbContext db, CancellationToken ct) =>
@@ -94,7 +95,8 @@ public static partial class ApiEndpoints
                 .Select(d => ToDuplicateDto(d, videoById[d.VideoAId], videoById[d.VideoBId]))
                 .ToList();
             return Results.Ok(dtos);
-        }).WithName("ListDuplicateCandidates");
+        }).Produces<List<DuplicateCandidateDto>>(StatusCodes.Status200OK)
+          .WithName("ListDuplicateCandidates");
 
         // Review transitions. Reopen lets a mis-click on Confirm/Reject be
         // undone without deleting and re-flagging the pair.
@@ -122,16 +124,19 @@ public static partial class ApiEndpoints
         duplicates.MapPost("/{id:guid}/confirm",
             (Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
                 SetDuplicateStatus(id, DuplicateStatus.Confirmed, db, logger, ct))
+            .Produces<DuplicateCandidateDto>(StatusCodes.Status200OK)
             .WithName("ConfirmDuplicateCandidate");
 
         duplicates.MapPost("/{id:guid}/reject",
             (Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
                 SetDuplicateStatus(id, DuplicateStatus.Rejected, db, logger, ct))
+            .Produces<DuplicateCandidateDto>(StatusCodes.Status200OK)
             .WithName("RejectDuplicateCandidate");
 
         duplicates.MapPost("/{id:guid}/reopen",
             (Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
                 SetDuplicateStatus(id, DuplicateStatus.Pending, db, logger, ct))
+            .Produces<DuplicateCandidateDto>(StatusCodes.Status200OK)
             .WithName("ReopenDuplicateCandidate");
 
         duplicates.MapDelete("/{id:guid}", async (

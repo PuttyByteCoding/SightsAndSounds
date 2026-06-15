@@ -57,7 +57,8 @@ public static partial class ApiEndpoints
                 "Created VideoSet {VideoSetId} '{Name}' at {Path} (enabled={Enabled})",
                 input.Id, input.Name, input.Path, input.Enabled);
             return Results.Created($"/api/video-sets/{input.Id}", input);
-        }).WithName("CreateVideoSet");
+        }).Produces<VideoSet>(StatusCodes.Status201Created)
+          .WithName("CreateVideoSet");
 
         videoSets.MapPut("/{id:guid}", async (
             Guid id, VideoSet input, VideoOrganizerDbContext db,
@@ -95,7 +96,8 @@ public static partial class ApiEndpoints
                     existing.Id, existing.Name, existing.Enabled, oldEnabled);
             }
             return Results.Ok(existing);
-        }).WithName("UpdateVideoSet");
+        }).Produces<VideoSet>(StatusCodes.Status200OK)
+          .WithName("UpdateVideoSet");
 
         videoSets.MapGet("/{id:guid}/orphan-count",
             async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
@@ -171,7 +173,8 @@ public static partial class ApiEndpoints
             return Results.Ok(new ReRootPreview(
                 total, sample.Count, found, sample.Count - found,
                 TryDirectoryExists(newBase, logger), examples));
-        }).WithName("ReRootVideoSetPreview");
+        }).Produces<ReRootPreview>(StatusCodes.Status200OK)
+          .WithName("ReRootVideoSetPreview");
 
         // Commit a re-root (issue #32): change the source Path and rewrite the
         // FilePath prefix on every video under it, atomically. This is what
