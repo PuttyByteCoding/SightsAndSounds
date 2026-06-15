@@ -1763,7 +1763,7 @@ export interface components {
             skipped: number;
         };
         /** @enum {string} */
-        CameraTypes: "unknown" | "cellPhone" | "camcorder" | "professionalCamera" | "notChecked";
+        CameraTypes: "unknown" | "cellPhone" | "hiddenCamera" | "camcorder" | "professionalCamera" | "notChecked";
         ChapterMarker: {
             /** Format: int32 */
             offset?: number;
@@ -1851,7 +1851,7 @@ export interface components {
             initialTagIds?: null | string[];
         };
         /** @enum {string} */
-        DomainCameraTypes: "unknown" | "cellPhone" | "camcorder" | "professionalCamera" | "notChecked";
+        DomainCameraTypes: "unknown" | "cellPhone" | "hiddenCamera" | "camcorder" | "professionalCamera" | "notChecked";
         /** @enum {string} */
         DomainPropertyDataType: "text" | "longText" | "number" | "date" | "boolean" | "url";
         /** @enum {string} */
