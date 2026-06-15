@@ -248,5 +248,59 @@ public sealed class ApiEndpointsFilterParityTests
         Assert.Contains(w.VOnlyB, ids);
     }
 
+    [SkippableFact]
+    public async Task Filter_reports_auto_hidden_match_count_in_header()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+
+        var token = Guid.NewGuid().ToString("N");
+        var root = $"/hc-{token}";
+        var groupId = Guid.NewGuid();
+        var tagVisible = Guid.NewGuid();
+        var tagHidden = Guid.NewGuid();
+        Guid vBoth = Guid.NewGuid(), vPlain = Guid.NewGuid();
+
+        await _api.WithDbAsync(async db =>
+        {
+            db.VideoSets.Add(new VideoSet { Id = Guid.NewGuid(), Name = "hc-" + token, Path = root, Enabled = true });
+            db.TagGroups.Add(new TagGroup { Id = groupId, Name = "hc-" + token });
+            db.Tags.Add(new Tag { Id = tagVisible, Name = "V-" + token, TagGroupId = groupId });
+            db.Tags.Add(new Tag { Id = tagHidden, Name = "H-" + token, TagGroupId = groupId, HiddenByDefault = true });
+            db.Videos.Add(new Video { Id = vBoth, FileName = "both.mp4", FilePath = $"{root}/both.mp4" });
+            db.Videos.Add(new Video { Id = vPlain, FileName = "plain.mp4", FilePath = $"{root}/plain.mp4" });
+            db.VideoTags.AddRange(
+                new VideoTag { VideoId = vBoth, TagId = tagVisible },
+                new VideoTag { VideoId = vBoth, TagId = tagHidden }, // suppressed by auto-hide
+                new VideoTag { VideoId = vPlain, TagId = tagVisible });
+            await db.SaveChangesAsync();
+        });
+
+        try
+        {
+            // Only these two videos carry this fresh tag, so the global auto-hide
+            // count for this filter is exactly the one suppressed match (vBoth).
+            var res = await _api.Client.PostAsJsonAsync("/api/videos/filter", new { required = new[] { Tag(tagVisible) } });
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+            var ids = (await res.Content.ReadFromJsonAsync<List<VideoRow>>())!.Select(r => r.id).ToHashSet();
+            Assert.Contains(vPlain, ids);
+            Assert.DoesNotContain(vBoth, ids);
+
+            Assert.True(res.Headers.TryGetValues("X-Hidden-Count", out var vals), "X-Hidden-Count header present");
+            Assert.Equal("1", vals!.Single());
+        }
+        finally
+        {
+            await _api.WithDbAsync(async db =>
+            {
+                await db.VideoTags.Where(vt => vt.VideoId == vBoth || vt.VideoId == vPlain).ExecuteDeleteAsync();
+                await db.Videos.Where(v => v.Id == vBoth || v.Id == vPlain).ExecuteDeleteAsync();
+                await db.Tags.Where(t => t.Id == tagVisible || t.Id == tagHidden).ExecuteDeleteAsync();
+                await db.TagGroups.Where(g => g.Id == groupId).ExecuteDeleteAsync();
+                await db.VideoSets.Where(s => s.Path == root).ExecuteDeleteAsync();
+            });
+        }
+    }
+
     private sealed record PlaylistResult(Guid id, List<Guid> videoIds, DateTime createdAt);
 }
