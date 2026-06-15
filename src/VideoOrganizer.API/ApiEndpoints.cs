@@ -1988,7 +1988,7 @@ public static class ApiEndpoints
             {
                 // No tags to rank by — random sample.
                 var allIds = await q.Select(v => v.Id).ToListAsync(ct);
-                var rng = new Random();
+                var rng = Random.Shared;
                 var pickedIds = allIds.OrderBy(_ => rng.Next()).Take(limit).ToHashSet();
                 if (pickedIds.Count == 0) return Results.Ok(Array.Empty<VideoDto>());
                 var fallback = await IncludeForVideoDto(db.Videos)
@@ -2031,6 +2031,13 @@ public static class ApiEndpoints
             var video = await IncludeForVideoDto(db.Videos)
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video == null) return Results.NotFound();
+
+            // FileName is the displayed/used name and a non-null DB column;
+            // reject blank rather than silently storing an empty string.
+            if (string.IsNullOrWhiteSpace(input.FileName))
+                return Results.BadRequest(new { error = "FileName is required." });
+            if (input.WatchCount < 0)
+                return Results.BadRequest(new { error = "WatchCount cannot be negative." });
 
             video.FileName = input.FileName;
             video.IngestDate = input.IngestDate;
@@ -3775,7 +3782,7 @@ public static class ApiEndpoints
             if (matched.Count == 0)
                 return Results.BadRequest("No videos found matching the filter criteria");
 
-            var rng = new Random();
+            var rng = Random.Shared;
             var shuffled = matched.OrderBy(_ => rng.Next()).ToList();
             var playlistId = Guid.NewGuid();
             var playlist = new PlaylistDto(playlistId, shuffled, DateTime.UtcNow);
@@ -3813,7 +3820,7 @@ public static class ApiEndpoints
             if (matched.Count == 0)
                 return Results.BadRequest("No videos found matching the filter criteria");
 
-            var rng = new Random();
+            var rng = Random.Shared;
             var ordered = matched
                 .OrderBy(x => x.WatchCount)
                 .ThenBy(_ => rng.Next())

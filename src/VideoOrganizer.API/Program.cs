@@ -246,11 +246,23 @@ var app = builder.Build();
 // 500 for AJAX requests — the SvelteKit error toasts then show only
 // "GET /foo failed: 500" with no clue what threw. With it, the response
 // includes the type, message, and stack trace so the user can debug
-// without needing to open Seq for every 500. Production keeps the
-// default empty body for safety.
+// without needing to open Seq for every 500.
 if (app.Environment.IsDevelopment())
 {
     app.UseDeveloperExceptionPage();
+}
+else
+{
+    // Production: return a consistent { error } body for unhandled exceptions
+    // (matching the shape endpoints already use for 4xx) instead of an empty
+    // 500 the frontend can't parse. Details stay out of the response and in the
+    // logs/Seq — the exception was already logged by the framework.
+    app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new { error = "An unexpected error occurred." });
+    }));
 }
 
 // Download FFmpeg if not already present (needed for thumbnail generation).
