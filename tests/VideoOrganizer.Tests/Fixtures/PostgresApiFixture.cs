@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Testcontainers.PostgreSql;
+using VideoOrganizer.API.Services;
 using VideoOrganizer.Infrastructure.Data;
 using Xunit;
 
@@ -78,9 +79,15 @@ public sealed class PostgresApiFixture : IAsyncLifetime
             .WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment("Development");
-                // Endpoint/EF tests don't need the background workers; dropping
-                // them avoids the 10s startup delay and stray DB churn.
-                builder.ConfigureServices(services => services.RemoveAll<IHostedService>());
+                builder.ConfigureServices(services =>
+                {
+                    // Drop the thumbnail + Md5 background workers (they'd add a
+                    // ~10s startup delay and idle DB churn), but KEEP the import
+                    // queue so the end-to-end import test can actually run — the
+                    // import endpoint just enqueues; ImportQueueService consumes.
+                    services.RemoveAll<IHostedService>();
+                    services.AddHostedService(sp => sp.GetRequiredService<ImportQueueService>());
+                });
             });
 
         // First client creation triggers the host build → migrations apply
