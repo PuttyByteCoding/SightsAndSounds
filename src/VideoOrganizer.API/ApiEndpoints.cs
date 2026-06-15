@@ -1613,10 +1613,6 @@ public static partial class ApiEndpoints
                     v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
             }
 
-            var candidates = await candidatesQuery.ToListAsync(ct);
-
-            var lookup = await LoadTagLookupAsync(db, ct);
-
             var required = filter?.Required ?? new();
             var optional = filter?.Optional ?? new();
             var excluded = filter?.Excluded ?? new();
@@ -1636,6 +1632,19 @@ public static partial class ApiEndpoints
                 .Where(id => !referencedTagIds.Contains(id))
                 .ToHashSet();
 
+            // Push every safely-translatable slot into SQL (#127). When a Folder
+            // filter is present the query is still narrowed by everything else;
+            // the residual in-memory pass below applies the exact MatchesFilter
+            // semantics over that (much smaller) set.
+            var (narrowed, needsInMemory) =
+                VideoFilterTranslator.Apply(candidatesQuery, required, optional, excluded, autoHideTagIds);
+
+            var candidates = await narrowed.ToListAsync(ct);
+
+            if (!needsInMemory)
+                return Results.Ok(candidates.Select(ToDto).ToList());
+
+            var lookup = await LoadTagLookupAsync(db, ct);
             var matched = candidates.Where(v =>
             {
                 if (autoHideTagIds.Count > 0 && v.VideoTags.Any(vt => autoHideTagIds.Contains(vt.TagId))) return false;
@@ -1697,19 +1706,16 @@ public static partial class ApiEndpoints
                 return Results.Ok(fallback.Select(ToDto).ToList());
             }
 
-            q = q.Where(v => v.VideoTags.Any(vt => tagIds.Contains(vt.TagId)));
-            var candidates = await q.ToListAsync(ct);
-            var ranked = candidates
-                .Select(v => new
-                {
-                    Video = v,
-                    Score = v.VideoTags.Count(vt => tagIds.Contains(vt.TagId))
-                })
-                .OrderByDescending(x => x.Score)
-                .ThenByDescending(x => x.Video.IngestDate)
+            // Rank in SQL and take only `limit` rows, so we never materialize the
+            // entire tag-sharing candidate set (#127). Score = number of tags
+            // shared with the current video.
+            var tagIdList = tagIds.ToList();
+            var ranked = await q
+                .Where(v => v.VideoTags.Any(vt => tagIdList.Contains(vt.TagId)))
+                .OrderByDescending(v => v.VideoTags.Count(vt => tagIdList.Contains(vt.TagId)))
+                .ThenByDescending(v => v.IngestDate)
                 .Take(limit)
-                .Select(x => x.Video)
-                .ToList();
+                .ToListAsync(ct);
 
             return Results.Ok(ranked.Select(ToDto).ToList());
         }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
