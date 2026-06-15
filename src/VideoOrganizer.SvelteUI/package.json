@@ -11,7 +11,8 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "gen:types": "npx --yes openapi-typescript@7.13.0 ../../ci/openapi.json -o src/lib/api.generated.ts"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",

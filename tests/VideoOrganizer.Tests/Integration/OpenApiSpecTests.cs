@@ -113,6 +113,42 @@ public sealed class OpenApiSpecTests
         Assert.True(AllowsNull(props.GetProperty("md5")), "md5 should allow null");
     }
 
+    [SkippableFact]
+    public async Task Spec_numeric_fields_are_plain_numbers_not_string_unions()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+
+        var res = await _api.Client.GetAsync("/openapi/v1.json");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var props = doc.RootElement.GetProperty("components").GetProperty("schemas")
+            .GetProperty("VideoDto").GetProperty("properties");
+
+        // Numbers default to the lenient union ["integer","string"] (System.Text.Json
+        // can read numbers from strings). That makes generated TS `number | string`,
+        // which is unusable on the client (#125). The normalizing transformer drops
+        // the string alternative -> a non-nullable number is exactly "integer".
+        var watchCount = props.GetProperty("watchCount");
+        Assert.Equal("integer", watchCount.GetProperty("type").GetString());
+        Assert.False(watchCount.TryGetProperty("pattern", out _), "numeric pattern should be stripped");
+
+        // A nullable number keeps its null but still drops the string alternative.
+        var clipStart = props.GetProperty("clipStartSeconds");
+        Assert.False(TypeIncludes(clipStart, "string"), "nullable number must not allow string");
+        Assert.True(TypeIncludes(clipStart, "number"), "nullable number keeps its numeric type");
+    }
+
+    // True when the schema's `type` (string or array form) includes the given name.
+    private static bool TypeIncludes(JsonElement schema, string typeName)
+    {
+        if (!schema.TryGetProperty("type", out var t)) return false;
+        if (t.ValueKind == JsonValueKind.String) return t.GetString() == typeName;
+        if (t.ValueKind == JsonValueKind.Array)
+            return t.EnumerateArray().Any(e => e.ValueKind == JsonValueKind.String && e.GetString() == typeName);
+        return false;
+    }
+
     // A property allows null in any of the encodings .NET 10 / OpenAPI 3.1 use:
     //   inline primitive:  { "type": ["string", "null"] }
     //   bare null:         { "type": "null" }
