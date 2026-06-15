@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using SixLabors.ImageSharp;
 using VideoOrganizer.API.Services;
 using VideoOrganizer.Shared.Configuration;
 using VideoOrganizer.Tests.Fixtures;
@@ -8,9 +7,8 @@ using Xunit;
 namespace VideoOrganizer.Tests.Integration;
 
 /// <summary>
-/// Exercises the real ffmpeg frame extraction + ImageSharp sprite compositing
-/// in ThumbnailGenerator against a synthetic clip — previously untested, and the
-/// subsystem behind the "missing thumbnails" issues.
+/// Exercises the real ffmpeg tile-based sprite generation in ThumbnailGenerator
+/// against a synthetic clip — the subsystem behind the "missing thumbnails" issues.
 /// </summary>
 [Collection("SyntheticMedia")]
 public sealed class ThumbnailGeneratorTests
@@ -47,9 +45,12 @@ public sealed class ThumbnailGeneratorTests
             // The exact lookup the serving endpoint uses must now resolve.
             Assert.Equal(spritePath, generator.GetSpriteImagePath(videoId));
 
-            // And the sprite is a genuinely decodable image, not just bytes.
-            using var img = await Image.LoadAsync(spritePath);
-            Assert.True(img.Width > 0 && img.Height > 0);
+            // And the sprite is a real JPEG (SOI magic bytes FF D8 FF), not an
+            // empty or garbage file. (Avoids pulling in an image library just to
+            // validate — the whole point of #109 is to not depend on one.)
+            var head = await File.ReadAllBytesAsync(spritePath);
+            Assert.True(head.Length > 3 && head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF,
+                "sprite.jpg should start with the JPEG SOI marker");
         }
         finally
         {
