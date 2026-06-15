@@ -41,6 +41,18 @@ foreign key**. This is why several operations look the way they do:
   first.
 - Disabling a set hides its videos from browse but keeps them in the DB.
 
+### Filtering happens in SQL
+
+The browse filter, playlist generators, and related-videos endpoints translate
+the three-way tag filter (Required = AND, Optional = OR, Excluded = NOT, plus
+hidden-by-default suppression) into an EF predicate via `VideoFilterTranslator`
+so the database does the work — they do **not** load every video under the
+enabled roots into memory. The one filter term that can't be expressed in SQL,
+**Folder** (case-insensitive directory equality), narrows the set with
+everything else first and is then refined by the exact in-memory matcher over
+that much smaller slice. Related-videos likewise ranks (shared-tag count, then
+`IngestDate`) and applies its limit in SQL.
+
 ## Background workers
 
 Three `BackgroundService`s, all **signal-driven** rather than timer-polled — they
@@ -117,5 +129,9 @@ OS-level endpoints (open terminal / reveal / ffprobe-diagnostics) are gated to
   stay in `ApiEndpoints.cs`.
 - Enums serialize camelCase via `LenientEnumConverter` (case-insensitive,
   numeric-tolerant on read).
+- The frontend's `src/lib/api.generated.ts` is generated from the API's OpenAPI
+  document (`ci/openapi.json`) — that spec is the source of truth. A drift guard
+  (`OpenApiDriftTests`) fails the build when an endpoint/DTO changes without
+  regenerating; the regen workflow is in `ci/README.md`.
 - `.env` (gitignored) is the single source of truth for `POSTGRES_*`; the API
   fails fast if they're missing.
