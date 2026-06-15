@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -83,16 +84,36 @@ public class ThumbnailGenerator : IThumbnailGenerator
             thumbnailCount = Math.Min(thumbnailCount, TargetFrameCount);
             var rows = (int)Math.Ceiling((double)thumbnailCount / columns);
 
-            // Single ffmpeg pass replaces the old per-frame extraction + image-library
-            // compositing (drops the SixLabors.ImageSharp dependency, issue #109):
-            //   fps=1/interval  — one frame every `interval` seconds (frame i ≈ i*interval)
-            //   scale=w:h       — each frame to the tile size
-            //   tile=cols x rows — arranged left-to-right, top-to-bottom into one image
-            // -frames:v 1 emits exactly one tiled sprite. Cells beyond the available
-            // frames are left as the tile filter's default (black) padding, matching
-            // the previous behaviour.
-            var filter = $"fps=1/{intervalSeconds},scale={thumbnailWidth}:{thumbnailHeight},tile={columns}x{rows}";
-            await RunFfmpegTileAsync(videoPath, filter, spriteImagePath, ct);
+            // Two-phase generation, issue #111 (still no SixLabors.ImageSharp, #109):
+            //
+            //   Phase 1 — extract each frame with a fast *input* seek
+            //     (`-ss <t>` before `-i`). This jumps straight to the timestamp
+            //     instead of decoding the whole file, so cost is ~constant per
+            //     frame regardless of video length. A single tile pass with
+            //     `fps=1/interval` (the previous approach) decoded the entire
+            //     video and was multiples slower on long clips.
+            //
+            //   Phase 2 — tile the small extracted JPEGs into the sprite with one
+            //     more ffmpeg pass (`tile=cols x rows`), which is near-instant on
+            //     320x180 inputs.
+            var framePaths = await ExtractFramesAsync(
+                videoPath, videoDir, thumbnailCount, intervalSeconds, thumbnailWidth, thumbnailHeight, ct);
+
+            try
+            {
+                // `-framerate 1 -i _frame_%04d.jpg` feeds the frames (0..count-1, in
+                // order) into the tile filter. Missing frames were backfilled with a
+                // black placeholder so the sequence is contiguous; any cells past the
+                // last frame stay black, matching the old behaviour.
+                var framePattern = Path.Combine(videoDir, "_frame_%04d.jpg");
+                await RunFfmpegAsync(ct,
+                    "-framerate", "1", "-start_number", "0", "-i", framePattern,
+                    "-vf", $"tile={columns}x{rows}", "-frames:v", "1", spriteImagePath);
+            }
+            finally
+            {
+                CleanupFrames(framePaths, videoDir);
+            }
 
             if (!File.Exists(spriteImagePath))
             {
@@ -100,7 +121,7 @@ public class ThumbnailGenerator : IThumbnailGenerator
             }
 
             // WebVTT: one cue per tile, in the same left-to-right / top-to-bottom
-            // order ffmpeg's tile filter lays them out, so cue i maps to frame i.
+            // order the tile filter lays them out, so cue i maps to frame i.
             var vttBuilder = new System.Text.StringBuilder();
             vttBuilder.AppendLine("WEBVTT");
             vttBuilder.AppendLine();
@@ -134,11 +155,72 @@ public class ThumbnailGenerator : IThumbnailGenerator
         }
     }
 
-    // Runs `ffmpeg -i <video> -vf <filter> -frames:v 1 <output>` against the
-    // ffmpeg binary Xabe is configured to use. Passing the CancellationToken
-    // kills the process on timeout / user-skip so a hung ffmpeg can't run forever
-    // (the warming service relies on this to bound per-video work).
-    private static async Task RunFfmpegTileAsync(string videoPath, string filter, string outputPath, CancellationToken ct)
+    // Phase 1: extract `count` frames at i*interval via fast input seeks. Returns
+    // the (contiguous, 0-based) frame file paths. A frame that fails to extract is
+    // backfilled with a black placeholder so phase 2's image sequence has no gaps.
+    private async Task<List<string>> ExtractFramesAsync(
+        string videoPath, string videoDir, int count, int intervalSeconds,
+        int width, int height, CancellationToken ct)
+    {
+        var framePaths = new List<string>(count);
+        string? blackPlaceholder = null;
+
+        for (int i = 0; i < count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var framePath = Path.Combine(videoDir, $"_frame_{i:D4}.jpg");
+            framePaths.Add(framePath);
+
+            try
+            {
+                // `-ss` *before* `-i` = input seeking: fast jump to ~the timestamp.
+                await RunFfmpegAsync(ct,
+                    "-ss", (i * intervalSeconds).ToString(),
+                    "-i", videoPath,
+                    "-frames:v", "1", "-s", $"{width}x{height}", framePath);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to extract frame {Index} at {Seconds}s", i, i * intervalSeconds);
+            }
+
+            if (!File.Exists(framePath))
+            {
+                blackPlaceholder ??= await MakeBlackPlaceholderAsync(videoDir, width, height, ct);
+                File.Copy(blackPlaceholder, framePath, overwrite: true);
+            }
+        }
+
+        return framePaths;
+    }
+
+    private async Task<string> MakeBlackPlaceholderAsync(string videoDir, int width, int height, CancellationToken ct)
+    {
+        var path = Path.Combine(videoDir, "_black.jpg");
+        await RunFfmpegAsync(ct,
+            "-f", "lavfi", "-i", $"color=c=black:s={width}x{height}",
+            "-frames:v", "1", path);
+        return path;
+    }
+
+    private void CleanupFrames(IEnumerable<string> framePaths, string videoDir)
+    {
+        foreach (var p in framePaths)
+        {
+            try { if (File.Exists(p)) File.Delete(p); } catch { /* leaked temp frame; not fatal */ }
+        }
+        var black = Path.Combine(videoDir, "_black.jpg");
+        try { if (File.Exists(black)) File.Delete(black); } catch { /* ignore */ }
+    }
+
+    // Runs ffmpeg with the given args (we always prepend the quiet/overwrite flags)
+    // against the binary Xabe is configured to use. The CancellationToken kills the
+    // process on timeout / user-skip so a hung ffmpeg can't run forever.
+    private static async Task RunFfmpegAsync(CancellationToken ct, params string[] args)
     {
         var psi = new ProcessStartInfo
         {
@@ -150,13 +232,7 @@ public class ThumbnailGenerator : IThumbnailGenerator
         psi.ArgumentList.Add("-loglevel");
         psi.ArgumentList.Add("error");
         psi.ArgumentList.Add("-y");
-        psi.ArgumentList.Add("-i");
-        psi.ArgumentList.Add(videoPath);
-        psi.ArgumentList.Add("-vf");
-        psi.ArgumentList.Add(filter);
-        psi.ArgumentList.Add("-frames:v");
-        psi.ArgumentList.Add("1");
-        psi.ArgumentList.Add(outputPath);
+        foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("could not start ffmpeg");
@@ -165,15 +241,13 @@ public class ThumbnailGenerator : IThumbnailGenerator
             try { proc.Kill(entireProcessTree: true); } catch { /* already exited */ }
         });
 
-        // ffmpeg writes the sprite to a file, not stdout; only stderr carries
-        // progress/errors. Read it to EOF (process exit), then await exit.
         var stderr = await proc.StandardError.ReadToEndAsync(ct);
         await proc.WaitForExitAsync(ct);
 
         if (proc.ExitCode != 0)
         {
             var tail = stderr.Length > 800 ? stderr[^800..] : stderr;
-            throw new InvalidOperationException($"ffmpeg tile failed (exit {proc.ExitCode}): {tail}");
+            throw new InvalidOperationException($"ffmpeg failed (exit {proc.ExitCode}): {tail}");
         }
     }
 
