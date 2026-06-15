@@ -13,6 +13,47 @@ namespace VideoOrganizer.API;
 
 public static partial class ApiEndpoints
 {
+    // Resolves the set of videos matching a playlist filter, pushing the
+    // translatable slots into SQL (#127) so we don't pull every video under the
+    // enabled roots into memory. Folder filters (untranslatable) fall back to
+    // the exact in-memory MatchesFilter pass over the SQL-narrowed set. Returns
+    // (Id, WatchCount) pairs — the even-distribution playlist needs WatchCount;
+    // the random playlist ignores it. Empty when no VideoSet is enabled.
+    private static async Task<List<(Guid Id, int WatchCount)>> ResolveFilteredVideosAsync(
+        VideoOrganizerDbContext db, PlaylistFilterRequest? filter, CancellationToken ct)
+    {
+        var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+        if (enabledRoots.Count == 0) return new();
+
+        var required = filter?.Required ?? new();
+        var optional = filter?.Optional ?? new();
+        var excluded = filter?.Excluded ?? new();
+
+        var baseQuery = db.Videos
+            .AsNoTracking()
+            .Include(v => v.VideoTags) // only materialized on the in-memory fallback path
+            .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+
+        var (narrowed, needsInMemory) =
+            VideoFilterTranslator.Apply(baseQuery, required, optional, excluded, Array.Empty<Guid>());
+
+        if (!needsInMemory)
+        {
+            var rows = await narrowed.Select(v => new { v.Id, v.WatchCount }).ToListAsync(ct);
+            return rows.Select(r => (r.Id, r.WatchCount)).ToList();
+        }
+
+        var lookup = await LoadTagLookupAsync(db, ct);
+        var loaded = await narrowed.ToListAsync(ct);
+        return loaded.Where(v =>
+        {
+            if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
+            if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
+            if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
+            return true;
+        }).Select(v => (v.Id, v.WatchCount)).ToList();
+    }
+
     private static void MapPlaylistEndpoints(RouteGroupBuilder api)
     {
         var playlists = api.MapGroup("/playlists").WithTags("Playlists");
@@ -23,25 +64,8 @@ public static partial class ApiEndpoints
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
-            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
-            var candidates = await db.Videos
-                .AsNoTracking()
-                .Include(v => v.VideoTags)
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)))
-                .ToListAsync(ct);
-            var lookup = await LoadTagLookupAsync(db, ct);
-
-            var required = filter?.Required ?? new();
-            var optional = filter?.Optional ?? new();
-            var excluded = filter?.Excluded ?? new();
-
-            var matched = candidates.Where(v =>
-            {
-                if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
-                if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
-                if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
-                return true;
-            }).Select(v => v.Id).ToList();
+            var resolved = await ResolveFilteredVideosAsync(db, filter, ct);
+            var matched = resolved.Select(r => r.Id).ToList();
 
             if (matched.Count == 0)
                 return Results.BadRequest("No videos found matching the filter criteria");
@@ -62,25 +86,7 @@ public static partial class ApiEndpoints
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
-            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
-            var candidates = await db.Videos
-                .AsNoTracking()
-                .Include(v => v.VideoTags)
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)))
-                .ToListAsync(ct);
-            var lookup = await LoadTagLookupAsync(db, ct);
-
-            var required = filter?.Required ?? new();
-            var optional = filter?.Optional ?? new();
-            var excluded = filter?.Excluded ?? new();
-
-            var matched = candidates.Where(v =>
-            {
-                if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
-                if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
-                if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
-                return true;
-            }).Select(v => new { v.Id, v.WatchCount }).ToList();
+            var matched = await ResolveFilteredVideosAsync(db, filter, ct);
 
             if (matched.Count == 0)
                 return Results.BadRequest("No videos found matching the filter criteria");
