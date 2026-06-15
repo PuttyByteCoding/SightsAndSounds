@@ -24,6 +24,10 @@
          ffprobe aren't on PATH — e.g. a dev box without it. CI installs ffmpeg,
          so there the tests actually run. -->
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+    <!-- WebApplicationFactory + a throwaway Postgres container for the
+         endpoint/EF integration tests. Skip when Docker isn't available. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.12.0" />
   </ItemGroup>
 
   <ItemGroup>

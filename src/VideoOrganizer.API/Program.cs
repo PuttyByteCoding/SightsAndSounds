@@ -259,7 +259,21 @@ if (app.Environment.IsDevelopment())
 var ffmpegDir = Path.Combine(AppContext.BaseDirectory, "ffmpeg");
 Directory.CreateDirectory(ffmpegDir);
 FFmpeg.SetExecutablesPath(ffmpegDir);
-await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, ffmpegDir);
+// Skip the (network) download when ffmpeg + ffprobe are already in place — a
+// prior run, a system install seeded into this dir, or the integration tests
+// that pre-seed it. Avoids a needless fetch on every boot and keeps tests
+// offline. On a fresh prod install the dir is empty, so the download still runs.
+if (!FfmpegBinariesPresent(ffmpegDir))
+{
+    await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, ffmpegDir);
+}
+
+static bool FfmpegBinariesPresent(string dir)
+{
+    var ext = OperatingSystem.IsWindows() ? ".exe" : string.Empty;
+    return File.Exists(Path.Combine(dir, "ffmpeg" + ext))
+        && File.Exists(Path.Combine(dir, "ffprobe" + ext));
+}
 
 // Apply any pending migrations at startup
 using (var scope = app.Services.CreateScope())
@@ -389,4 +403,8 @@ app.MapApiEndpoints();
 app.MapFallbackToFile("index.html");
 
 app.Run();
+
+// Exposed so WebApplicationFactory<Program> in the integration tests can boot
+// the real app. Top-level statements otherwise compile to an internal Program.
+public partial class Program { }
 
