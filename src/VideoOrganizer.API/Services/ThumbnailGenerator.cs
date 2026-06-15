@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Xabe.FFmpeg;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Processing;
-using SixLabors.ImageSharp.PixelFormats;
 using VideoOrganizer.Shared.Configuration;
 
 namespace VideoOrganizer.API.Services;
@@ -81,146 +79,52 @@ public class ThumbnailGenerator : IThumbnailGenerator
                 return (string.Empty, "WEBVTT\n\n");
             }
 
-            // Hard ceiling — defends against a short MinInterval producing too many
-            // frames if the override kicks in with a pathological value.
+            // Hard ceiling — defends against a short MinInterval producing too many frames.
             thumbnailCount = Math.Min(thumbnailCount, TargetFrameCount);
+            var rows = (int)Math.Ceiling((double)thumbnailCount / columns);
 
-            var thumbnailPaths = new List<string>();
+            // Single ffmpeg pass replaces the old per-frame extraction + image-library
+            // compositing (drops the SixLabors.ImageSharp dependency, issue #109):
+            //   fps=1/interval  — one frame every `interval` seconds (frame i ≈ i*interval)
+            //   scale=w:h       — each frame to the tile size
+            //   tile=cols x rows — arranged left-to-right, top-to-bottom into one image
+            // -frames:v 1 emits exactly one tiled sprite. Cells beyond the available
+            // frames are left as the tile filter's default (black) padding, matching
+            // the previous behaviour.
+            var filter = $"fps=1/{intervalSeconds},scale={thumbnailWidth}:{thumbnailHeight},tile={columns}x{rows}";
+            await RunFfmpegTileAsync(videoPath, filter, spriteImagePath, ct);
+
+            if (!File.Exists(spriteImagePath))
+            {
+                throw new InvalidOperationException($"ffmpeg did not produce a sprite for video {videoId}");
+            }
+
+            // WebVTT: one cue per tile, in the same left-to-right / top-to-bottom
+            // order ffmpeg's tile filter lays them out, so cue i maps to frame i.
             var vttBuilder = new System.Text.StringBuilder();
             vttBuilder.AppendLine("WEBVTT");
             vttBuilder.AppendLine();
-
-            // Track partial-success scenarios so the completion log can flag
-            // a sprite that was generated with gaps. Without these counters
-            // a video with half its frames missing looks identical to a
-            // clean run in Seq.
-            var extractionFailures = 0;
-            var assemblyFailures = 0;
-            var assemblyMissingFiles = 0;
-
-            // Extract thumbnails
             for (int i = 0; i < thumbnailCount; i++)
             {
-                var timestamp = TimeSpan.FromSeconds(i * intervalSeconds);
-                var thumbnailPath = Path.Combine(videoDir, $"thumb_{i:D4}.jpg");
-                thumbnailPaths.Add(thumbnailPath);
+                var col = i % columns;
+                var row = i / columns;
+                var x = col * thumbnailWidth;
+                var y = row * thumbnailHeight;
 
-                try
-                {
-                    var conversion = await FFmpeg.Conversions.FromSnippet.Snapshot(
-                        videoPath,
-                        thumbnailPath,
-                        timestamp);
+                var startTime = TimeSpan.FromSeconds(i * intervalSeconds);
+                var endTime = TimeSpan.FromSeconds((i + 1) * intervalSeconds);
 
-                    // Pass `ct` so cancellation (timeout / user skip) actually
-                    // kills the ffmpeg process. Without this, a hung ffmpeg
-                    // ignored CancelAfter and ran forever.
-                    await conversion
-                        .AddParameter($"-s {thumbnailWidth}x{thumbnailHeight}")
-                        .Start(ct);
-
-                    _logger.LogDebug("Generated thumbnail {Index}/{Total} at {Timestamp}", i + 1, thumbnailCount, timestamp);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Bubble out of the loop so the outer service's catch can
-                    // attribute this to timeout vs user-skip.
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to generate thumbnail {Index}/{Total} at {Timestamp} for video {VideoId}",
-                        i + 1, thumbnailCount, timestamp, videoId);
-                    extractionFailures++;
-                }
-            }
-
-            // Create sprite image
-            var rows = (int)Math.Ceiling((double)thumbnailCount / columns);
-            var spriteWidth = thumbnailWidth * columns;
-            var spriteHeight = thumbnailHeight * rows;
-
-            using (var spriteImage = new Image<Rgb24>(spriteWidth, spriteHeight))
-            {
-                spriteImage.Mutate(ctx => ctx.BackgroundColor(Color.Black));
-
-                for (int i = 0; i < thumbnailPaths.Count; i++)
-                {
-                    if (!File.Exists(thumbnailPaths[i]))
-                    {
-                        // ffmpeg said success but the output isn't on disk —
-                        // rare but worth knowing about because the sprite will
-                        // have a black tile here.
-                        assemblyMissingFiles++;
-                        continue;
-                    }
-
-                    try
-                    {
-                        using (var thumbnail = await Image.LoadAsync<Rgb24>(thumbnailPaths[i], ct))
-                        {
-                            var col = i % columns;
-                            var row = i / columns;
-                            var x = col * thumbnailWidth;
-                            var y = row * thumbnailHeight;
-
-                            spriteImage.Mutate(ctx => ctx.DrawImage(thumbnail, new Point(x, y), 1f));
-
-                            // Generate VTT entry
-                            var startTime = TimeSpan.FromSeconds(i * intervalSeconds);
-                            var endTime = TimeSpan.FromSeconds((i + 1) * intervalSeconds);
-
-                            vttBuilder.AppendLine($"{FormatVttTime(startTime)} --> {FormatVttTime(endTime)}");
-                            vttBuilder.AppendLine($"sprite.jpg#xywh={x},{y},{thumbnailWidth},{thumbnailHeight}");
-                            vttBuilder.AppendLine();
-                        }
-
-                        // Clean up individual thumbnail. A delete failure here
-                        // (file in use, AV scan, etc.) doesn't break the sprite,
-                        // but it leaks a temp file — log so disk-bloat is debuggable.
-                        try
-                        {
-                            File.Delete(thumbnailPaths[i]);
-                        }
-                        catch (Exception delEx)
-                        {
-                            _logger.LogWarning(delEx,
-                                "Failed to delete temp thumbnail {Path} for video {VideoId} (sprite still generated correctly)",
-                                thumbnailPaths[i], videoId);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to process thumbnail {Index} ({Path}) for video {VideoId}",
-                            i, thumbnailPaths[i], videoId);
-                        assemblyFailures++;
-                    }
-                }
-
-                await spriteImage.SaveAsJpegAsync(spriteImagePath, ct);
+                vttBuilder.AppendLine($"{FormatVttTime(startTime)} --> {FormatVttTime(endTime)}");
+                vttBuilder.AppendLine($"sprite.jpg#xywh={x},{y},{thumbnailWidth},{thumbnailHeight}");
+                vttBuilder.AppendLine();
             }
 
             var vttContent = vttBuilder.ToString();
             await File.WriteAllTextAsync(vttFilePath, vttContent, ct);
 
-            // Promote the completion log to Warning when any frame went
-            // missing — the sprite is still usable but visually patchy, and
-            // a regression that takes the failure rate from 0 to N% needs
-            // to be greppable.
-            var totalFailed = extractionFailures + assemblyFailures + assemblyMissingFiles;
-            if (totalFailed > 0)
-            {
-                _logger.LogWarning(
-                    "Generated sprite + VTT for video {VideoId} with gaps — {Generated}/{Total} frames usable ({ExtractionFailures} ffmpeg failures, {AssemblyFailures} assembly failures, {MissingFiles} missing files). Sprite will have black tiles.",
-                    videoId, thumbnailCount - totalFailed, thumbnailCount,
-                    extractionFailures, assemblyFailures, assemblyMissingFiles);
-            }
-            else
-            {
-                _logger.LogInformation(
-                    "Generated sprite + VTT for video {VideoId} ({FrameCount} frames at {IntervalSeconds}s spacing)",
-                    videoId, thumbnailCount, intervalSeconds);
-            }
+            _logger.LogInformation(
+                "Generated sprite + VTT for video {VideoId} ({FrameCount} frames at {IntervalSeconds}s spacing)",
+                videoId, thumbnailCount, intervalSeconds);
 
             return (spriteImagePath, vttContent);
         }
@@ -230,7 +134,64 @@ public class ThumbnailGenerator : IThumbnailGenerator
         }
     }
 
-    private string FormatVttTime(TimeSpan time)
+    // Runs `ffmpeg -i <video> -vf <filter> -frames:v 1 <output>` against the
+    // ffmpeg binary Xabe is configured to use. Passing the CancellationToken
+    // kills the process on timeout / user-skip so a hung ffmpeg can't run forever
+    // (the warming service relies on this to bound per-video work).
+    private static async Task RunFfmpegTileAsync(string videoPath, string filter, string outputPath, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = ResolveFfmpegPath(),
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-hide_banner");
+        psi.ArgumentList.Add("-loglevel");
+        psi.ArgumentList.Add("error");
+        psi.ArgumentList.Add("-y");
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(videoPath);
+        psi.ArgumentList.Add("-vf");
+        psi.ArgumentList.Add(filter);
+        psi.ArgumentList.Add("-frames:v");
+        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add(outputPath);
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("could not start ffmpeg");
+        using var kill = ct.Register(() =>
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { /* already exited */ }
+        });
+
+        // ffmpeg writes the sprite to a file, not stdout; only stderr carries
+        // progress/errors. Read it to EOF (process exit), then await exit.
+        var stderr = await proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+
+        if (proc.ExitCode != 0)
+        {
+            var tail = stderr.Length > 800 ? stderr[^800..] : stderr;
+            throw new InvalidOperationException($"ffmpeg tile failed (exit {proc.ExitCode}): {tail}");
+        }
+    }
+
+    // ffmpeg lives where Xabe was pointed (Program.cs sets this to a bundled dir;
+    // tests point it at the system binaries). Fall back to PATH if unset.
+    private static string ResolveFfmpegPath()
+    {
+        var exe = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
+        var dir = FFmpeg.ExecutablesPath;
+        if (!string.IsNullOrEmpty(dir))
+        {
+            var p = Path.Combine(dir, exe);
+            if (File.Exists(p)) return p;
+        }
+        return exe;
+    }
+
+    private static string FormatVttTime(TimeSpan time)
     {
         return $"{(int)time.TotalHours:D2}:{time.Minutes:D2}:{time.Seconds:D2}.{time.Milliseconds:D3}";
     }
