@@ -1,0 +1,127 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Routing;
+using System.IO;
+using Microsoft.EntityFrameworkCore;
+using VideoOrganizer.Domain.Models;
+using VideoOrganizer.Infrastructure.Data;
+using VideoOrganizer.API.Services;
+using VideoOrganizer.Shared;
+using VideoOrganizer.Shared.Helpers;
+using VideoOrganizer.Shared.Dto;
+
+namespace VideoOrganizer.API;
+
+public static partial class ApiEndpoints
+{
+    private static void MapPlaylistEndpoints(RouteGroupBuilder api)
+    {
+        var playlists = api.MapGroup("/playlists").WithTags("Playlists");
+
+        playlists.MapPost("/random", async (
+            PlaylistFilterRequest? filter,
+            VideoOrganizerDbContext db,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
+        {
+            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+            var candidates = await db.Videos
+                .AsNoTracking()
+                .Include(v => v.VideoTags)
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)))
+                .ToListAsync(ct);
+            var lookup = await LoadTagLookupAsync(db, ct);
+
+            var required = filter?.Required ?? new();
+            var optional = filter?.Optional ?? new();
+            var excluded = filter?.Excluded ?? new();
+
+            var matched = candidates.Where(v =>
+            {
+                if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
+                if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
+                if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
+                return true;
+            }).Select(v => v.Id).ToList();
+
+            if (matched.Count == 0)
+                return Results.BadRequest("No videos found matching the filter criteria");
+
+            var rng = Random.Shared;
+            var shuffled = matched.OrderBy(_ => rng.Next()).ToList();
+            var playlistId = Guid.NewGuid();
+            var playlist = new PlaylistDto(playlistId, shuffled, DateTime.UtcNow);
+            _playlists[playlistId] = playlist;
+            logger.LogInformation("Created random playlist {PlaylistId} with {Count} videos", playlistId, shuffled.Count);
+            return Results.Ok(playlist);
+        }).WithName("CreateRandomPlaylist");
+
+        playlists.MapPost("/even", async (
+            PlaylistFilterRequest? filter,
+            VideoOrganizerDbContext db,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
+        {
+            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
+            var candidates = await db.Videos
+                .AsNoTracking()
+                .Include(v => v.VideoTags)
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)))
+                .ToListAsync(ct);
+            var lookup = await LoadTagLookupAsync(db, ct);
+
+            var required = filter?.Required ?? new();
+            var optional = filter?.Optional ?? new();
+            var excluded = filter?.Excluded ?? new();
+
+            var matched = candidates.Where(v =>
+            {
+                if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
+                if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
+                if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
+                return true;
+            }).Select(v => new { v.Id, v.WatchCount }).ToList();
+
+            if (matched.Count == 0)
+                return Results.BadRequest("No videos found matching the filter criteria");
+
+            var rng = Random.Shared;
+            var ordered = matched
+                .OrderBy(x => x.WatchCount)
+                .ThenBy(_ => rng.Next())
+                .Select(x => x.Id)
+                .ToList();
+            var playlistId = Guid.NewGuid();
+            var playlist = new PlaylistDto(playlistId, ordered, DateTime.UtcNow);
+            _playlists[playlistId] = playlist;
+            logger.LogInformation("Created even-distribution playlist {PlaylistId} with {Count} videos",
+                playlistId, ordered.Count);
+            return Results.Ok(playlist);
+        }).WithName("CreateEvenDistributionPlaylist");
+
+        playlists.MapGet("/{id:guid}", (Guid id, ILogger<Program> logger) =>
+        {
+            if (!_playlists.TryGetValue(id, out var playlist))
+            {
+                logger.LogWarning("Playlist {PlaylistId} not found", id);
+                return Results.NotFound();
+            }
+            return Results.Ok(playlist);
+        }).WithName("GetPlaylist");
+
+        playlists.MapGet("/{playlistId:guid}/navigation/{videoId:guid}",
+            (Guid playlistId, Guid videoId, ILogger<Program> logger) =>
+        {
+            if (!_playlists.TryGetValue(playlistId, out var playlist))
+                return Results.NotFound("Playlist not found");
+
+            var currentIndex = playlist.VideoIds.IndexOf(videoId);
+            if (currentIndex == -1) return Results.NotFound("Video not found in playlist");
+
+            var previousVideoId = currentIndex > 0 ? playlist.VideoIds[currentIndex - 1] : (Guid?)null;
+            var nextVideoId = currentIndex < playlist.VideoIds.Count - 1
+                ? playlist.VideoIds[currentIndex + 1] : (Guid?)null;
+            return Results.Ok(new PlaylistNavigationDto(
+                videoId, nextVideoId, previousVideoId, currentIndex, playlist.VideoIds.Count));
+        }).WithName("GetPlaylistNavigation");
+    }
+}
