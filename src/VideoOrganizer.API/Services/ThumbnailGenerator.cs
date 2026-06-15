@@ -1,8 +1,8 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xabe.FFmpeg;
@@ -14,7 +14,14 @@ public class ThumbnailGenerator : IThumbnailGenerator
 {
     private readonly ILogger<ThumbnailGenerator> _logger;
     private readonly string _thumbnailCacheDir;
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _generationLocks = new();
+
+    // Striped per-video locks: a fixed pool indexed by the video id's hash, so a
+    // video isn't generated twice concurrently without the lock set growing with
+    // the library (the old per-video dictionary added an entry per id and never
+    // freed it). Two ids occasionally share a stripe — that only briefly
+    // serialises them, never a correctness issue.
+    private static readonly SemaphoreSlim[] _generationLocks =
+        Enumerable.Range(0, 32).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
 
     public ThumbnailGenerator(ILogger<ThumbnailGenerator> logger, VideoStorageOptions storageOptions)
     {
@@ -43,8 +50,8 @@ public class ThumbnailGenerator : IThumbnailGenerator
         int columns = 5,
         CancellationToken ct = default)
     {
-        // Get or create a lock for this specific video
-        var semaphore = _generationLocks.GetOrAdd(videoId, _ => new SemaphoreSlim(1, 1));
+        // Per-video lock from the fixed stripe pool (keyed by id hash).
+        var semaphore = _generationLocks[(uint)videoId.GetHashCode() % _generationLocks.Length];
 
         await semaphore.WaitAsync(ct);
         try
