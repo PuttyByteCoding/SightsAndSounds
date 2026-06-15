@@ -69,6 +69,57 @@ public sealed class ApiEndpointsImportTests
         }
     }
 
+    [SkippableFact]
+    public async Task Reimporting_the_same_directory_does_not_duplicate()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        Skip.IfNot(TestFfmpeg.Available, "ffmpeg not available (needed to make + probe a clip)");
+
+        var dir = Path.Combine(Path.GetTempPath(), "sas-reimport-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var clip = Path.Combine(dir, "reimport-clip.mp4");
+        await MakeClipAsync(clip);
+
+        try
+        {
+            // ImportQueueService is a single-consumer queue, so the second import
+            // runs after the first commits — its existence check sees the row and
+            // skips it. The result must be exactly one Video, not a duplicate or
+            // a failed batch.
+            await ImportAndWaitAsync(dir, "reimport-1");
+            await ImportAndWaitAsync(dir, "reimport-2");
+
+            await _api.WithDbAsync(async db =>
+            {
+                var count = await db.Videos.CountAsync(x => x.FileName == "reimport-clip.mp4");
+                Assert.Equal(1, count);
+            });
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
+            await _api.WithDbAsync(db => db.Videos.Where(x => x.FileName == "reimport-clip.mp4").ExecuteDeleteAsync());
+        }
+    }
+
+    // POST /import/directory and poll its progress to completion (bounded ~30s).
+    private async Task ImportAndWaitAsync(string dir, string name)
+    {
+        var post = await _api.Client.PostAsJsonAsync("/api/import/directory",
+            new { directoryPath = dir, includeSubdirectories = false, name });
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+        var jobId = (await post.Content.ReadFromJsonAsync<JobAccepted>())!.jobId;
+
+        var completed = false;
+        for (var i = 0; i < 60 && !completed; i++)
+        {
+            var prog = await _api.Client.GetFromJsonAsync<ImportProgress>($"/api/import/progress/{jobId}");
+            completed = prog!.isCompleted;
+            if (!completed) await Task.Delay(500);
+        }
+        Assert.True(completed, $"import job '{name}' did not complete in time");
+    }
+
     // Small synthetic clip via the system ffmpeg (the same binary the fixture
     // pointed Xabe at), so the import's ffprobe can read real metadata.
     private static async Task MakeClipAsync(string path)
