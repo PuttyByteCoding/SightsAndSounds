@@ -4,6 +4,7 @@ public enum CameraTypes
 {
     Unknown,
     CellPhone,
+    HiddenCamera,
     Camcorder,
     ProfessionalCamera,
     NotChecked
