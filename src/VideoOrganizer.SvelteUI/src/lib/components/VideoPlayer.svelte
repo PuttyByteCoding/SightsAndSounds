@@ -13,6 +13,7 @@
   import { fade } from 'svelte/transition';
   import { api } from '$lib/api';
   import { loadProgressFraction } from '$lib/videoLoadProgress';
+  import { parseScrubberFrames, type ScrubFrame } from '$lib/scrubber';
   import type { Tag, Video, FfprobeResult, ClipSummary, TagSuggestion } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
@@ -357,8 +358,7 @@
     }
   }
 
-  // Scrubber
-  interface ScrubFrame { x: number; y: number; w: number; h: number; }
+  // Scrubber (ScrubFrame + VTT parsing live in $lib/scrubber for unit testing)
   let scrubFrames = $state<ScrubFrame[]>([]);
   let scrubSpriteSize = $state<{ w: number; h: number }>({ w: 0, h: 0 });
   let scrubBarEl: HTMLDivElement | null = $state(null);
@@ -696,18 +696,9 @@
       const res = await fetch(api.thumbnailsVttUrl(videoId));
       if (!res.ok) return;
       const text = await res.text();
-      const re = /sprite\.jpg#xywh=(\d+),(\d+),(\d+),(\d+)/g;
-      const out: ScrubFrame[] = [];
-      let maxRight = 0, maxBottom = 0;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(text)) !== null) {
-        const x = +m[1], y = +m[2], w = +m[3], h = +m[4];
-        out.push({ x, y, w, h });
-        if (x + w > maxRight) maxRight = x + w;
-        if (y + h > maxBottom) maxBottom = y + h;
-      }
-      scrubFrames = out;
-      scrubSpriteSize = { w: maxRight, h: maxBottom };
+      const parsed = parseScrubberFrames(text);
+      scrubFrames = parsed.frames;
+      scrubSpriteSize = parsed.spriteSize;
     } catch { /* non-fatal */ }
   }
 
