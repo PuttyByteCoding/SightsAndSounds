@@ -230,6 +230,13 @@ builder.Services.AddOpenApi(options =>
     {
         var type = jsonTypeInfo.Type;
         if (type.IsGenericType || type.IsArray) return null; // inline → array schema
+        // Only our own types become reusable components. Returning a non-null id
+        // for framework types (string, Guid, int, DateTime, …) wrongly hoists each
+        // primitive into components/schemas and turns every property into a $ref to
+        // it — non-standard and it pollutes generated clients. Returning null keeps
+        // them inline, which is the default OpenAPI behaviour.
+        if (type.Namespace is not { } ns || !ns.StartsWith("VideoOrganizer", StringComparison.Ordinal))
+            return null;
         return type is { Namespace: "VideoOrganizer.Domain.Models", IsEnum: true }
             ? "Domain" + type.Name
             : type.Name;
