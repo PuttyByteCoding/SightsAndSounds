@@ -5816,6 +5816,7 @@
           "needsReview",
           "playbackIssue",
           "markedForDeletion",
+          "isFavorite",
           "parentVideoId",
           "clipStartSeconds",
           "clipEndSeconds",
@@ -5952,6 +5953,9 @@
             "type": "boolean"
           },
           "markedForDeletion": {
+            "type": "boolean"
+          },
+          "isFavorite": {
             "type": "boolean"
           },
           "parentVideoId": {

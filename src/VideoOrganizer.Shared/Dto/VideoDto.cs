@@ -37,6 +37,7 @@ public record VideoDto(
     bool NeedsReview,
     bool PlaybackIssue,
     bool MarkedForDeletion,
+    bool IsFavorite,
     Guid? ParentVideoId,
     double? ClipStartSeconds,
     double? ClipEndSeconds,

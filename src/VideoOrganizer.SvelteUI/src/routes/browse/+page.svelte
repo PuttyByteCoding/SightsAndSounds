@@ -1600,7 +1600,8 @@
                           isFavorite: false,
                           sortOrder: 0,
                           notes: '',
-                          videoCount: rt.count
+                          videoCount: rt.count,
+                          hiddenByDefault: false
                         })}
                         title={slot ? `In filter: ${slot}` : `Filter by ${g.groupName}: ${rt.tag.name}`}
                       >{rt.tag.name}</button>
