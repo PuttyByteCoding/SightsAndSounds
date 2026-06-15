@@ -90,7 +90,7 @@ public class DirectoryImportService
         {
             ct.ThrowIfCancellationRequested();
             var batch = files.Skip(i).Take(batchSize);
-            var batchAdds = new List<(string FilePath, long FileSize)>();
+            var batchAdds = new List<(Video Video, string FilePath, long FileSize)>();
 
             foreach (var file in batch)
             {
@@ -192,7 +192,7 @@ public class DirectoryImportService
                         video.Notes = notes;
 
                     _dbContext.Videos.Add(video);
-                    batchAdds.Add((file, fileSize));
+                    batchAdds.Add((video, file, fileSize));
                     added++;
                     fileStatusReporter?.Invoke(file, fileSize, ImportFileStatus.Completed, fileSize, fileSize, null);
                 }
@@ -218,13 +218,63 @@ public class DirectoryImportService
                 foreach (var entry in batchAdds)
                     fileStatusReporter?.Invoke(entry.FilePath, entry.FileSize, ImportFileStatus.Failed, entry.FileSize, entry.FileSize, "timed out saving batch to database");
                 failed += batchAdds.Count;
+                added -= batchAdds.Count;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to save batch starting at index {Index}", i);
-                foreach (var entry in batchAdds)
-                    fileStatusReporter?.Invoke(entry.FilePath, entry.FileSize, ImportFileStatus.Failed, entry.FileSize, entry.FileSize, ex.Message);
-                failed += batchAdds.Count;
+                // The batch rolled back. The dominant cause is a concurrent import
+                // (e.g. a second process) racing us to the same files: the partial
+                // unique index (FilePath, FileName WHERE ParentVideoId IS NULL) can
+                // surface that either as a unique violation or as a transient
+                // deadlock between the two inserts (#128). Re-save each row on its
+                // own and classify by whether the row now exists — so genuinely-new
+                // files still land, files a concurrent importer already wrote are
+                // Skipped (not Failed), and only true failures are reported Failed.
+                _logger.LogWarning(ex,
+                    "Batch starting at index {Index} failed to save; retrying its {Count} rows individually.",
+                    i, batchAdds.Count);
+                _dbContext.ChangeTracker.Clear();
+
+                foreach (var (video, filePath, fileSize) in batchAdds)
+                {
+                    added--; // re-counted below by outcome
+                    try
+                    {
+                        _dbContext.Videos.Add(video);
+                        using var rowCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        rowCts.CancelAfter(TimeSpan.FromSeconds(30));
+                        await _dbContext.SaveChangesAsync(rowCts.Token);
+                        added++;
+                    }
+                    catch (Exception exRow)
+                    {
+                        _dbContext.ChangeTracker.Clear();
+                        // Did a concurrent importer already land this exact file?
+                        // If so it's the dedup working, not a failure.
+                        bool alreadyImported;
+                        try
+                        {
+                            alreadyImported = await _dbContext.Videos.AsNoTracking()
+                                .AnyAsync(v => v.FilePath == filePath
+                                            && v.FileName == video.FileName
+                                            && v.ParentVideoId == null, ct);
+                        }
+                        catch { alreadyImported = false; }
+
+                        if (alreadyImported)
+                        {
+                            _logger.LogDebug("Skipping {File}: already imported by a concurrent import.", filePath);
+                            fileStatusReporter?.Invoke(filePath, fileSize, ImportFileStatus.Skipped, fileSize, fileSize, "already imported (concurrent)");
+                            skippedAsDuplicate++;
+                        }
+                        else
+                        {
+                            _logger.LogError(exRow, "Failed to save {File} individually after a batch failure.", filePath);
+                            fileStatusReporter?.Invoke(filePath, fileSize, ImportFileStatus.Failed, fileSize, fileSize, exRow.Message);
+                            failed++;
+                        }
+                    }
+                }
             }
         }
 
