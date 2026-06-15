@@ -2505,6 +2505,7 @@ export interface components {
             needsReview: boolean;
             playbackIssue: boolean;
             markedForDeletion: boolean;
+            isFavorite: boolean;
             /** Format: uuid */
             parentVideoId: null | string;
             /** Format: double */

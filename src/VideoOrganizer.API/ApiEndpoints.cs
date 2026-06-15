@@ -61,7 +61,7 @@ public static partial class ApiEndpoints
             (Shared.Dto.CameraTypes)(int)v.CameraType,
             (Shared.Dto.VideoQuality)(int)v.VideoQuality,
             v.WatchCount, v.Notes,
-            v.NeedsReview, v.PlaybackIssue, v.MarkedForDeletion,
+            v.NeedsReview, v.PlaybackIssue, v.MarkedForDeletion, v.IsFavorite,
             v.ParentVideoId, v.ClipStartSeconds, v.ClipEndSeconds,
             v.ParentVideoId.HasValue,
             v.ChapterMarkers.Select(c => new ChapterMarkerDto(c.Offset, c.Comment)).ToList(),
