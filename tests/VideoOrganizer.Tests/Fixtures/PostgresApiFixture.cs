@@ -69,7 +69,10 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         Directory.CreateDirectory(BackupDir);
         Environment.SetEnvironmentVariable("Backup__Directory", BackupDir);
 
-        SeedFfmpegBinaries();
+        // Shared ffmpeg setup: seeds <BaseDir>/ffmpeg with symlinks so the app's
+        // startup ffmpeg download is skipped, and everyone agrees on one location
+        // (see TestFfmpeg / issue #106).
+        TestFfmpeg.Ensure();
 
         Factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -103,39 +106,6 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         await work(db);
     }
 
-    // Seed <base>/ffmpeg with symlinks to the system ffmpeg/ffprobe so the
-    // app's startup download is skipped (Program.cs checks for them first).
-    // Best-effort: if the system binaries aren't found, Program falls back to
-    // downloading (fine on a networked CI runner).
-    private static void SeedFfmpegBinaries()
-    {
-        var ffmpegDir = Path.Combine(AppContext.BaseDirectory, "ffmpeg");
-        // Xabe's no-path downloader can leave an ffmpeg *binary* at this exact
-        // path (a file), which collides with the *directory* the app expects.
-        // Clear it so Directory.CreateDirectory (here and in Program.cs) succeeds.
-        if (File.Exists(ffmpegDir)) File.Delete(ffmpegDir);
-        Directory.CreateDirectory(ffmpegDir);
-        foreach (var name in new[] { "ffmpeg", "ffprobe" })
-        {
-            var systemPath = FindOnPath(name);
-            if (systemPath is null) continue;
-            var dest = Path.Combine(ffmpegDir, Path.GetFileName(systemPath));
-            try { if (!File.Exists(dest)) File.CreateSymbolicLink(dest, systemPath); }
-            catch { /* if symlink fails, Program just downloads instead */ }
-        }
-    }
-
-    private static string? FindOnPath(string name)
-    {
-        var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var dir in pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            try { var p = Path.Combine(dir, exe); if (File.Exists(p)) return p; }
-            catch { /* malformed PATH entry */ }
-        }
-        return null;
-    }
 }
 
 [CollectionDefinition("PostgresApi")]
