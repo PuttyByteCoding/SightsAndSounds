@@ -1,9 +1,6 @@
 using System.Diagnostics;
 using VideoOrganizer.Domain.Models;
-using Xabe.FFmpeg;
 using Xunit;
-// Both Xabe.FFmpeg and the domain define a "VideoCodec"; we mean the domain's.
-using VideoCodec = VideoOrganizer.Domain.Models.VideoCodec;
 
 namespace VideoOrganizer.Tests.Fixtures;
 
@@ -59,19 +56,17 @@ public sealed class SyntheticMediaFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var ffmpegDir = LocateFfmpegDir();
-        if (ffmpegDir is null)
+        // Shared, idempotent ffmpeg setup — points Xabe at <BaseDir>/ffmpeg (a
+        // dir of symlinks to the system binaries), the same location the app and
+        // the Postgres fixture use. See TestFfmpeg / issue #106.
+        TestFfmpeg.Ensure();
+        if (!TestFfmpeg.Available)
         {
             FfmpegAvailable = false;
             SkipReason = "ffmpeg/ffprobe not found on PATH";
             return;
         }
-
-        // Point Xabe.FFmpeg (used by the services under test) at the system
-        // binaries so it finds them in place and never tries to download —
-        // keeps the suite hermetic and offline.
-        FFmpeg.SetExecutablesPath(ffmpegDir);
-        _ffmpeg = Path.Combine(ffmpegDir, OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg");
+        _ffmpeg = TestFfmpeg.FfmpegExe;
 
         _root = Path.Combine(Path.GetTempPath(), "sas-test-media-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_root);
@@ -168,24 +163,6 @@ public sealed class SyntheticMediaFixture : IAsyncLifetime
             throw new InvalidOperationException(
                 $"ffmpeg exited {proc.ExitCode} for [{string.Join(' ', psi.ArgumentList)}]:\n{tail}");
         }
-    }
-
-    // First PATH directory that contains both ffmpeg and ffprobe.
-    private static string? LocateFfmpegDir()
-    {
-        var exe = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
-        var probe = OperatingSystem.IsWindows() ? "ffprobe.exe" : "ffprobe";
-        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var dir in pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            try
-            {
-                if (File.Exists(Path.Combine(dir, exe)) && File.Exists(Path.Combine(dir, probe)))
-                    return dir;
-            }
-            catch { /* malformed PATH entry — skip */ }
-        }
-        return null;
     }
 }
 

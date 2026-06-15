@@ -17,8 +17,25 @@ public class FfprobeVideoMetadataService : IVideoMetadataService
     private async Task EnsureBinariesAsync()
     {
         if (_binariesEnsured) return;
-        await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official);
+        // Skip the download when ffmpeg/ffprobe are already present where Xabe is
+        // configured to look (Program.cs already fetches them into that dir at
+        // startup). Besides saving a redundant fetch, this avoids the no-path
+        // downloader's default target — a *file* at <BaseDir>/ffmpeg — colliding
+        // with the *directory* the app and tests use there. Mirrors Program.cs.
+        if (!BinariesPresent())
+        {
+            await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official);
+        }
         _binariesEnsured = true;
+    }
+
+    private static bool BinariesPresent()
+    {
+        var dir = FFmpeg.ExecutablesPath;
+        if (string.IsNullOrEmpty(dir)) return false;
+        var ext = OperatingSystem.IsWindows() ? ".exe" : string.Empty;
+        return File.Exists(Path.Combine(dir, "ffmpeg" + ext))
+            && File.Exists(Path.Combine(dir, "ffprobe" + ext));
     }
 
     public async Task<VideoMetadata?> GetMetadataAsync(string filePath, CancellationToken cancellationToken = default)
