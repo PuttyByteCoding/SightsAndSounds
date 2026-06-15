@@ -165,12 +165,26 @@ export const api = {
   getVideo: (id: string) => request<Video | null>(`/api/videos/${id}`),
 
   // POST the three-way filter (Required / Optional / Excluded). Empty filter
-  // returns every enabled-set video.
-  filterVideos: (filter: PlaylistFilterRequest) =>
-    request<Video[]>('/api/videos/filter', {
+  // returns every enabled-set video. Returns the visible videos plus how many
+  // matches the auto-hide (#84) suppressed (from the X-Hidden-Count header), so
+  // the browse bar can show an "N hidden" status.
+  filterVideos: async (
+    filter: PlaylistFilterRequest
+  ): Promise<{ videos: Video[]; hiddenCount: number }> => {
+    const url = `${BASE}/api/videos/filter`;
+    const res = await fetch(url, {
       method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify(filter)
-    }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError(res.status, 'POST', url, body);
+    }
+    const videos = res.status === 204 ? [] : ((await res.json()) as Video[]);
+    const hiddenCount = Number(res.headers.get('X-Hidden-Count') ?? '0') || 0;
+    return { videos, hiddenCount };
+  },
 
   // Simple AND-of-tags filter. For richer filtering use filterVideos.
   listVideosByTags: (params: { tagIds?: string[] }) => {

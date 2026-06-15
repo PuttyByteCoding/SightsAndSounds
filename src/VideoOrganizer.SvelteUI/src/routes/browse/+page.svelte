@@ -31,6 +31,10 @@
   import { pillClass, filterSlot, filterSlotClass, filterSlotDot } from '$lib/tagColors';
 
   let videos = $state<Video[]>([]);
+  // How many videos matched the current filter but were suppressed by a
+  // hidden-by-default tag (#84). Surfaced as a status in the filter bar so the
+  // count never silently mismatches what's shown.
+  let hiddenByTagCount = $state(0);
   let videosLoading = $state(false);
   let loadError = $state<string | null>(null);
 
@@ -427,7 +431,8 @@
         excluded: filterStore.excluded.map((t): FilterRef => ({ type: t.type, value: t.value })),
         searchQuery: searchQuery.length > 0 ? searchQuery : undefined
       };
-      const fetched = await api.filterVideos(filter);
+      const { videos: fetched, hiddenCount } = await api.filterVideos(filter);
+      hiddenByTagCount = hiddenCount;
       // Decide the next queue + playing video. A filter/search change
       // restarts the queue from position 0 (issue #21): the current
       // video stops and the new queue's first entry plays. We suppress
@@ -1843,8 +1848,21 @@
            Wrapper is rendered whenever either piece is present so the
            chips still appear if no video is selected (e.g. empty
            filter result). -->
-      {#if !filterStore.isEmpty() || playingVideo}
+      {#if !filterStore.isEmpty() || playingVideo || hiddenByTagCount > 0}
         <div class="sticky top-0 z-10 flex flex-col">
+          <!-- Auto-hide transparency (#84): videos matching the current view but
+               carrying a hidden-by-default tag are suppressed from the grid.
+               Surface the count so the result total never silently mismatches a
+               flag/tag badge — without revealing the hidden videos themselves. -->
+          {#if hiddenByTagCount > 0}
+            <div
+              class="bg-base-100 border border-base-300 rounded-box px-3 py-1.5 mb-2 flex items-center gap-2 text-xs text-base-content/60"
+              title="These match the current filter but carry a hidden-by-default tag. Filter for that tag to see them."
+            >
+              <span class="badge badge-ghost badge-sm shrink-0 tabular-nums">{hiddenByTagCount} hidden</span>
+              <span>{hiddenByTagCount === 1 ? '1 video is' : `${hiddenByTagCount} videos are`} hidden by a hidden-by-default tag.</span>
+            </div>
+          {/if}
           {#if !filterStore.isEmpty()}
             <!-- Chips bar. Horizontal flow with flex-wrap so longer
                  filter sets break onto multiple lines without pushing
