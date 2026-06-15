@@ -61,4 +61,23 @@ public sealed class OpenApiSpecTests
             Assert.DoesNotContain("`", name);
         }
     }
+
+    [SkippableFact]
+    public async Task Spec_enums_carry_their_camelCase_values()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+
+        var res = await _api.Client.GetAsync("/openapi/v1.json");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var schemas = doc.RootElement.GetProperty("components").GetProperty("schemas");
+
+        // Without the enum schema transformer these carry no values at all.
+        Assert.True(schemas.TryGetProperty("VideoCodec", out var videoCodec), "VideoCodec schema present");
+        var values = videoCodec.GetProperty("enum").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains("hevc", values);
+        Assert.Contains("h264", values);
+        Assert.DoesNotContain("HEVC", values); // camelCase wire form, not the C# name
+    }
 }

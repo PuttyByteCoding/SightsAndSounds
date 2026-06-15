@@ -248,6 +248,24 @@ builder.Services.AddOpenApi(options =>
             "background workers (thumbnail sprites + Md5 dedup), and bulk import.";
         return Task.CompletedTask;
     });
+
+    // Enum schemas carry no values by default, so the spec describes them as
+    // opaque and generated clients get `unknown`. Emit the camelCase wire values
+    // (matching LenientEnumConverter) so /swagger documents the allowed values
+    // and frontend type generation (#125) produces real string-literal unions.
+    options.AddSchemaTransformer((schema, context, _) =>
+    {
+        var type = context.JsonTypeInfo.Type;
+        if (type.IsEnum)
+        {
+            schema.Type = Microsoft.OpenApi.JsonSchemaType.String;
+            schema.Enum = Enum.GetNames(type)
+                .Select(name => (System.Text.Json.Nodes.JsonNode)
+                    System.Text.Json.Nodes.JsonValue.Create(LenientEnumConverterFactory.ToWireCamelCase(name))!)
+                .ToList();
+        }
+        return Task.CompletedTask;
+    });
 });
 
 var app = builder.Build();
