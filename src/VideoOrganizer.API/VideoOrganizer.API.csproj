@@ -20,7 +20,7 @@
          spec at /openapi/v1.json; Scalar serves the interactive UI at
          /swagger so the SvelteKit /api-docs iframe and the Vite /swagger
          proxy keep working without a URL change. -->
-    <PackageReference Include="Scalar.AspNetCore" Version="2.0.5" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.16.3" />
     <PackageReference Include="Xabe.FFmpeg" Version="6.0.2" />
     <PackageReference Include="Xabe.FFmpeg.Downloader" Version="6.0.2" />
 
