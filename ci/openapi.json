@@ -1,0 +1,6225 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "VideoOrganizer API",
+    "description": "Self-hosted media library manager \u2014 videos, tags, custom properties, background workers (thumbnail sprites \u002B Md5 dedup), and bulk import.",
+    "version": "v1"
+  },
+  "servers": [
+    {
+      "url": "http://localhost/"
+    }
+  ],
+  "paths": {
+    "/api/logs": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetLogs",
+        "parameters": [
+          {
+            "name": "sinceMinutes",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LogEvent"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "Search",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "kinds",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runtime-info": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetRuntimeInfo",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeInfoDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/validation/missing-files": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetValidationMissingFiles",
+        "parameters": [
+          {
+            "name": "includeDisabled",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MissingVideoFileDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/validation/missing-files/purge": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "PurgeValidationMissingFiles",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurgeMissingFilesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeMissingFilesResultDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/validation/extra-files": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetValidationExtraFiles",
+        "parameters": [
+          {
+            "name": "sourceId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "includeDisabled",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExtraDiskFileDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/validation/md5-candidates": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetValidationMd5Candidates",
+        "parameters": [
+          {
+            "name": "includeDisabled",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Md5CandidateDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/validation/md5-check/{id}": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "PostValidationMd5Check",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Md5CheckResultDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/thumbnails/status": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetThumbnailStatus",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/thumbnails/scan-now": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "TriggerThumbnailScan",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/thumbnails/pause": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "PauseThumbnails",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/thumbnails/resume": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "ResumeThumbnails",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/thumbnails/skip": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "SkipCurrentThumbnail",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/thumbnails/clear-failed": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "ClearFailedThumbnails",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/thumbnails/failed": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetFailedThumbnails",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerFailedRowDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/thumbnails/queue": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetThumbnailQueue",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerQueueRowDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/status": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetMd5BackfillStatus",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/scan-now": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "TriggerMd5BackfillScan",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/pause": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "PauseMd5Backfill",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/resume": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "ResumeMd5Backfill",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/skip": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "SkipCurrentMd5",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/clear-failed": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "ClearFailedMd5",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/duplicates": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetMd5Duplicates",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Md5DuplicateRowDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/failed": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetFailedMd5",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerFailedRowDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/md5-backfill/queue": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetMd5BackfillQueue",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerQueueRowDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/count": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetVideoCount",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/flag-counts": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetFlagCounts",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlagCountsDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetVideos",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VideoDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "CreateVideo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Video"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Video"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/filter": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "FilterVideos",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlaylistFilterRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VideoDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetVideoById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "UpdateVideo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateVideoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "DeleteVideo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/related": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetRelatedVideos",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VideoDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/remove-folder": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "RemoveLibraryFolder",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveFolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoveFolderResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/move": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "MoveVideo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveVideoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/move-progress": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetMoveProgress",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoveProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/file-moves": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "ListFileMoves",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FileMoveLogDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/file-moves/{moveId}/revert": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "RevertFileMove",
+        "parameters": [
+          {
+            "name": "moveId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/tags": {
+      "put": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "SetVideoTags",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetVideoTagsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/tag-suggestions": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetTagSuggestions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/tag-candidates": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetTagCandidates",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/properties": {
+      "put": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "SetVideoProperties",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPropertyValuesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/mark-for-deletion": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "MarkVideoForDeletion",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/unmark-for-deletion": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "UnmarkVideoForDeletion",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/mark-playback-issue": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "MarkVideoPlaybackIssue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/mark-reviewed": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "MarkVideoReviewed",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/unmark-reviewed": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "UnmarkVideoReviewed",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/unmark-playback-issue": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "UnmarkVideoPlaybackIssue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/mark-favorite": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "MarkVideoFavorite",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/unmark-favorite": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "UnmarkVideoFavorite",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/watched": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "MarkVideoWatched",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{parentId}/clips": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "CreateClip",
+        "parameters": [
+          {
+            "name": "parentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateClipRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetClipsOfParent",
+        "parameters": [
+          {
+            "name": "parentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClipSummaryDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/marked-for-deletion": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetMarkedForDeletionVideos",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VideoDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/playback-issues": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetPlaybackIssueVideos",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VideoDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/reveal": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "RevealVideoInFileManager",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/open-terminal": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "OpenTerminalAtVideo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/ffprobe": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "RunFfprobeOnVideo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FfprobeResultDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/purge": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "PurgeVideo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/purge-all": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "PurgeAllMarkedForDeletion",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/purge-all-playback-issues": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "PurgeAllPlaybackIssues",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/stream": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StreamVideo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/by-folder": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetVideosByFolder",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "recursive",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VideoDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/poster.jpg": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetVideoPoster",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/thumbnails.vtt": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetVideoThumbnails",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/sprite.jpg": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetVideoSpriteImage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/worker-pause-status": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetWorkerPauseStatus",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/video-sets": {
+      "get": {
+        "tags": [
+          "VideoSets"
+        ],
+        "operationId": "ListVideoSets",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "VideoSets"
+        ],
+        "operationId": "CreateVideoSet",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoSet"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video-sets/{id}": {
+      "put": {
+        "tags": [
+          "VideoSets"
+        ],
+        "operationId": "UpdateVideoSet",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoSet"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "VideoSets"
+        ],
+        "operationId": "DeleteVideoSet",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/video-sets/{id}/orphan-count": {
+      "get": {
+        "tags": [
+          "VideoSets"
+        ],
+        "operationId": "GetVideoSetOrphanCount",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/video-sets/{id}/re-root/preview": {
+      "post": {
+        "tags": [
+          "VideoSets"
+        ],
+        "operationId": "ReRootVideoSetPreview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReRootRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReRootPreview"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video-sets/{id}/re-root": {
+      "post": {
+        "tags": [
+          "VideoSets"
+        ],
+        "operationId": "ReRootVideoSet",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReRootRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/backup/snapshot": {
+      "post": {
+        "tags": [
+          "Backup"
+        ],
+        "operationId": "CreateBackupSnapshot",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/backup": {
+      "get": {
+        "tags": [
+          "Backup"
+        ],
+        "operationId": "ListBackups",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/backup/settings": {
+      "get": {
+        "tags": [
+          "Backup"
+        ],
+        "operationId": "GetBackupSettings",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupSettings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Backup"
+        ],
+        "operationId": "SetBackupDirectory",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetBackupDirectoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupSettings"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/backup/{fileName}/download": {
+      "get": {
+        "tags": [
+          "Backup"
+        ],
+        "operationId": "DownloadBackup",
+        "parameters": [
+          {
+            "name": "fileName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/backup/{fileName}": {
+      "delete": {
+        "tags": [
+          "Backup"
+        ],
+        "operationId": "DeleteBackup",
+        "parameters": [
+          {
+            "name": "fileName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/backup/{fileName}/restore": {
+      "post": {
+        "tags": [
+          "Backup"
+        ],
+        "operationId": "RestoreBackup",
+        "parameters": [
+          {
+            "name": "fileName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/tag-groups": {
+      "get": {
+        "tags": [
+          "TagGroups"
+        ],
+        "operationId": "ListTagGroups",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TagGroupDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "TagGroups"
+        ],
+        "operationId": "CreateTagGroup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTagGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagGroupDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tag-groups/{id}": {
+      "get": {
+        "tags": [
+          "TagGroups"
+        ],
+        "operationId": "GetTagGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagGroupDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "TagGroups"
+        ],
+        "operationId": "UpdateTagGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTagGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "TagGroups"
+        ],
+        "operationId": "DeleteTagGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/tags": {
+      "get": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "ListTags",
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "withCounts",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TagDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "CreateTag",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tags/{id}": {
+      "get": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "GetTag",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "UpdateTag",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "DeleteTag",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/tags/bulk": {
+      "post": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "BulkCreateTags",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkCreateTagsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkCreateTagsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tags/{id}/hidden-by-default": {
+      "put": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "SetTagHiddenByDefault",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetHiddenByDefaultRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/tags/merge": {
+      "post": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "MergeTags",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeTagsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/tags/search": {
+      "get": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "SearchTags",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TagSearchHit"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tags/{id}/properties": {
+      "put": {
+        "tags": [
+          "Tags"
+        ],
+        "operationId": "SetTagProperties",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPropertyValuesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/properties": {
+      "get": {
+        "tags": [
+          "Properties"
+        ],
+        "operationId": "ListProperties",
+        "parameters": [
+          {
+            "name": "tagGroupId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PropertyDefinitionDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Properties"
+        ],
+        "operationId": "CreateProperty",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePropertyDefinitionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PropertyDefinitionDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/properties/{id}": {
+      "put": {
+        "tags": [
+          "Properties"
+        ],
+        "operationId": "UpdateProperty",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePropertyDefinitionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Properties"
+        ],
+        "operationId": "DeleteProperty",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/playlists/random": {
+      "post": {
+        "tags": [
+          "Playlists"
+        ],
+        "operationId": "CreateRandomPlaylist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlaylistFilterRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playlists/even": {
+      "post": {
+        "tags": [
+          "Playlists"
+        ],
+        "operationId": "CreateEvenDistributionPlaylist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlaylistFilterRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playlists/{id}": {
+      "get": {
+        "tags": [
+          "Playlists"
+        ],
+        "operationId": "GetPlaylist",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playlists/{playlistId}/navigation/{videoId}": {
+      "get": {
+        "tags": [
+          "Playlists"
+        ],
+        "operationId": "GetPlaylistNavigation",
+        "parameters": [
+          {
+            "name": "playlistId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "videoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistNavigationDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/duplicates": {
+      "post": {
+        "tags": [
+          "Duplicates"
+        ],
+        "operationId": "CreateDuplicateCandidate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDuplicateCandidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateCandidateDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Duplicates"
+        ],
+        "operationId": "ListDuplicateCandidates",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DuplicateCandidateDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/duplicates/{id}/confirm": {
+      "post": {
+        "tags": [
+          "Duplicates"
+        ],
+        "operationId": "ConfirmDuplicateCandidate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateCandidateDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/duplicates/{id}/reject": {
+      "post": {
+        "tags": [
+          "Duplicates"
+        ],
+        "operationId": "RejectDuplicateCandidate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateCandidateDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/duplicates/{id}/reopen": {
+      "post": {
+        "tags": [
+          "Duplicates"
+        ],
+        "operationId": "ReopenDuplicateCandidate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateCandidateDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/duplicates/{id}": {
+      "delete": {
+        "tags": [
+          "Duplicates"
+        ],
+        "operationId": "DeleteDuplicateCandidate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/import/directory": {
+      "post": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "ImportFromDirectory",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectoryImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/import/progress/{jobId}": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "GetImportProgress",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportProgressResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/pause": {
+      "post": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "PauseImports",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/import/resume": {
+      "post": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "ResumeImports",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/import/jobs": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "ListImportJobs",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImportJobSummaryDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/jobs/completed": {
+      "delete": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "ClearCompletedImportJobs",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/import/failed-files": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "ListFailedImportFiles",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImportFailedFileDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/queue": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "ListImportQueue",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImportQueueFileDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/browse": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "BrowseDirectory",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportBrowseResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/imported-folders": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "ListImportedFolders",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImportedFolder"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/scan-progress": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "GetImportScanProgress",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportScanProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/files": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "ListImportFiles",
+        "parameters": [
+          {
+            "name": "directoryPath",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "includeSubdirectories",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportFileListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/thumbnail": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "GetImportThumbnail",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BackupInfo": {
+        "required": [
+          "fileName",
+          "type",
+          "sizeBytes",
+          "createdUtc"
+        ],
+        "type": "object",
+        "properties": {
+          "fileName": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdUtc": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BackupSettings": {
+        "required": [
+          "directory",
+          "writable",
+          "error"
+        ],
+        "type": "object",
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "writable": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "BulkCreateTagsRequest": {
+        "required": [
+          "tagGroupId",
+          "names"
+        ],
+        "type": "object",
+        "properties": {
+          "tagGroupId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "isFavorite": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "BulkCreateTagsResponse": {
+        "required": [
+          "created",
+          "skipped"
+        ],
+        "type": "object",
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CameraTypes": {
+        "enum": [
+          "unknown",
+          "cellPhone",
+          "camcorder",
+          "professionalCamera",
+          "notChecked"
+        ],
+        "type": "string"
+      },
+      "ChapterMarker": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      },
+      "ChapterMarkerDto": {
+        "required": [
+          "offset",
+          "comment"
+        ],
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "comment": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ClipSummaryDto": {
+        "required": [
+          "id",
+          "fileName",
+          "clipStartSeconds",
+          "clipEndSeconds"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "clipStartSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "clipEndSeconds": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "CreateClipRequest": {
+        "type": "object",
+        "properties": {
+          "startSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "endSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "CreateDuplicateCandidateRequest": {
+        "required": [
+          "videoAId",
+          "videoBId"
+        ],
+        "type": "object",
+        "properties": {
+          "videoAId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "videoBId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "CreatePropertyDefinitionRequest": {
+        "required": [
+          "name",
+          "dataType",
+          "scope",
+          "tagGroupId"
+        ],
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "dataType": {
+            "$ref": "#/components/schemas/PropertyDataTypeDto"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/PropertyScopeDto"
+          },
+          "tagGroupId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "required": {
+            "type": "boolean",
+            "default": false
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "notes": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "CreateTagGroupRequest": {
+        "required": [
+          "name"
+        ],
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "allowMultiple": {
+            "type": "boolean",
+            "default": true
+          },
+          "displayAsCheckboxes": {
+            "type": "boolean",
+            "default": false
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "notes": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "CreateTagRequest": {
+        "required": [
+          "tagGroupId",
+          "name"
+        ],
+        "type": "object",
+        "properties": {
+          "tagGroupId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "isFavorite": {
+            "type": "boolean",
+            "default": false
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "notes": {
+            "type": "string",
+            "default": ""
+          },
+          "hiddenByDefault": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "DirectoryImportRequest": {
+        "required": [
+          "directoryPath",
+          "includeSubdirectories"
+        ],
+        "type": "object",
+        "properties": {
+          "directoryPath": {
+            "type": "string"
+          },
+          "includeSubdirectories": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "notes": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "initialTagIds": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "DomainCameraTypes": {
+        "enum": [
+          "unknown",
+          "cellPhone",
+          "camcorder",
+          "professionalCamera",
+          "notChecked"
+        ],
+        "type": "string"
+      },
+      "DomainPropertyDataType": {
+        "enum": [
+          "text",
+          "longText",
+          "number",
+          "date",
+          "boolean",
+          "url"
+        ],
+        "type": "string"
+      },
+      "DomainPropertyScope": {
+        "enum": [
+          "tag",
+          "video"
+        ],
+        "type": "string"
+      },
+      "DomainVideoBlockTypes": {
+        "enum": [
+          "clip",
+          "hide",
+          "other"
+        ],
+        "type": "string"
+      },
+      "DomainVideoCodec": {
+        "enum": [
+          "h264",
+          "h265",
+          "hevc",
+          "notChecked",
+          "other"
+        ],
+        "type": "string"
+      },
+      "DomainVideoDimensionFormat": {
+        "enum": [
+          "uhd8k",
+          "uhd4K",
+          "hd1080p",
+          "hd720p",
+          "sd576p4x3",
+          "sd576p16x9",
+          "sd480p4x3",
+          "sd480p16x9",
+          "verticalUHD4k",
+          "vertical1080p",
+          "vertical720p",
+          "nonStandard"
+        ],
+        "type": "string"
+      },
+      "DomainVideoQuality": {
+        "enum": [
+          "singleCamera",
+          "multipleCameras",
+          "lowQuality",
+          "notChecked"
+        ],
+        "type": "string"
+      },
+      "DuplicateCandidateDto": {
+        "required": [
+          "id",
+          "status",
+          "createdAt",
+          "videoA",
+          "videoB"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DuplicateStatusDto"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "videoA": {
+            "$ref": "#/components/schemas/VideoDto"
+          },
+          "videoB": {
+            "$ref": "#/components/schemas/VideoDto"
+          }
+        }
+      },
+      "DuplicateStatusDto": {
+        "enum": [
+          "pending",
+          "confirmed",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "ExtraDiskFileDto": {
+        "required": [
+          "filePath",
+          "fileName",
+          "fileSize",
+          "sourceId",
+          "sourceName"
+        ],
+        "type": "object",
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "fileSize": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sourceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sourceName": {
+            "type": "string"
+          }
+        }
+      },
+      "FfprobeResultDto": {
+        "required": [
+          "stdout",
+          "stderr",
+          "exitCode",
+          "filePath"
+        ],
+        "type": "object",
+        "properties": {
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "exitCode": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "filePath": {
+            "type": "string"
+          }
+        }
+      },
+      "FileMoveLogDto": {
+        "required": [
+          "id",
+          "videoId",
+          "fileName",
+          "fromPath",
+          "toPath",
+          "movedAt",
+          "revertedAt"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "fromPath": {
+            "type": "string"
+          },
+          "toPath": {
+            "type": "string"
+          },
+          "movedAt": {
+            "type": "string"
+          },
+          "revertedAt": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "FilterRef": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/FilterRefType"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "FilterRefType": {
+        "enum": [
+          "tag",
+          "folder",
+          "missing",
+          "status"
+        ],
+        "type": "string"
+      },
+      "FlagCountsDto": {
+        "required": [
+          "favorite",
+          "needsReview",
+          "playbackIssue",
+          "markedForDeletion",
+          "isClip"
+        ],
+        "type": "object",
+        "properties": {
+          "favorite": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "needsReview": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "playbackIssue": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "markedForDeletion": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "isClip": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "ImportBrowseDirectory": {
+        "required": [
+          "name",
+          "fullPath",
+          "hasSubdirectories"
+        ],
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "fullPath": {
+            "type": "string"
+          },
+          "hasSubdirectories": {
+            "type": "boolean"
+          },
+          "videoCount": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "importedCount": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          }
+        }
+      },
+      "ImportBrowseResponse": {
+        "required": [
+          "currentPath",
+          "parentPath",
+          "directories"
+        ],
+        "type": "object",
+        "properties": {
+          "currentPath": {
+            "type": "string"
+          },
+          "parentPath": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "directories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportBrowseDirectory"
+            }
+          }
+        }
+      },
+      "ImportedFolder": {
+        "required": [
+          "fullPath",
+          "label",
+          "videoCount"
+        ],
+        "type": "object",
+        "properties": {
+          "fullPath": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "videoCount": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "ImportFailedFileDto": {
+        "required": [
+          "jobId",
+          "jobDirectoryPath",
+          "filePath",
+          "fileName",
+          "fileSizeBytes",
+          "error"
+        ],
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "jobDirectoryPath": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "fileSizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ImportFileListResponse": {
+        "required": [
+          "directoryPath",
+          "files",
+          "nonImportableFiles",
+          "importedFiles",
+          "hiddenFiles"
+        ],
+        "type": "object",
+        "properties": {
+          "directoryPath": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nonImportableFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "importedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hiddenFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ImportFileProgressDto": {
+        "required": [
+          "filePath",
+          "fileSizeBytes",
+          "md5BytesProcessed",
+          "md5TotalBytes",
+          "status"
+        ],
+        "type": "object",
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "fileSizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "md5BytesProcessed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "md5TotalBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ImportFileStatus"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ImportFileStatus": {
+        "enum": [
+          "pending",
+          "importing",
+          "completed",
+          "failed",
+          "skipped"
+        ],
+        "type": "string"
+      },
+      "ImportJobSummaryDto": {
+        "required": [
+          "jobId",
+          "name",
+          "directoryPath",
+          "enqueuedAt",
+          "startedAt",
+          "completedAt",
+          "isCompleted",
+          "error",
+          "totalFiles",
+          "completedCount",
+          "failedCount",
+          "skippedCount",
+          "importingCount",
+          "currentFilePath",
+          "thumbnails",
+          "md5"
+        ],
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "directoryPath": {
+            "type": "string"
+          },
+          "enqueuedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "startedAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "completedAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "isCompleted": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalFiles": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "completedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "failedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "skippedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "importingCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "currentFilePath": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "thumbnails": {
+            "$ref": "#/components/schemas/ImportTaskProgressDto"
+          },
+          "md5": {
+            "$ref": "#/components/schemas/ImportTaskProgressDto"
+          }
+        }
+      },
+      "ImportProgressResponse": {
+        "required": [
+          "messages",
+          "isCompleted",
+          "error",
+          "fileStatuses"
+        ],
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "isCompleted": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "fileStatuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportFileProgressDto"
+            }
+          }
+        }
+      },
+      "ImportQueueFileDto": {
+        "required": [
+          "jobId",
+          "jobDirectoryPath",
+          "filePath",
+          "fileName",
+          "fileSizeBytes",
+          "status"
+        ],
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "jobDirectoryPath": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "fileSizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ImportFileStatus"
+          }
+        }
+      },
+      "ImportScanProgressDto": {
+        "required": [
+          "scanning",
+          "discovered"
+        ],
+        "type": "object",
+        "properties": {
+          "scanning": {
+            "type": "boolean"
+          },
+          "discovered": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "ImportTaskProgressDto": {
+        "required": [
+          "total",
+          "done",
+          "pending",
+          "failed"
+        ],
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pending": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "LogEvent": {
+        "required": [
+          "timestamp",
+          "level",
+          "category",
+          "message",
+          "exception"
+        ],
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "level": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "exception": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "Md5CandidateDto": {
+        "required": [
+          "videoId",
+          "fileName",
+          "filePath",
+          "fileSize",
+          "sourceId",
+          "sourceName",
+          "sourceEnabled",
+          "storedMd5"
+        ],
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "fileSize": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sourceId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "sourceName": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "sourceEnabled": {
+            "type": "boolean"
+          },
+          "storedMd5": {
+            "type": "string"
+          }
+        }
+      },
+      "Md5CheckResultDto": {
+        "required": [
+          "videoId",
+          "computedMd5",
+          "storedMd5",
+          "match",
+          "fileSize",
+          "fileExists",
+          "error"
+        ],
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "computedMd5": {
+            "type": "string"
+          },
+          "storedMd5": {
+            "type": "string"
+          },
+          "match": {
+            "type": "boolean"
+          },
+          "fileSize": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fileExists": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "Md5DuplicateRowDto": {
+        "required": [
+          "videoId",
+          "fileName",
+          "filePath",
+          "fileSizeBytes",
+          "md5",
+          "groupSize"
+        ],
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "fileSizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "md5": {
+            "type": "string"
+          },
+          "groupSize": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "MergeTagsRequest": {
+        "required": [
+          "sourceIds",
+          "targetId"
+        ],
+        "type": "object",
+        "properties": {
+          "sourceIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "targetId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "MissingVideoFileDto": {
+        "required": [
+          "videoId",
+          "fileName",
+          "filePath",
+          "fileSize",
+          "ingestDate",
+          "sourceId",
+          "sourceName",
+          "sourceEnabled"
+        ],
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "fileSize": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ingestDate": {
+            "type": "string"
+          },
+          "sourceId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "sourceName": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "sourceEnabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MoveProgressDto": {
+        "required": [
+          "active",
+          "bytesCopied",
+          "totalBytes",
+          "phase"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "bytesCopied": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "phase": {
+            "type": "string"
+          }
+        }
+      },
+      "MoveVideoRequest": {
+        "required": [
+          "targetDirectory"
+        ],
+        "type": "object",
+        "properties": {
+          "targetDirectory": {
+            "type": "string"
+          }
+        }
+      },
+      "PlaylistDto": {
+        "required": [
+          "id",
+          "videoIds",
+          "createdAt"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "videoIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PlaylistFilterRequest": {
+        "type": "object",
+        "properties": {
+          "required": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FilterRef"
+            }
+          },
+          "optional": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FilterRef"
+            }
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FilterRef"
+            }
+          },
+          "searchQuery": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "PlaylistNavigationDto": {
+        "required": [
+          "currentVideoId",
+          "nextVideoId",
+          "previousVideoId",
+          "currentIndex",
+          "totalCount"
+        ],
+        "type": "object",
+        "properties": {
+          "currentVideoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "nextVideoId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "previousVideoId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "currentIndex": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "PropertyDataTypeDto": {
+        "enum": [
+          "text",
+          "longText",
+          "number",
+          "date",
+          "boolean",
+          "url"
+        ],
+        "type": "string"
+      },
+      "PropertyDefinition": {
+        "required": [
+          "name"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "dataType": {
+            "$ref": "#/components/schemas/DomainPropertyDataType"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/DomainPropertyScope"
+          },
+          "tagGroupId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "tagGroup": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TagGroup"
+              }
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      },
+      "PropertyDefinitionDto": {
+        "required": [
+          "id",
+          "name",
+          "dataType",
+          "scope",
+          "tagGroupId",
+          "required",
+          "sortOrder",
+          "notes"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "dataType": {
+            "$ref": "#/components/schemas/PropertyDataTypeDto"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/PropertyScopeDto"
+          },
+          "tagGroupId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      },
+      "PropertyScopeDto": {
+        "enum": [
+          "tag",
+          "video"
+        ],
+        "type": "string"
+      },
+      "PropertyValueDto": {
+        "required": [
+          "propertyDefinitionId",
+          "propertyName",
+          "dataType",
+          "value"
+        ],
+        "type": "object",
+        "properties": {
+          "propertyDefinitionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "propertyName": {
+            "type": "string"
+          },
+          "dataType": {
+            "$ref": "#/components/schemas/PropertyDataTypeDto"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "PropertyValueWrite": {
+        "required": [
+          "propertyDefinitionId",
+          "value"
+        ],
+        "type": "object",
+        "properties": {
+          "propertyDefinitionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "PurgeMissingFilesRequest": {
+        "required": [
+          "videoIds"
+        ],
+        "type": "object",
+        "properties": {
+          "videoIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "PurgeMissingFilesResultDto": {
+        "required": [
+          "deleted",
+          "skippedPresent",
+          "notFound",
+          "skippedPresentIds"
+        ],
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "skippedPresent": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notFound": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "skippedPresentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "RemoveFolderRequest": {
+        "required": [
+          "path"
+        ],
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "RemoveFolderResponse": {
+        "required": [
+          "removed"
+        ],
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "ReRootPreview": {
+        "required": [
+          "totalAffected",
+          "sampled",
+          "found",
+          "missing",
+          "newBaseExists",
+          "examples"
+        ],
+        "type": "object",
+        "properties": {
+          "totalAffected": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "sampled": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "found": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "missing": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "newBaseExists": {
+            "type": "boolean"
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReRootPreviewItem"
+            }
+          }
+        }
+      },
+      "ReRootPreviewItem": {
+        "required": [
+          "oldPath",
+          "newPath",
+          "exists"
+        ],
+        "type": "object",
+        "properties": {
+          "oldPath": {
+            "type": "string"
+          },
+          "newPath": {
+            "type": "string"
+          },
+          "exists": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ReRootRequest": {
+        "required": [
+          "newPath"
+        ],
+        "type": "object",
+        "properties": {
+          "newPath": {
+            "type": "string"
+          }
+        }
+      },
+      "RuntimeInfoDto": {
+        "required": [
+          "isLocal",
+          "os"
+        ],
+        "type": "object",
+        "properties": {
+          "isLocal": {
+            "type": "boolean"
+          },
+          "os": {
+            "type": "string"
+          }
+        }
+      },
+      "SearchResponse": {
+        "required": [
+          "query",
+          "totalCount",
+          "truncated",
+          "results"
+        ],
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchResult"
+            }
+          }
+        }
+      },
+      "SearchResult": {
+        "required": [
+          "kind"
+        ],
+        "type": "object",
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/SearchResultVideoSearchResult"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "video": "#/components/schemas/SearchResultVideoSearchResult"
+          }
+        }
+      },
+      "SearchResultVideoSearchResult": {
+        "required": [
+          "id",
+          "title",
+          "subtitle",
+          "fileSize",
+          "duration",
+          "isClip",
+          "tags",
+          "matchedFields"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "video"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "subtitle": {
+            "type": "string"
+          },
+          "fileSize": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "duration": {
+            "pattern": "^-?(\\d\u002B\\.)?\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,7})?$",
+            "type": "string"
+          },
+          "isClip": {
+            "type": "boolean"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "matchedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SetBackupDirectoryRequest": {
+        "required": [
+          "directory"
+        ],
+        "type": "object",
+        "properties": {
+          "directory": {
+            "type": "string"
+          }
+        }
+      },
+      "SetHiddenByDefaultRequest": {
+        "required": [
+          "hidden"
+        ],
+        "type": "object",
+        "properties": {
+          "hidden": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SetPropertyValuesRequest": {
+        "required": [
+          "values"
+        ],
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PropertyValueWrite"
+            }
+          }
+        }
+      },
+      "SetVideoTagsRequest": {
+        "required": [
+          "tagIds"
+        ],
+        "type": "object",
+        "properties": {
+          "tagIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "Tag": {
+        "required": [
+          "name"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tagGroupId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tagGroup": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TagGroup"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "isFavorite": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "hiddenByDefault": {
+            "type": "boolean"
+          },
+          "videoTags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoTag"
+            }
+          },
+          "propertyValues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TagPropertyValue"
+            }
+          }
+        }
+      },
+      "TagDto": {
+        "required": [
+          "id",
+          "tagGroupId",
+          "tagGroupName",
+          "name",
+          "aliases",
+          "isFavorite",
+          "sortOrder",
+          "notes"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tagGroupId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tagGroupName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "isFavorite": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "videoCount": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "hiddenByDefault": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "TagGroup": {
+        "required": [
+          "name"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "allowMultiple": {
+            "type": "boolean"
+          },
+          "displayAsCheckboxes": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "tags": {},
+          "propertyDefinitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PropertyDefinition"
+            }
+          }
+        }
+      },
+      "TagGroupDto": {
+        "required": [
+          "id",
+          "name",
+          "allowMultiple",
+          "displayAsCheckboxes",
+          "sortOrder",
+          "notes"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "allowMultiple": {
+            "type": "boolean"
+          },
+          "displayAsCheckboxes": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "tagCount": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "videosMissingCount": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          }
+        }
+      },
+      "TagPropertyValue": {
+        "type": "object",
+        "properties": {
+          "tagId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tag": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Tag"
+              }
+            ]
+          },
+          "propertyDefinitionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "propertyDefinition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PropertyDefinition"
+              }
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "TagSearchHit": {
+        "required": [
+          "tagId",
+          "tagGroupId",
+          "tagGroupName",
+          "name",
+          "aliases"
+        ],
+        "type": "object",
+        "properties": {
+          "tagId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tagGroupId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tagGroupName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UpdatePropertyDefinitionRequest": {
+        "required": [
+          "name",
+          "dataType",
+          "required",
+          "sortOrder",
+          "notes"
+        ],
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "dataType": {
+            "$ref": "#/components/schemas/PropertyDataTypeDto"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateTagGroupRequest": {
+        "required": [
+          "name",
+          "allowMultiple",
+          "displayAsCheckboxes",
+          "sortOrder",
+          "notes"
+        ],
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "allowMultiple": {
+            "type": "boolean"
+          },
+          "displayAsCheckboxes": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateTagRequest": {
+        "required": [
+          "name",
+          "aliases",
+          "isFavorite",
+          "sortOrder",
+          "notes"
+        ],
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "isFavorite": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "tagGroupId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "hiddenByDefault": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "UpdateVideoRequest": {
+        "required": [
+          "fileName",
+          "ingestDate",
+          "cameraType",
+          "videoQuality",
+          "watchCount",
+          "notes",
+          "needsReview",
+          "isFavorite",
+          "clipStartSeconds",
+          "clipEndSeconds",
+          "chapterMarkers",
+          "videoBlocks",
+          "tagIds",
+          "properties"
+        ],
+        "type": "object",
+        "properties": {
+          "fileName": {
+            "type": "string"
+          },
+          "ingestDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cameraType": {
+            "$ref": "#/components/schemas/CameraTypes"
+          },
+          "videoQuality": {
+            "$ref": "#/components/schemas/VideoQuality"
+          },
+          "watchCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "needsReview": {
+            "type": "boolean"
+          },
+          "isFavorite": {
+            "type": "boolean"
+          },
+          "clipStartSeconds": {
+            "type": [
+              "null",
+              "number"
+            ],
+            "format": "double"
+          },
+          "clipEndSeconds": {
+            "type": [
+              "null",
+              "number"
+            ],
+            "format": "double"
+          },
+          "chapterMarkers": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ChapterMarkerDto"
+            }
+          },
+          "videoBlocks": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/VideoBlockDto"
+            }
+          },
+          "tagIds": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "properties": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PropertyValueWrite"
+            }
+          }
+        }
+      },
+      "Video": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "md5": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "md5Failed": {
+            "type": "boolean"
+          },
+          "md5FailedError": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "thumbnailsFailed": {
+            "type": "boolean"
+          },
+          "thumbnailsFailedError": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "thumbnailsGenerated": {
+            "type": "boolean"
+          },
+          "importJobId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "fileSize": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "duration": {
+            "pattern": "^-?(\\d\u002B\\.)?\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,7})?$",
+            "type": "string"
+          },
+          "height": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "videoDimensionFormat": {
+            "$ref": "#/components/schemas/DomainVideoDimensionFormat"
+          },
+          "videoCodec": {
+            "$ref": "#/components/schemas/DomainVideoCodec"
+          },
+          "bitrate": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "frameRate": {
+            "type": "number",
+            "format": "double"
+          },
+          "pixelFormat": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ratio": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "creationTime": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "videoStreamCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "audioStreamCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "ingestDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cameraType": {
+            "$ref": "#/components/schemas/DomainCameraTypes"
+          },
+          "videoQuality": {
+            "$ref": "#/components/schemas/DomainVideoQuality"
+          },
+          "watchCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "needsReview": {
+            "type": "boolean"
+          },
+          "playbackIssue": {
+            "type": "boolean"
+          },
+          "markedForDeletion": {
+            "type": "boolean"
+          },
+          "isFavorite": {
+            "type": "boolean"
+          },
+          "parentVideoId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "clipStartSeconds": {
+            "type": [
+              "null",
+              "number"
+            ],
+            "format": "double"
+          },
+          "clipEndSeconds": {
+            "type": [
+              "null",
+              "number"
+            ],
+            "format": "double"
+          },
+          "chapterMarkers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChapterMarker"
+            }
+          },
+          "videoBlocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoBlock"
+            }
+          },
+          "videoTags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoTag"
+            }
+          },
+          "propertyValues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoPropertyValue"
+            }
+          }
+        }
+      },
+      "VideoBlock": {
+        "type": "object",
+        "properties": {
+          "offsetInSeconds": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "lengthInSeconds": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "videoBlockType": {
+            "$ref": "#/components/schemas/DomainVideoBlockTypes"
+          }
+        }
+      },
+      "VideoBlockDto": {
+        "required": [
+          "offsetInSeconds",
+          "lengthInSeconds",
+          "videoBlockType"
+        ],
+        "type": "object",
+        "properties": {
+          "offsetInSeconds": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "lengthInSeconds": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "videoBlockType": {
+            "$ref": "#/components/schemas/VideoBlockTypes"
+          }
+        }
+      },
+      "VideoBlockTypes": {
+        "enum": [
+          "clip",
+          "hide",
+          "other"
+        ],
+        "type": "string"
+      },
+      "VideoCodec": {
+        "enum": [
+          "h264",
+          "h265",
+          "hevc",
+          "notChecked",
+          "other"
+        ],
+        "type": "string"
+      },
+      "VideoDimensionFormat": {
+        "enum": [
+          "uhd8k",
+          "uhd4K",
+          "hd1080p",
+          "hd720p",
+          "sd576p4x3",
+          "sd576p16x9",
+          "sd480p4x3",
+          "sd480p16x9",
+          "verticalUHD4k",
+          "vertical1080p",
+          "vertical720p",
+          "nonStandard"
+        ],
+        "type": "string"
+      },
+      "VideoDto": {
+        "required": [
+          "id",
+          "fileName",
+          "filePath",
+          "md5",
+          "md5Failed",
+          "md5FailedError",
+          "thumbnailsFailed",
+          "thumbnailsFailedError",
+          "thumbnailsGenerated",
+          "importJobId",
+          "fileSize",
+          "duration",
+          "height",
+          "width",
+          "videoDimensionFormat",
+          "videoCodec",
+          "bitrate",
+          "frameRate",
+          "pixelFormat",
+          "ratio",
+          "creationTime",
+          "videoStreamCount",
+          "audioStreamCount",
+          "ingestDate",
+          "cameraType",
+          "videoQuality",
+          "watchCount",
+          "notes",
+          "needsReview",
+          "playbackIssue",
+          "markedForDeletion",
+          "parentVideoId",
+          "clipStartSeconds",
+          "clipEndSeconds",
+          "isClip",
+          "chapterMarkers",
+          "videoBlocks",
+          "tags",
+          "properties"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "md5": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "md5Failed": {
+            "type": "boolean"
+          },
+          "md5FailedError": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "thumbnailsFailed": {
+            "type": "boolean"
+          },
+          "thumbnailsFailedError": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "thumbnailsGenerated": {
+            "type": "boolean"
+          },
+          "importJobId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "fileSize": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "duration": {
+            "pattern": "^-?(\\d\u002B\\.)?\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,7})?$",
+            "type": "string"
+          },
+          "height": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "videoDimensionFormat": {
+            "$ref": "#/components/schemas/VideoDimensionFormat"
+          },
+          "videoCodec": {
+            "$ref": "#/components/schemas/VideoCodec"
+          },
+          "bitrate": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "frameRate": {
+            "type": "number",
+            "format": "double"
+          },
+          "pixelFormat": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ratio": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "creationTime": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "videoStreamCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "audioStreamCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "ingestDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cameraType": {
+            "$ref": "#/components/schemas/CameraTypes"
+          },
+          "videoQuality": {
+            "$ref": "#/components/schemas/VideoQuality"
+          },
+          "watchCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "needsReview": {
+            "type": "boolean"
+          },
+          "playbackIssue": {
+            "type": "boolean"
+          },
+          "markedForDeletion": {
+            "type": "boolean"
+          },
+          "parentVideoId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "clipStartSeconds": {
+            "type": [
+              "null",
+              "number"
+            ],
+            "format": "double"
+          },
+          "clipEndSeconds": {
+            "type": [
+              "null",
+              "number"
+            ],
+            "format": "double"
+          },
+          "isClip": {
+            "type": "boolean"
+          },
+          "chapterMarkers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChapterMarkerDto"
+            }
+          },
+          "videoBlocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoBlockDto"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoTagSummaryDto"
+            }
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PropertyValueDto"
+            }
+          }
+        }
+      },
+      "VideoPropertyValue": {
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "video": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Video"
+              }
+            ]
+          },
+          "propertyDefinitionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "propertyDefinition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PropertyDefinition"
+              }
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "VideoQuality": {
+        "enum": [
+          "singleCamera",
+          "multipleCameras",
+          "lowQuality",
+          "notChecked"
+        ],
+        "type": "string"
+      },
+      "VideoSet": {
+        "required": [
+          "name",
+          "path"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "VideoTag": {
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "video": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Video"
+              }
+            ]
+          },
+          "tagId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tag": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Tag"
+              }
+            ]
+          }
+        }
+      },
+      "VideoTagSummaryDto": {
+        "required": [
+          "id",
+          "tagGroupId",
+          "tagGroupName",
+          "name"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tagGroupId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tagGroupName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkerFailedRowDto": {
+        "required": [
+          "videoId",
+          "fileName",
+          "filePath",
+          "fileSizeBytes",
+          "error"
+        ],
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "fileSizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "WorkerQueueRowDto": {
+        "required": [
+          "videoId",
+          "fileName",
+          "filePath",
+          "fileSizeBytes"
+        ],
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "fileSizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "VideoOrganizer.API"
+    },
+    {
+      "name": "VideoSets"
+    },
+    {
+      "name": "Backup"
+    },
+    {
+      "name": "TagGroups"
+    },
+    {
+      "name": "Tags"
+    },
+    {
+      "name": "Properties"
+    },
+    {
+      "name": "Playlists"
+    },
+    {
+      "name": "Duplicates"
+    },
+    {
+      "name": "Import"
+    }
+  ]
+}

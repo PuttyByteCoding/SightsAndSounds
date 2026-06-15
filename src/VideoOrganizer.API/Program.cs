@@ -273,6 +273,25 @@ builder.Services.AddOpenApi(options =>
         }
         return Task.CompletedTask;
     });
+
+    // Numeric schemas are emitted as the union type ["integer","string"] (with a
+    // validation pattern) because System.Text.Json can leniently *read* numbers
+    // from strings. That's a server-side tolerance, not the response contract —
+    // responses always serialize numbers as numbers. Left in the spec it makes
+    // every generated numeric field `number | string`, which is unusable on the
+    // client (#125). Drop the string alternative (and its pattern) so numbers
+    // are plain integers/numbers; nullability (the Null flag) is preserved.
+    options.AddSchemaTransformer((schema, _, _) =>
+    {
+        if (schema.Type is { } t
+            && (t.HasFlag(Microsoft.OpenApi.JsonSchemaType.Integer) || t.HasFlag(Microsoft.OpenApi.JsonSchemaType.Number))
+            && t.HasFlag(Microsoft.OpenApi.JsonSchemaType.String))
+        {
+            schema.Type = t & ~Microsoft.OpenApi.JsonSchemaType.String;
+            schema.Pattern = null;
+        }
+        return Task.CompletedTask;
+    });
 });
 
 var app = builder.Build();

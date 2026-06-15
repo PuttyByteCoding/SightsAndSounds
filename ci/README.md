@@ -128,3 +128,28 @@ If you ever change your mind:
 
 For now neither exists. The `ci/*.sh` scripts and the pre-commit
 hook are the only automation in play.
+
+## OpenAPI spec & frontend types (#125)
+
+`ci/openapi.json` is the committed snapshot of the API's OpenAPI
+document. The SvelteKit client's `src/lib/api.generated.ts` is
+generated from it, so the spec is the single source of truth and
+`types.ts` can stop drifting from the backend.
+
+A drift guard (`OpenApiDriftTests`) fails the test run when the live
+API no longer matches `ci/openapi.json`. When that happens, regenerate
+both artifacts and commit them:
+
+```bash
+# 1. Re-dump the spec (hermetic — uses the Testcontainers API fixture)
+SAS_DUMP_OPENAPI=1 dotnet test tests/VideoOrganizer.Tests \
+    --filter FullyQualifiedName~OpenApiSpecDump
+
+# 2. Regenerate the TypeScript types from it
+cd src/VideoOrganizer.SvelteUI && npm run gen:types
+
+# 3. Commit ci/openapi.json and src/lib/api.generated.ts
+```
+
+`gen:types` runs `openapi-typescript` via `npx` (pinned) rather than
+as a dependency — it peer-requires TypeScript 5 and the app is on 6.
