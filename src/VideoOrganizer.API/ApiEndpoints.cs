@@ -685,6 +685,21 @@ public static partial class ApiEndpoints
         };
     }
 
+    // Hidden-by-default tags (issue #84) whose videos must be suppressed from a
+    // listing — except any the caller explicitly filtered FOR (referencedTagIds),
+    // which is how "filter for it to see it" works. Hidden means hidden across
+    // every surface (browse, playlists, related, search), so each listing query
+    // excludes videos carrying one of these.
+    private static async Task<HashSet<Guid>> LoadAutoHideTagIdsAsync(
+        VideoOrganizerDbContext db, IReadOnlyCollection<Guid> referencedTagIds, CancellationToken ct)
+    {
+        var hidden = await db.Tags.AsNoTracking()
+            .Where(t => t.HiddenByDefault)
+            .Select(t => t.Id)
+            .ToListAsync(ct);
+        return hidden.Where(id => !referencedTagIds.Contains(id)).ToHashSet();
+    }
+
     private static bool MatchesFilter(FilterRef f, Video v, TagLookup _)
     {
         switch (f.Type)
@@ -833,6 +848,15 @@ public static partial class ApiEndpoints
                     EF.Functions.ILike(v.Notes, pat) ||
                     (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
                     v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+
+            // Hidden-by-default videos (#84) are never findable via search — hidden
+            // means hidden everywhere. (Search has no tag-filter to "reveal" via.)
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, Array.Empty<Guid>(), ct);
+            if (autoHideTagIds.Count > 0)
+            {
+                var hidden = autoHideTagIds.ToList();
+                baseQuery = baseQuery.Where(v => !v.VideoTags.Any(vt => hidden.Contains(vt.TagId)));
+            }
 
             var totalCount = await baseQuery.CountAsync(ct);
 
@@ -1565,10 +1589,23 @@ public static partial class ApiEndpoints
                 .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
 
             var tagIdParams = http.Request.Query["tagId"];
+            var referencedTagIds = new HashSet<Guid>();
             foreach (var raw in tagIdParams)
             {
                 if (Guid.TryParse(raw, out var tid))
+                {
+                    referencedTagIds.Add(tid);
                     query = query.Where(v => v.VideoTags.Any(vt => vt.TagId == tid));
+                }
+            }
+
+            // Suppress hidden-by-default videos (#84) unless the caller is
+            // explicitly filtering for that tag.
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
+            if (autoHideTagIds.Count > 0)
+            {
+                var hidden = autoHideTagIds.ToList();
+                query = query.Where(v => !v.VideoTags.Any(vt => hidden.Contains(vt.TagId)));
             }
 
             var videos = await query.ToListAsync(ct);
@@ -1636,12 +1673,7 @@ public static partial class ApiEndpoints
                 .Where(f => f.Type == FilterRefType.Tag && Guid.TryParse(f.Value, out _))
                 .Select(f => Guid.Parse(f.Value))
                 .ToHashSet();
-            var autoHideTagIds = (await db.Tags.AsNoTracking()
-                    .Where(t => t.HiddenByDefault)
-                    .Select(t => t.Id)
-                    .ToListAsync(ct))
-                .Where(id => !referencedTagIds.Contains(id))
-                .ToHashSet();
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
 
             // Push every safely-translatable slot into SQL (#127), but NOT the
             // auto-hide — we apply that last, in memory, so we can also count how
@@ -1711,10 +1743,18 @@ public static partial class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled)
                 .Select(s => s.Path).ToListAsync(ct);
 
+            // Hidden-by-default videos never surface as "related" (#84).
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, Array.Empty<Guid>(), ct);
+
             IQueryable<Video> q = IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
                 .Where(v => v.Id != id)
                 .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+            if (autoHideTagIds.Count > 0)
+            {
+                var hidden = autoHideTagIds.ToList();
+                q = q.Where(v => !v.VideoTags.Any(vt => hidden.Contains(vt.TagId)));
+            }
 
             if (tagIds.Count == 0)
             {

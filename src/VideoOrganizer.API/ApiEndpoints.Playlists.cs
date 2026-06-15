@@ -29,13 +29,21 @@ public static partial class ApiEndpoints
         var optional = filter?.Optional ?? new();
         var excluded = filter?.Excluded ?? new();
 
+        // Hidden-by-default videos (#84) stay hidden in playlists too, unless the
+        // filter explicitly references that tag.
+        var referencedTagIds = required.Concat(optional)
+            .Where(f => f.Type == FilterRefType.Tag && Guid.TryParse(f.Value, out _))
+            .Select(f => Guid.Parse(f.Value))
+            .ToHashSet();
+        var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
+
         var baseQuery = db.Videos
             .AsNoTracking()
             .Include(v => v.VideoTags) // only materialized on the in-memory fallback path
             .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
 
         var (narrowed, needsInMemory) =
-            VideoFilterTranslator.Apply(baseQuery, required, optional, excluded, Array.Empty<Guid>());
+            VideoFilterTranslator.Apply(baseQuery, required, optional, excluded, autoHideTagIds);
 
         if (!needsInMemory)
         {

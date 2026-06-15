@@ -248,59 +248,123 @@ public sealed class ApiEndpointsFilterParityTests
         Assert.Contains(w.VOnlyB, ids);
     }
 
+    // A shared world for the "hidden means hidden everywhere" tests: three
+    // videos all carrying a fresh visible tag (so they're isolated from other
+    // data), one of which also carries a hidden-by-default tag and must be
+    // suppressed from every surface. Filenames include the token so search can
+    // target them precisely.
+    private sealed record HiddenScenario(
+        string Token, string Root, Guid GroupId, Guid TagVisible, Guid TagHidden,
+        Guid VAnchor, Guid VBoth, Guid VPlain);
+
+    private async Task<HiddenScenario> SeedHiddenScenarioAsync()
+    {
+        var token = Guid.NewGuid().ToString("N");
+        var s = new HiddenScenario(token, $"/hc-{token}", Guid.NewGuid(), Guid.NewGuid(),
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        await _api.WithDbAsync(async db =>
+        {
+            db.VideoSets.Add(new VideoSet { Id = Guid.NewGuid(), Name = "hc-" + token, Path = s.Root, Enabled = true });
+            db.TagGroups.Add(new TagGroup { Id = s.GroupId, Name = "hc-" + token });
+            db.Tags.Add(new Tag { Id = s.TagVisible, Name = "V-" + token, TagGroupId = s.GroupId });
+            db.Tags.Add(new Tag { Id = s.TagHidden, Name = "H-" + token, TagGroupId = s.GroupId, HiddenByDefault = true });
+            db.Videos.Add(new Video { Id = s.VAnchor, FileName = $"anchor-{token}.mp4", FilePath = $"{s.Root}/anchor-{token}.mp4" });
+            db.Videos.Add(new Video { Id = s.VBoth, FileName = $"both-{token}.mp4", FilePath = $"{s.Root}/both-{token}.mp4" });
+            db.Videos.Add(new Video { Id = s.VPlain, FileName = $"plain-{token}.mp4", FilePath = $"{s.Root}/plain-{token}.mp4" });
+            db.VideoTags.AddRange(
+                new VideoTag { VideoId = s.VAnchor, TagId = s.TagVisible },
+                new VideoTag { VideoId = s.VBoth, TagId = s.TagVisible },
+                new VideoTag { VideoId = s.VBoth, TagId = s.TagHidden }, // suppressed everywhere
+                new VideoTag { VideoId = s.VPlain, TagId = s.TagVisible });
+            await db.SaveChangesAsync();
+        });
+        return s;
+    }
+
+    private Task CleanupHiddenScenarioAsync(HiddenScenario s) => _api.WithDbAsync(async db =>
+    {
+        var ids = new[] { s.VAnchor, s.VBoth, s.VPlain };
+        await db.VideoTags.Where(vt => ids.Contains(vt.VideoId)).ExecuteDeleteAsync();
+        await db.Videos.Where(v => ids.Contains(v.Id)).ExecuteDeleteAsync();
+        await db.Tags.Where(t => t.TagGroupId == s.GroupId).ExecuteDeleteAsync();
+        await db.TagGroups.Where(g => g.Id == s.GroupId).ExecuteDeleteAsync();
+        await db.VideoSets.Where(vs => vs.Path == s.Root).ExecuteDeleteAsync();
+    });
+
     [SkippableFact]
     public async Task Filter_reports_auto_hidden_match_count_in_header()
     {
         Skip.IfNot(_api.Available, _api.SkipReason);
-
-        var token = Guid.NewGuid().ToString("N");
-        var root = $"/hc-{token}";
-        var groupId = Guid.NewGuid();
-        var tagVisible = Guid.NewGuid();
-        var tagHidden = Guid.NewGuid();
-        Guid vBoth = Guid.NewGuid(), vPlain = Guid.NewGuid();
-
-        await _api.WithDbAsync(async db =>
-        {
-            db.VideoSets.Add(new VideoSet { Id = Guid.NewGuid(), Name = "hc-" + token, Path = root, Enabled = true });
-            db.TagGroups.Add(new TagGroup { Id = groupId, Name = "hc-" + token });
-            db.Tags.Add(new Tag { Id = tagVisible, Name = "V-" + token, TagGroupId = groupId });
-            db.Tags.Add(new Tag { Id = tagHidden, Name = "H-" + token, TagGroupId = groupId, HiddenByDefault = true });
-            db.Videos.Add(new Video { Id = vBoth, FileName = "both.mp4", FilePath = $"{root}/both.mp4" });
-            db.Videos.Add(new Video { Id = vPlain, FileName = "plain.mp4", FilePath = $"{root}/plain.mp4" });
-            db.VideoTags.AddRange(
-                new VideoTag { VideoId = vBoth, TagId = tagVisible },
-                new VideoTag { VideoId = vBoth, TagId = tagHidden }, // suppressed by auto-hide
-                new VideoTag { VideoId = vPlain, TagId = tagVisible });
-            await db.SaveChangesAsync();
-        });
-
+        var s = await SeedHiddenScenarioAsync();
         try
         {
-            // Only these two videos carry this fresh tag, so the global auto-hide
-            // count for this filter is exactly the one suppressed match (vBoth).
-            var res = await _api.Client.PostAsJsonAsync("/api/videos/filter", new { required = new[] { Tag(tagVisible) } });
+            var res = await _api.Client.PostAsJsonAsync("/api/videos/filter", new { required = new[] { Tag(s.TagVisible) } });
             Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
             var ids = (await res.Content.ReadFromJsonAsync<List<VideoRow>>())!.Select(r => r.id).ToHashSet();
-            Assert.Contains(vPlain, ids);
-            Assert.DoesNotContain(vBoth, ids);
+            Assert.Contains(s.VPlain, ids);
+            Assert.DoesNotContain(s.VBoth, ids);
 
+            // Only the seeded videos carry this fresh tag, so the auto-hide count
+            // is exactly the one suppressed match (vBoth).
             Assert.True(res.Headers.TryGetValues("X-Hidden-Count", out var vals), "X-Hidden-Count header present");
             Assert.Equal("1", vals!.Single());
         }
-        finally
-        {
-            await _api.WithDbAsync(async db =>
-            {
-                await db.VideoTags.Where(vt => vt.VideoId == vBoth || vt.VideoId == vPlain).ExecuteDeleteAsync();
-                await db.Videos.Where(v => v.Id == vBoth || v.Id == vPlain).ExecuteDeleteAsync();
-                await db.Tags.Where(t => t.Id == tagVisible || t.Id == tagHidden).ExecuteDeleteAsync();
-                await db.TagGroups.Where(g => g.Id == groupId).ExecuteDeleteAsync();
-                await db.VideoSets.Where(s => s.Path == root).ExecuteDeleteAsync();
-            });
-        }
+        finally { await CleanupHiddenScenarioAsync(s); }
     }
+
+    [SkippableFact]
+    public async Task Playlist_excludes_hidden_by_default_videos()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        var s = await SeedHiddenScenarioAsync();
+        try
+        {
+            var res = await _api.Client.PostAsJsonAsync("/api/playlists/random", new { required = new[] { Tag(s.TagVisible) } });
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var pl = await res.Content.ReadFromJsonAsync<PlaylistResult>();
+            Assert.Contains(s.VPlain, pl!.videoIds);
+            Assert.DoesNotContain(s.VBoth, pl.videoIds);
+        }
+        finally { await CleanupHiddenScenarioAsync(s); }
+    }
+
+    [SkippableFact]
+    public async Task Related_excludes_hidden_by_default_videos()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        var s = await SeedHiddenScenarioAsync();
+        try
+        {
+            // vPlain and vBoth both share TagVisible with the anchor; the hidden
+            // one must not surface as related.
+            var rows = await _api.Client.GetFromJsonAsync<List<VideoRow>>($"/api/videos/{s.VAnchor}/related?take=50");
+            var ids = rows!.Select(r => r.id).ToHashSet();
+            Assert.Contains(s.VPlain, ids);
+            Assert.DoesNotContain(s.VBoth, ids);
+        }
+        finally { await CleanupHiddenScenarioAsync(s); }
+    }
+
+    [SkippableFact]
+    public async Task Search_excludes_hidden_by_default_videos()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        var s = await SeedHiddenScenarioAsync();
+        try
+        {
+            // The token matches all three filenames; the hidden one is unfindable.
+            var resp = await _api.Client.GetFromJsonAsync<SearchResp>($"/api/search?q={s.Token}&limit=50");
+            var ids = resp!.results.Select(r => r.id).ToHashSet();
+            Assert.Contains(s.VPlain.ToString(), ids);
+            Assert.Contains(s.VAnchor.ToString(), ids);
+            Assert.DoesNotContain(s.VBoth.ToString(), ids);
+        }
+        finally { await CleanupHiddenScenarioAsync(s); }
+    }
+
+    private sealed record SearchResp(List<SearchHit> results);
+    private sealed record SearchHit(string id);
 
     private sealed record PlaylistResult(Guid id, List<Guid> videoIds, DateTime createdAt);
 }
