@@ -39,6 +39,11 @@ public static partial class ApiEndpoints
         (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
         => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
 
+    // Project the EncodeProgress snapshot tuple to the wire DTO.
+    private static EncodeProgressDto ToEncodeDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
     private static VideoDto ToDto(Video v)
     {
         var tags = v.VideoTags
@@ -2901,6 +2906,42 @@ public static partial class ApiEndpoints
             return Results.Ok(ToBlockRemovalDto(progress.Snapshot()));
         }).Produces<BlockRemovalProgressDto>(StatusCodes.Status200OK)
           .WithName("StopBlockRemoval");
+
+        // === Encode/convert to a profile (issue #164) =======================
+
+        // POST /api/encode — encode the given videos to the configured profile
+        // ("<stem>_encoded.mp4" each). 202 / 409 / 400.
+        api.MapPost("/encode", async (
+            EncodeRequest req, EncodeService encoder, EncodeProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count == 0) return Results.BadRequest(new { error = "No videos selected." });
+
+            var result = await encoder.TryStartAsync(ids, ct);
+            return result switch
+            {
+                EncodeService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "An encode is already running." }),
+                EncodeService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected videos can be encoded." }),
+                _ => Results.Json(ToEncodeDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<EncodeProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartEncode");
+
+        // GET /api/encode — poll the encode run's progress.
+        api.MapGet("/encode", (EncodeProgress progress) =>
+            Results.Ok(ToEncodeDto(progress.Snapshot())))
+          .Produces<EncodeProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetEncodeProgress");
+
+        // POST /api/encode/stop — stop after the current video.
+        api.MapPost("/encode/stop", (EncodeProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToEncodeDto(progress.Snapshot()));
+        }).Produces<EncodeProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopEncode");
 
         api.MapGet("/videos/marked-for-deletion", async (
             VideoOrganizerDbContext db, CancellationToken ct) =>

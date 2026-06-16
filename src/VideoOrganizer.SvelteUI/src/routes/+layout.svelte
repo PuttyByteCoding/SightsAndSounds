@@ -74,6 +74,8 @@
     { href: '/clips-export', label: 'Export Clips', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z' },
     // Build trimmed files with the hidden sections cut out (issue #70).
     { href: '/remove-blocked', label: 'Remove Blocked', icon: 'M19 13H5v-2h14v2z' },
+    // Re-encode videos to a configurable ffmpeg/HandBrake profile (issue #164).
+    { href: '/encode', label: 'Encode / Convert', icon: 'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm6 4v8l6-4-6-4z' },
     // Log of file moves (browse page's ↪ Move file) with one-click Undo.
     { href: '/moves', label: 'File Moves', icon: 'M3 6h7l2 2h9v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V6zm10.5 4-1.41 1.41L13.67 13H8v2h5.67l-1.58 1.59L13.5 18l4-4-4-4z' },
     // Diagnostic tooling — surfaces drift between the DB and the

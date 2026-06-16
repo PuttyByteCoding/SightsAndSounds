@@ -44,6 +44,7 @@ import type {
   UpdateVideoRequest,
   Video,
   PurgeClipWarning,
+  EncodeProgress,
   VideoSet,
   VideoSetInput,
   ReRootPreview,
@@ -287,6 +288,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ newName })
     }),
+
+  // Encode/convert videos to the configured profile (#164).
+  startEncode: (videoIds: string[]) =>
+    request<EncodeProgress>('/api/encode', { method: 'POST', body: JSON.stringify({ videoIds }) }),
+  getEncodeProgress: () => request<EncodeProgress>('/api/encode'),
+  stopEncode: () => request<EncodeProgress>('/api/encode/stop', { method: 'POST' }),
 
   markForDeletion: (id: string) =>
     request<Video>(`/api/videos/${id}/mark-for-deletion`, { method: 'POST' }),
