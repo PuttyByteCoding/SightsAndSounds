@@ -44,6 +44,8 @@ import type {
   UpdateVideoRequest,
   Video,
   PurgeClipWarning,
+  RepairProgress,
+  JoinProgress,
   EncodeProgress,
   VideoSet,
   VideoSetInput,
@@ -289,6 +291,15 @@ export const api = {
       body: JSON.stringify({ newName })
     }),
 
+  // Join (concatenate) videos in order into one new file (#163).
+  startJoin: (videoIds: string[], reencode: boolean, name?: string) =>
+    request<JoinProgress>('/api/join', {
+      method: 'POST',
+      body: JSON.stringify({ videoIds, reencode, name })
+    }),
+  getJoinProgress: () => request<JoinProgress>('/api/join'),
+  stopJoin: () => request<JoinProgress>('/api/join/stop', { method: 'POST' }),
+
   // Encode/convert videos to the configured profile (#164).
   startEncode: (videoIds: string[]) =>
     request<EncodeProgress>('/api/encode', { method: 'POST', body: JSON.stringify({ videoIds }) }),
@@ -427,6 +438,12 @@ export const api = {
   // Triage list — videos the user has flagged with PlaybackIssue.
   // Powers the /playback-issues page (parallel to /purge).
   getPlaybackIssues: () => request<Video[]>('/api/videos/playback-issues'),
+
+  // Repair (re-encode to browser-friendly H.264) the given videos (#165).
+  startRepair: (videoIds: string[]) =>
+    request<RepairProgress>('/api/repair', { method: 'POST', body: JSON.stringify({ videoIds }) }),
+  getRepairProgress: () => request<RepairProgress>('/api/repair'),
+  stopRepair: () => request<RepairProgress>('/api/repair/stop', { method: 'POST' }),
   // Bulk-purge every PlaybackIssue row in one shot. Same response
   // shape as purgeAllMarkedForDeletion so the page's bulk-progress
   // modal can consume both interchangeably.
