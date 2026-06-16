@@ -56,6 +56,8 @@
     { href: '/import', label: 'Import Tool', icon: 'M12 2a1 1 0 0 1 1 1v8h8a1 1 0 1 1 0 2h-8v8a1 1 0 1 1-2 0v-8H3a1 1 0 1 1 0-2h8V3a1 1 0 0 1 1-1Z' },
     { href: '/sources', label: 'Sources', icon: 'M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z' },
     { href: '/keyboard-shortcuts', label: 'Keyboard Shortcuts', icon: 'M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm2 3v2h2V8H6zm4 0v2h2V8h-2zm4 0v2h2V8h-2zm4 0v2h2V8h-2zM6 12v2h2v-2H6zm4 0v2h8v-2h-8zm10 0v2h2v-2h-2zM8 16v2h8v-2H8z' },
+    // In-app reference for what each section does + key workflows (issue #169).
+    { href: '/help', label: 'Help & Features', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-5h2v2h-2v-2zm2.07-7.75c-.9.92-1.07 1.32-1.07 2.25h-2c0-1.13.34-1.87 1.29-2.83.5-.5.71-.95.71-1.42a1.5 1.5 0 00-3 0H7a3.5 3.5 0 117 0c0 .77-.31 1.47-.93 2z' },
     { href: '/backups', label: 'Backups', icon: 'M12 2C6.48 2 2 4.02 2 6.5v11C2 19.98 6.48 22 12 22s10-2.02 10-4.5v-11C22 4.02 17.52 2 12 2zm0 2c4.42 0 8 1.57 8 2.5S16.42 11 12 11 4 9.43 4 8.5 7.58 4 12 4zm8 13.5c0 .93-3.58 2.5-8 2.5s-8-1.57-8-2.5v-2.93C5.78 15.67 8.7 16.5 12 16.5s6.22-.83 8-1.93v2.93z' },
     { href: '/background-tasks', label: 'Background Tasks', icon: 'M12 2a10 10 0 1 0 10 10h-2a8 8 0 1 1-8-8V2zm1 0v6h6a6 6 0 0 0-6-6z' },
     { href: '/logs', label: 'Logs', icon: 'M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 4v2h12V7H6zm0 4v2h12v-2H6zm0 4v2h8v-2H6z' },
