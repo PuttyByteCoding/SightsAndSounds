@@ -522,6 +522,9 @@
   // scrubber can paint a green band per existing clip range. Empty
   // when the current video IS a clip (clips don't have children).
   let parentClips = $state<ClipSummary[]>([]);
+  // The under-player clips list shows only live clips; exported ones (#69) are
+  // gone from the library and appear only as a breadcrumb band on the scrubber.
+  const liveClips = $derived(parentClips.filter((c) => !c.exported));
 
   // Scrubber-scope helpers. Two modes:
   //   - parent video      → scrub spans the entire file [0, duration]
@@ -2455,10 +2458,15 @@
             {@const startFrac = scrubFrac(c.clipStartSeconds)}
             {@const endFrac = scrubFrac(c.clipEndSeconds)}
             {#if startFrac !== null && endFrac !== null}
+              <!-- Exported clips (#69) are drawn as a hatched amber breadcrumb
+                   ("a clip was exported from here") instead of the solid green
+                   of a live clip. -->
               <div
-                class="absolute inset-y-0 bg-success/30 pointer-events-none"
+                class="absolute inset-y-0 pointer-events-none {c.exported
+                  ? 'bg-warning/25 border-x border-warning/60'
+                  : 'bg-success/30'}"
                 style="left: {startFrac * 100}%; width: {(endFrac - startFrac) * 100}%"
-                title={`Clip: ${c.fileName}`}
+                title={c.exported ? `Clip exported: ${c.fileName}` : `Clip: ${c.fileName}`}
               ></div>
             {/if}
           {/each}
@@ -2725,7 +2733,7 @@
          flex-wrap lets the Clips card drop to a new line on a narrow
          player pane so the labels stay readable instead of being
          truncated into oblivion. -->
-    {#if video && (sortedBookmarks.length > 0 || parentClips.length > 0)}
+    {#if video && (sortedBookmarks.length > 0 || liveClips.length > 0)}
     <div class="mt-2 flex flex-row flex-wrap gap-2 items-start">
     {#if sortedBookmarks.length > 0}
       <div class="border border-base-300 rounded p-2 text-xs">
@@ -2841,16 +2849,16 @@
          `parentClips` is left at [] by loadParentClips() when the
          current video is itself a clip, so this block silently
          disappears in clip view. -->
-    {#if parentClips.length > 0}
+    {#if liveClips.length > 0}
       <div class="border border-base-300 rounded p-2 text-xs">
         <div class="flex items-center text-base-content/70 uppercase tracking-wide mb-1">
           <span>Clips</span>
           <span class="ml-2 text-[10px] normal-case tracking-normal text-base-content/50">
-            {parentClips.length}
+            {liveClips.length}
           </span>
         </div>
         <div class="inline-grid grid-cols-[auto_auto_auto_auto] gap-x-2 gap-y-1 items-center">
-          {#each parentClips as c (c.id)}
+          {#each liveClips as c (c.id)}
             {@const previewDelete = hoveringDeleteClipId === c.id}
             {@const busy = clipDeleteBusy.has(c.id)}
             <div class="contents">

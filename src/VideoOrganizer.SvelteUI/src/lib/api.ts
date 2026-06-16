@@ -50,6 +50,9 @@ import type {
   FfprobeResult,
   FlagCounts,
   ClipSummary,
+  ClipExportQueueItem,
+  ClipExportProgress,
+  KeyframeCut,
   MissingVideoFile,
   PurgeMissingFilesResult,
   ExtraDiskFile,
@@ -298,6 +301,24 @@ export const api = {
   // a video that itself is a clip (it has no children).
   listClipsOfVideo: (parentId: string) =>
     request<ClipSummary[]>(`/api/videos/${parentId}/clips`),
+
+  // --- Clip export (issue #69) -------------------------------------------
+  // Parents that still have un-exported clips, with their clips.
+  getClipExportQueue: () =>
+    request<ClipExportQueueItem[]>(`/api/clips-export/queue`),
+  // The keyframe-snapped start the stream-copy export will actually use.
+  getClipKeyframeCut: (clipId: string) =>
+    request<KeyframeCut>(`/api/videos/${clipId}/keyframe-cut`),
+  // Start / poll / stop a background export run.
+  startClipExport: (clipIds: string[]) =>
+    request<ClipExportProgress>(`/api/clips-export`, {
+      method: 'POST',
+      body: JSON.stringify({ clipIds })
+    }),
+  getClipExportProgress: () =>
+    request<ClipExportProgress>(`/api/clips-export`),
+  stopClipExport: () =>
+    request<ClipExportProgress>(`/api/clips-export/stop`, { method: 'POST' }),
 
   // --- Data validation ---------------------------------------------------
   // Video rows whose FilePath no longer resolves on disk. By default

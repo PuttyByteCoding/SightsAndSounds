@@ -67,6 +67,9 @@
     // with Playback Issues / Purge / Data Validation.
     { href: '/duplicates', label: 'Duplicates', icon: 'M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z' },
     { href: '/purge', label: 'Purge Deleted', icon: 'M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z' },
+    // Export defined clips to standalone files (issue #69). Library tool,
+    // grouped with the other clip/duplicate/purge "library shaping" pages.
+    { href: '/clips-export', label: 'Export Clips', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z' },
     // Log of file moves (browse page's ↪ Move file) with one-click Undo.
     { href: '/moves', label: 'File Moves', icon: 'M3 6h7l2 2h9v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V6zm10.5 4-1.41 1.41L13.67 13H8v2h5.67l-1.58 1.59L13.5 18l4-4-4-4z' },
     // Diagnostic tooling — surfaces drift between the DB and the

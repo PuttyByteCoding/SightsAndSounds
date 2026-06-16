@@ -1647,6 +1647,128 @@
         }
       }
     },
+    "/api/clips-export/queue": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetClipExportQueue",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClipExportQueueItemDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{clipId}/keyframe-cut": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetClipKeyframeCut",
+        "parameters": [
+          {
+            "name": "clipId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyframeCutDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/clips-export": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StartClipExport",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportClipsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipExportProgressDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetClipExportProgress",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipExportProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/clips-export/stop": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StopClipExport",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipExportProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/videos/marked-for-deletion": {
       "get": {
         "tags": [
@@ -3662,12 +3784,77 @@
           }
         }
       },
+      "ClipExportProgressDto": {
+        "required": [
+          "active",
+          "total",
+          "done",
+          "current",
+          "phase",
+          "errors"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "current": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ClipExportQueueItemDto": {
+        "required": [
+          "parentId",
+          "parentFileName",
+          "parentDurationSeconds",
+          "clips"
+        ],
+        "type": "object",
+        "properties": {
+          "parentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "parentFileName": {
+            "type": "string"
+          },
+          "parentDurationSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "clips": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClipSummaryDto"
+            }
+          }
+        }
+      },
       "ClipSummaryDto": {
         "required": [
           "id",
           "fileName",
           "clipStartSeconds",
-          "clipEndSeconds"
+          "clipEndSeconds",
+          "exported"
         ],
         "type": "object",
         "properties": {
@@ -3685,6 +3872,9 @@
           "clipEndSeconds": {
             "type": "number",
             "format": "double"
+          },
+          "exported": {
+            "type": "boolean"
           }
         }
       },
@@ -3980,6 +4170,21 @@
           "rejected"
         ],
         "type": "string"
+      },
+      "ExportClipsRequest": {
+        "required": [
+          "clipIds"
+        ],
+        "type": "object",
+        "properties": {
+          "clipIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
       },
       "ExtraDiskFileDto": {
         "required": [
@@ -4549,6 +4754,28 @@
           "failed": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "KeyframeCutDto": {
+        "required": [
+          "requestedStartSeconds",
+          "snappedStartSeconds",
+          "endSeconds"
+        ],
+        "type": "object",
+        "properties": {
+          "requestedStartSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "snappedStartSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "endSeconds": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -5974,6 +6201,16 @@
               "number"
             ],
             "format": "double"
+          },
+          "clipExported": {
+            "type": "boolean"
+          },
+          "exportedToVideoId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
           },
           "ocrScannedThroughSeconds": {
             "type": [

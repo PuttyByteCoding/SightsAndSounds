@@ -127,6 +127,11 @@ export type SetVideoTagsRequest = S['SetVideoTagsRequest'];
 export type CreateClipRequest = S['CreateClipRequest'];
 export type ClipSummary = S['ClipSummaryDto'];
 
+// Clip export (issue #69).
+export type ClipExportQueueItem = S['ClipExportQueueItemDto'];
+export type ClipExportProgress = S['ClipExportProgressDto'];
+export type KeyframeCut = S['KeyframeCutDto'];
+
 // --- Filtering -------------------------------------------------------------
 
 export type FilterRefType = S['FilterRefType'];

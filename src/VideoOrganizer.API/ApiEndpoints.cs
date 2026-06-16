@@ -29,6 +29,11 @@ public static partial class ApiEndpoints
          int Hits, string Phase, string? Error) s)
         => new(s.Active, s.ScannedThroughSeconds, s.DurationSeconds, s.Hits, s.Phase, s.Error);
 
+    // Project the ClipExportProgress snapshot tuple to the wire DTO.
+    private static ClipExportProgressDto ToClipExportDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
     private static VideoDto ToDto(Video v)
     {
         var tags = v.VideoTags
@@ -848,6 +853,8 @@ public static partial class ApiEndpoints
             // in v1 (see note above).
             var baseQuery = db.Videos
                 .AsNoTracking()
+                // Exported clips (#69) are hidden everywhere, search included.
+                .Where(v => !v.ClipExported)
                 .Where(v =>
                     EF.Functions.ILike(v.FileName, pat) ||
                     EF.Functions.ILike(v.FilePath, pat) ||
@@ -1666,7 +1673,9 @@ public static partial class ApiEndpoints
             // instead of yanking every video into memory and filtering.
             var candidatesQuery = IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+                // Clips already exported to their own file (#69) are hidden from
+                // the library — the standalone export stands in for them.
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)) && !v.ClipExported);
 
             var searchQuery = filter?.SearchQuery?.Trim();
             if (!string.IsNullOrEmpty(searchQuery))
@@ -1753,7 +1762,9 @@ public static partial class ApiEndpoints
 
             var candidatesQuery = IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+                // Clips already exported to their own file (#69) are hidden from
+                // the library — the standalone export stands in for them.
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)) && !v.ClipExported);
 
             var searchQuery = filter?.SearchQuery?.Trim();
             if (!string.IsNullOrEmpty(searchQuery))
@@ -2615,11 +2626,112 @@ public static partial class ApiEndpoints
                     && v.ClipEndSeconds != null)
                 .OrderBy(v => v.ClipStartSeconds)
                 .Select(v => new ClipSummaryDto(
-                    v.Id, v.FileName, v.ClipStartSeconds!.Value, v.ClipEndSeconds!.Value))
+                    v.Id, v.FileName, v.ClipStartSeconds!.Value, v.ClipEndSeconds!.Value, v.ClipExported))
                 .ToListAsync(ct);
             return Results.Ok(clips);
         }).Produces<List<ClipSummaryDto>>(StatusCodes.Status200OK)
           .WithName("GetClipsOfParent");
+
+        // GET /api/clips-export/queue — parents that still have un-exported
+        // clips, each with its clips (issue #69). Drives the clips-export page.
+        api.MapGet("/clips-export/queue", async (
+            VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var clips = await db.Videos.AsNoTracking()
+                .Where(v => v.ParentVideoId != null && !v.ClipExported
+                    && v.ClipStartSeconds != null && v.ClipEndSeconds != null)
+                .Select(v => new
+                {
+                    v.Id,
+                    v.FileName,
+                    ParentId = v.ParentVideoId!.Value,
+                    Start = v.ClipStartSeconds!.Value,
+                    End = v.ClipEndSeconds!.Value
+                })
+                .ToListAsync(ct);
+
+            var parentIds = clips.Select(c => c.ParentId).Distinct().ToList();
+            var parents = await db.Videos.AsNoTracking()
+                .Where(v => parentIds.Contains(v.Id))
+                .Select(v => new { v.Id, v.FileName, v.Duration })
+                .ToListAsync(ct);
+            var byId = parents.ToDictionary(p => p.Id);
+
+            var items = clips
+                .GroupBy(c => c.ParentId)
+                .Where(g => byId.ContainsKey(g.Key))
+                .Select(g => new ClipExportQueueItemDto(
+                    g.Key,
+                    byId[g.Key].FileName,
+                    byId[g.Key].Duration.TotalSeconds,
+                    g.OrderBy(c => c.Start)
+                     .Select(c => new ClipSummaryDto(c.Id, c.FileName, c.Start, c.End, false))
+                     .ToList()))
+                .OrderBy(i => i.ParentFileName)
+                .ToList();
+            return Results.Ok(items);
+        }).Produces<List<ClipExportQueueItemDto>>(StatusCodes.Status200OK)
+          .WithName("GetClipExportQueue");
+
+        // GET /api/videos/{clipId}/keyframe-cut — the keyframe-snapped start the
+        // stream-copy export will actually use, for the page's preview (#69).
+        api.MapGet("/videos/{clipId:guid}/keyframe-cut", async (
+            Guid clipId, VideoOrganizerDbContext db, ClipExportService exporter,
+            CancellationToken ct) =>
+        {
+            var clip = await db.Videos.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == clipId, ct);
+            if (clip is null || clip.ParentVideoId is null
+                || clip.ClipStartSeconds is null || clip.ClipEndSeconds is null)
+                return Results.NotFound();
+
+            var parent = await db.Videos.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == clip.ParentVideoId, ct);
+            if (parent is null || !File.Exists(parent.FilePath))
+                return Results.NotFound();
+
+            var snapped = await exporter.GetSnappedStartAsync(
+                parent.FilePath, clip.ClipStartSeconds.Value, ct);
+            return Results.Ok(new KeyframeCutDto(
+                clip.ClipStartSeconds.Value, snapped, clip.ClipEndSeconds.Value));
+        }).Produces<KeyframeCutDto>(StatusCodes.Status200OK)
+          .WithName("GetClipKeyframeCut");
+
+        // POST /api/clips-export — start a background export of the given clips
+        // (issue #69). 202 with progress; 409 if a run is already going.
+        api.MapPost("/clips-export", async (
+            ExportClipsRequest req, ClipExportService exporter,
+            ClipExportProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.ClipIds ?? Array.Empty<Guid>();
+            if (ids.Count == 0) return Results.BadRequest(new { error = "No clips selected." });
+
+            var result = await exporter.TryStartAsync(ids, ct);
+            return result switch
+            {
+                ClipExportService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "A clip export is already running." }),
+                ClipExportService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected clips can be exported." }),
+                _ => Results.Json(ToClipExportDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<ClipExportProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartClipExport");
+
+        // GET /api/clips-export — poll the export run's progress.
+        api.MapGet("/clips-export", (ClipExportProgress progress) =>
+            Results.Ok(ToClipExportDto(progress.Snapshot())))
+          .Produces<ClipExportProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetClipExportProgress");
+
+        // POST /api/clips-export/stop — ask the running export to stop after the
+        // current clip (already-exported clips stay exported).
+        api.MapPost("/clips-export/stop", (ClipExportProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToClipExportDto(progress.Snapshot()));
+        }).Produces<ClipExportProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopClipExport");
 
         api.MapGet("/videos/marked-for-deletion", async (
             VideoOrganizerDbContext db, CancellationToken ct) =>

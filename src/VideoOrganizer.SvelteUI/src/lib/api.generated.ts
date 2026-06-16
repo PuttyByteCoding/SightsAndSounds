@@ -884,6 +884,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/clips-export/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetClipExportQueue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/videos/{clipId}/keyframe-cut": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetClipKeyframeCut"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/clips-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetClipExportProgress"];
+        put?: never;
+        post: operations["StartClipExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/clips-export/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["StopClipExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/videos/marked-for-deletion": {
         parameters: {
             query?: never;
@@ -1854,6 +1918,24 @@ export interface components {
             offset: number;
             comment: null | string;
         };
+        ClipExportProgressDto: {
+            active: boolean;
+            /** Format: int32 */
+            total: number;
+            /** Format: int32 */
+            done: number;
+            current: string;
+            phase: string;
+            errors: string[];
+        };
+        ClipExportQueueItemDto: {
+            /** Format: uuid */
+            parentId: string;
+            parentFileName: string;
+            /** Format: double */
+            parentDurationSeconds: number;
+            clips: components["schemas"]["ClipSummaryDto"][];
+        };
         ClipSummaryDto: {
             /** Format: uuid */
             id: string;
@@ -1862,6 +1944,7 @@ export interface components {
             clipStartSeconds: number;
             /** Format: double */
             clipEndSeconds: number;
+            exported: boolean;
         };
         CreateClipRequest: {
             /** Format: double */
@@ -1955,6 +2038,9 @@ export interface components {
         };
         /** @enum {string} */
         DuplicateStatusDto: "pending" | "confirmed" | "rejected";
+        ExportClipsRequest: {
+            clipIds: string[];
+        };
         ExtraDiskFileDto: {
             filePath: string;
             fileName: string;
@@ -2121,6 +2207,14 @@ export interface components {
             pending: number;
             /** Format: int32 */
             failed: number;
+        };
+        KeyframeCutDto: {
+            /** Format: double */
+            requestedStartSeconds: number;
+            /** Format: double */
+            snappedStartSeconds: number;
+            /** Format: double */
+            endSeconds: number;
         };
         LogEvent: {
             /** Format: date-time */
@@ -2535,6 +2629,9 @@ export interface components {
             clipStartSeconds?: null | number;
             /** Format: double */
             clipEndSeconds?: null | number;
+            clipExported?: boolean;
+            /** Format: uuid */
+            exportedToVideoId?: null | string;
             /** Format: double */
             ocrScannedThroughSeconds?: null | number;
             chapterMarkers?: components["schemas"]["ChapterMarker"][];
@@ -3954,6 +4051,112 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    GetClipExportQueue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClipExportQueueItemDto"][];
+                };
+            };
+        };
+    };
+    GetClipKeyframeCut: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                clipId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyframeCutDto"];
+                };
+            };
+        };
+    };
+    GetClipExportProgress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClipExportProgressDto"];
+                };
+            };
+        };
+    };
+    StartClipExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportClipsRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClipExportProgressDto"];
+                };
+            };
+        };
+    };
+    StopClipExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClipExportProgressDto"];
+                };
             };
         };
     };

@@ -195,6 +195,10 @@ builder.Services.AddSingleton<OcrService>();
 // live-progress singleton, polled by the player's "Scan for text" panel.
 builder.Services.AddSingleton<OcrScanProgress>();
 builder.Services.AddSingleton<OcrScanService>();
+// Clip export (issue #69): stream-copy clips to standalone files in the
+// background + a live-progress singleton polled by the clips-export page.
+builder.Services.AddSingleton<ClipExportProgress>();
+builder.Services.AddSingleton<ClipExportService>();
 
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
