@@ -8,4 +8,8 @@ public record ClipSummaryDto(
     System.Guid Id,
     string FileName,
     double ClipStartSeconds,
-    double ClipEndSeconds);
+    double ClipEndSeconds,
+    // True once this clip has been exported to its own standalone file (#69):
+    // the scrubber still draws a band here, but styled as an "exported"
+    // breadcrumb rather than a normal clip.
+    bool Exported);

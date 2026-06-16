@@ -88,6 +88,16 @@ public class Video
     public double? ClipStartSeconds { get; set; }
     public double? ClipEndSeconds { get; set; }
 
+    // Clip export (issue #69). When a clip (a child row with ParentVideoId) is
+    // exported to its own standalone file, the source clip row is NOT deleted —
+    // it's marked exported so it (a) disappears from the library/export queue
+    // and (b) still lets the parent's scrubber draw a breadcrumb band showing
+    // "a clip was exported from here". ExportedToVideoId points at the new
+    // standalone Video created from this clip (a soft reference — no FK, so
+    // deleting the export just leaves the breadcrumb pointing nowhere).
+    public bool ClipExported { get; set; }
+    public Guid? ExportedToVideoId { get; set; }
+
     // How far (in seconds) a full-video OCR text scan has reached (issue #5).
     // Null = never scanned. The scan is resumable: "Scan more" continues from
     // here rather than re-reading frames already covered. Tracked separately
