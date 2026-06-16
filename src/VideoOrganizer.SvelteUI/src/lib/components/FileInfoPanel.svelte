@@ -14,9 +14,45 @@
   interface Props {
     show: boolean;
     video: Video | null;
+    // When provided, the File Name row gets an inline rename control (#172).
+    // The host performs the rename and refreshes the video.
+    onRename?: (newName: string) => Promise<void>;
   }
 
-  let { show = $bindable(), video }: Props = $props();
+  let { show = $bindable(), video, onRename }: Props = $props();
+
+  // Inline rename state (#172).
+  let renaming = $state(false);
+  let renameValue = $state('');
+  let renameBusy = $state(false);
+  let renameError = $state<string | null>(null);
+
+  function startRename() {
+    if (!video) return;
+    // Pre-fill with the base name (no extension) — the server keeps the ext.
+    const name = video.fileName;
+    const dot = name.lastIndexOf('.');
+    renameValue = dot > 0 ? name.slice(0, dot) : name;
+    renameError = null;
+    renaming = true;
+  }
+  function cancelRename() {
+    renaming = false;
+    renameError = null;
+  }
+  async function commitRename() {
+    if (!onRename || renameBusy || renameValue.trim().length === 0) return;
+    renameBusy = true;
+    renameError = null;
+    try {
+      await onRename(renameValue.trim());
+      renaming = false;
+    } catch (e) {
+      renameError = e instanceof Error ? e.message : String(e);
+    } finally {
+      renameBusy = false;
+    }
+  }
 
   // Persisted widths for the key/value table. The Field column was
   // previously fixed at `w-40` (160px); Value flowed from content.
@@ -110,7 +146,33 @@
         </tr>
       </thead>
       <tbody>
-        <tr><td class="font-medium">File Name</td><td class="break-all">{video.fileName}</td></tr>
+        <tr>
+          <td class="font-medium">File Name</td>
+          <td class="break-all">
+            {#if renaming}
+              <div class="flex flex-col gap-1">
+                <input
+                  class="input input-bordered input-xs w-full"
+                  bind:value={renameValue}
+                  disabled={renameBusy}
+                  onkeydown={(e) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') cancelRename(); }}
+                />
+                <div class="flex gap-1">
+                  <button class="btn btn-xs btn-primary" onclick={commitRename} disabled={renameBusy}>
+                    {#if renameBusy}<span class="loading loading-spinner loading-xs"></span>{/if}Save
+                  </button>
+                  <button class="btn btn-xs btn-ghost" onclick={cancelRename} disabled={renameBusy}>Cancel</button>
+                </div>
+                {#if renameError}<div class="text-xs text-error">{renameError}</div>{/if}
+              </div>
+            {:else}
+              <span>{video.fileName}</span>
+              {#if onRename}
+                <button class="btn btn-ghost btn-xs ml-1" title="Rename file" onclick={startRename}>✎</button>
+              {/if}
+            {/if}
+          </td>
+        </tr>
         <tr><td class="font-medium">File Size</td><td>{formatBytes(video.fileSize)}</td></tr>
         <tr><td class="font-medium">MD5</td><td class="font-mono text-xs break-all">{orDash(video.md5)}</td></tr>
         <tr><td class="font-medium">Duration</td><td>{orDash(video.duration)}</td></tr>

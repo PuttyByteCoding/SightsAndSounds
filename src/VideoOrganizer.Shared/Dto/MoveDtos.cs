@@ -5,6 +5,11 @@ namespace VideoOrganizer.Shared.Dto;
 // sources). (issue #4)
 public record MoveVideoRequest(string TargetDirectory);
 
+// POST /api/videos/{id}/rename — rename the video's file in place (same
+// folder, new name). NewName is the base name; the original extension is
+// kept. (issue #172)
+public record RenameVideoRequest(string NewName);
+
 // A logged file move, surfaced on the Moves list with an Undo action.
 // RevertedAt is null while the move can still be undone.
 public record FileMoveLogDto(

@@ -281,6 +281,13 @@ export const api = {
   unmarkClip: (id: string) =>
     request<void>(`/api/videos/${id}/unmark-clip`, { method: 'POST' }),
 
+  // Rename the video's file in place (same folder, new base name). (#172)
+  renameVideo: (id: string, newName: string) =>
+    request<Video>(`/api/videos/${id}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ newName })
+    }),
+
   markForDeletion: (id: string) =>
     request<Video>(`/api/videos/${id}/mark-for-deletion`, { method: 'POST' }),
   unmarkForDeletion: (id: string) =>

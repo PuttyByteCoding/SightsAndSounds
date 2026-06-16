@@ -612,6 +612,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/videos/{id}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["RenameVideo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/videos/{id}/move-progress": {
         parameters: {
             query?: never;
@@ -2542,6 +2558,9 @@ export interface components {
             /** Format: int32 */
             removed: number;
         };
+        RenameVideoRequest: {
+            newName: string;
+        };
         ReRootPreview: {
             /** Format: int32 */
             totalAffected: number;
@@ -3793,6 +3812,32 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["MoveVideoRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VideoDto"];
+                };
+            };
+        };
+    };
+    RenameVideo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameVideoRequest"];
             };
         };
         responses: {
