@@ -6,6 +6,8 @@
   // bottom; selected video's player + its hide timeline in the centre.
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/api';
+  import { handleVideoKey } from '$lib/videoKeyboard';
+  import { playbackSettings } from '$lib/playbackSettings.svelte';
   import type { BlockRemovalQueueItem, BlockRemovalProgress, VideoBlock } from '$lib/types';
 
   let queue = $state<BlockRemovalQueueItem[]>([]);
@@ -27,6 +29,16 @@
     progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
   );
   const selectedCount = $derived(selectedIds.size);
+
+  // Player keyboard shortcuts (#70 follow-up): drive the focused video, or the
+  // selected video's player otherwise, with the app's seek scheme.
+  let selectedVideoEl = $state<HTMLVideoElement | null>(null);
+  function onPlaybackKey(e: KeyboardEvent) {
+    const ae = document.activeElement;
+    if (ae && ['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA'].includes(ae.tagName)) return;
+    const el = ae instanceof HTMLVideoElement ? ae : selectedVideoEl;
+    handleVideoKey(e, el, playbackSettings);
+  }
 
   function fmt(t: number): string {
     if (!isFinite(t) || t < 0) t = 0;
@@ -160,6 +172,8 @@
   }
 </script>
 
+<svelte:window onkeydowncapture={onPlaybackKey} />
+
 <div class="flex flex-col h-[calc(100vh-3.5rem)]">
   <div class="flex items-center gap-3 flex-wrap p-3 border-b border-base-300">
     <h1 class="text-lg font-semibold">Remove Blocked Sections</h1>
@@ -231,7 +245,7 @@
             </span>
           </div>
           <!-- svelte-ignore a11y_media_has_caption -->
-          <video class="w-full max-h-[55vh] bg-black rounded" src={api.streamUrl(selected.videoId)} controls preload="metadata"></video>
+          <video class="w-full max-h-[55vh] bg-black rounded" src={api.streamUrl(selected.videoId)} controls preload="metadata" bind:this={selectedVideoEl}></video>
           <!-- Hide timeline: red bands over the full duration. -->
           <div class="relative h-3 bg-base-300 rounded overflow-hidden">
             {#each selected.hideBlocks as b, i (i)}

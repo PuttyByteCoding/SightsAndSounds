@@ -22,6 +22,7 @@
     isTypingTarget,
     type PlaybackAction
   } from '$lib/playerKeyboard';
+  import { handleVideoKey } from '$lib/videoKeyboard';
   import type { Tag, Video, FfprobeResult, ClipSummary, TagSuggestion } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
@@ -2061,6 +2062,13 @@
         e.preventDefault();
         e.stopPropagation();
         togglePreviewPlay();
+        return;
+      }
+      // Playback navigation (numpad / Shift+digit / plain-digit seeks) drives
+      // the PREVIEW video, not the hidden main player (#69 follow-up). Numpad
+      // fires even while naming the clip; plain digits still type into the name.
+      if (handleVideoKey(e, previewVideoEl, playbackSettings)) {
+        e.stopPropagation();
         return;
       }
       // Any other key while focus is in the name input: let it through

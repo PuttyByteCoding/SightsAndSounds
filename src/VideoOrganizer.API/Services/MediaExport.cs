@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using Microsoft.EntityFrameworkCore;
 using VideoOrganizer.Domain.Models;
 using VideoOrganizer.Import.Services;
+using VideoOrganizer.Infrastructure.Data;
 using Xabe.FFmpeg;
 
 namespace VideoOrganizer.API.Services;
@@ -73,6 +75,32 @@ public static class MediaExport
         }
         video.VideoDimensionFormat = VideoDimensionFormatHelper.GetDimensionFormat(video.Height, video.Width);
         return video;
+    }
+
+    // Find an existing tag by name (any group) or create it in the named group
+    // (creating the group too if needed). Used to stamp produced files: "Clip"
+    // on exported clips (#69), "Trimmed" on block-removed files (#70).
+    public static async Task<Guid> GetOrCreateTagAsync(
+        VideoOrganizerDbContext db, string tagName, string groupName, CancellationToken ct)
+    {
+        var lowered = tagName.ToLower();
+        var existing = await db.Tags
+            .Where(t => t.Name.ToLower() == lowered)
+            .Select(t => t.Id)
+            .FirstOrDefaultAsync(ct);
+        if (existing != Guid.Empty) return existing;
+
+        var groupLower = groupName.ToLower();
+        var group = await db.TagGroups.FirstOrDefaultAsync(g => g.Name.ToLower() == groupLower, ct);
+        if (group is null)
+        {
+            group = new TagGroup { Id = Guid.NewGuid(), Name = groupName, AllowMultiple = true };
+            db.TagGroups.Add(group);
+        }
+        var tag = new Tag { Id = Guid.NewGuid(), Name = tagName, TagGroupId = group.Id };
+        db.Tags.Add(tag);
+        await db.SaveChangesAsync(ct);
+        return tag.Id;
     }
 
     // Run ffmpeg with the given args (quiet/overwrite flags prepended). The
