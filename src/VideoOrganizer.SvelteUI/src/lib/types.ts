@@ -132,6 +132,10 @@ export type ClipExportQueueItem = S['ClipExportQueueItemDto'];
 export type ClipExportProgress = S['ClipExportProgressDto'];
 export type KeyframeCut = S['KeyframeCutDto'];
 
+// Block removal (issue #70).
+export type BlockRemovalQueueItem = S['BlockRemovalQueueItemDto'];
+export type BlockRemovalProgress = S['BlockRemovalProgressDto'];
+
 // --- Filtering -------------------------------------------------------------
 
 export type FilterRefType = S['FilterRefType'];

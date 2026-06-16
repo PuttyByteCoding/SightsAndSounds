@@ -127,12 +127,12 @@ public sealed class ClipExportService
 
         var start = clip.ClipStartSeconds.Value;
         var duration = Math.Max(0.05, clip.ClipEndSeconds.Value - start);
-        var outPath = ComputeOutputPath(parent.FilePath);
+        var outPath = MediaExport.ComputeOutputPath(parent.FilePath, "_clip");
 
         // ffmpeg stream-copy the [start, start+duration] range. -ss before -i is
         // a fast input seek that snaps to the keyframe at/before start; -c copy
         // avoids any re-encode. -map 0:v?/0:a? carries the video + audio streams.
-        await RunFfmpegAsync(ct,
+        await MediaExport.RunFfmpegAsync(ct,
             "-ss", start.ToString("0.###", CultureInfo.InvariantCulture),
             "-i", parent.FilePath,
             "-t", duration.ToString("0.###", CultureInfo.InvariantCulture),
@@ -143,7 +143,7 @@ public sealed class ClipExportService
             throw new InvalidOperationException("ffmpeg produced no output file.");
 
         // Ingest the new file as a fresh top-level video.
-        var newVideo = await BuildVideoFromFileAsync(outPath, jobId, ct);
+        var newVideo = await MediaExport.BuildVideoFromFileAsync(_metadata, outPath, jobId, _logger, ct);
 
         // Copy the clip's tags, then ensure the "Clip" tag is present.
         var clipTagId = await GetOrCreateClipTagAsync(db, ct);
@@ -162,66 +162,6 @@ public sealed class ClipExportService
         await db.SaveChangesAsync(ct);
         _logger.LogInformation("Exported clip {ClipId} -> {Path} ({NewId})", clipId, outPath, newVideo.Id);
         return Path.GetFileName(outPath);
-    }
-
-    // "<dir>/<stem>_clip<ext>", then "_clip-2", "_clip-3"… so multiple clips of
-    // one parent never collide or overwrite an existing file.
-    private static string ComputeOutputPath(string parentPath)
-    {
-        var dir = Path.GetDirectoryName(parentPath) ?? ".";
-        var stem = Path.GetFileNameWithoutExtension(parentPath);
-        var ext = Path.GetExtension(parentPath);
-        for (var i = 1; ; i++)
-        {
-            var suffix = i == 1 ? "_clip" : $"_clip-{i}";
-            var candidate = Path.Combine(dir, $"{stem}{suffix}{ext}");
-            if (!File.Exists(candidate)) return candidate;
-        }
-    }
-
-    private async Task<Video> BuildVideoFromFileAsync(string path, Guid jobId, CancellationToken ct)
-    {
-        var info = new FileInfo(path);
-        var video = new Video
-        {
-            Id = Guid.NewGuid(),
-            FileName = Path.GetFileName(path),
-            FilePath = path,
-            Md5 = null,                 // backfilled by the worker, like any import
-            FileSize = info.Length,
-            IngestDate = DateTime.UtcNow,
-            VideoQuality = VideoQuality.NotChecked,
-            CameraType = CameraTypes.NotChecked,
-            ImportJobId = jobId,
-            NeedsReview = true,
-        };
-
-        try
-        {
-            using var metaCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            metaCts.CancelAfter(TimeSpan.FromSeconds(30));
-            var m = await _metadata.GetMetadataAsync(path, metaCts.Token);
-            if (m != null)
-            {
-                video.Duration = m.Duration ?? TimeSpan.Zero;
-                video.Height = m.Height ?? 0;
-                video.Width = m.Width ?? 0;
-                video.VideoCodec = CodecHelper.GetVideoCodec(m.VideoCodec ?? string.Empty);
-                video.Bitrate = m.VideoBitrate ?? 0;
-                video.FrameRate = m.FrameRate ?? 0;
-                video.PixelFormat = m.PixelFormat ?? string.Empty;
-                video.Ratio = m.Ratio ?? string.Empty;
-                video.CreationTime = m.CreationTime;
-                video.VideoStreamCount = m.VideoStreamCount ?? 0;
-                video.AudioStreamCount = m.AudioStreamCount ?? 0;
-            }
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            _logger.LogWarning("Timed out probing exported file {Path}", path);
-        }
-        video.VideoDimensionFormat = VideoDimensionFormatHelper.GetDimensionFormat(video.Height, video.Width);
-        return video;
     }
 
     // Find an existing "Clip" tag (any group) or create one in a "Clips" group.
@@ -255,7 +195,7 @@ public sealed class ClipExportService
         var from = Math.Max(0, requestedStart - 15);
         var psi = new ProcessStartInfo
         {
-            FileName = ResolveTool("ffprobe"),
+            FileName = MediaExport.ResolveTool("ffprobe"),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -290,48 +230,5 @@ public sealed class ClipExportService
         {
             return requestedStart;
         }
-    }
-
-    private static async Task RunFfmpegAsync(CancellationToken ct, params string[] args)
-    {
-        var psi = new ProcessStartInfo
-        {
-            FileName = ResolveTool("ffmpeg"),
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        psi.ArgumentList.Add("-hide_banner");
-        psi.ArgumentList.Add("-loglevel");
-        psi.ArgumentList.Add("error");
-        psi.ArgumentList.Add("-y");
-        foreach (var a in args) psi.ArgumentList.Add(a);
-
-        using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("could not start ffmpeg");
-        using var kill = ct.Register(() =>
-        {
-            try { proc.Kill(entireProcessTree: true); } catch { /* already exited */ }
-        });
-        var stderr = await proc.StandardError.ReadToEndAsync(ct);
-        await proc.WaitForExitAsync(ct);
-        if (proc.ExitCode != 0)
-        {
-            var tail = stderr.Length > 800 ? stderr[^800..] : stderr;
-            throw new InvalidOperationException($"ffmpeg failed (exit {proc.ExitCode}): {tail}");
-        }
-    }
-
-    // ffmpeg/ffprobe live where Xabe was pointed (Program.cs bundled dir; tests
-    // point at system binaries). Fall back to PATH if unset.
-    private static string ResolveTool(string name)
-    {
-        var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        var dir = FFmpeg.ExecutablesPath;
-        if (!string.IsNullOrEmpty(dir))
-        {
-            var p = Path.Combine(dir, exe);
-            if (File.Exists(p)) return p;
-        }
-        return exe;
     }
 }

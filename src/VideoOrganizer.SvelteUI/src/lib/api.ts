@@ -53,6 +53,8 @@ import type {
   ClipExportQueueItem,
   ClipExportProgress,
   KeyframeCut,
+  BlockRemovalQueueItem,
+  BlockRemovalProgress,
   MissingVideoFile,
   PurgeMissingFilesResult,
   ExtraDiskFile,
@@ -319,6 +321,19 @@ export const api = {
     request<ClipExportProgress>(`/api/clips-export`),
   stopClipExport: () =>
     request<ClipExportProgress>(`/api/clips-export/stop`, { method: 'POST' }),
+
+  // --- Remove blocked sections (issue #70) -------------------------------
+  getBlockRemovalQueue: () =>
+    request<BlockRemovalQueueItem[]>(`/api/remove-blocks/queue`),
+  startBlockRemoval: (videoIds: string[]) =>
+    request<BlockRemovalProgress>(`/api/remove-blocks`, {
+      method: 'POST',
+      body: JSON.stringify({ videoIds })
+    }),
+  getBlockRemovalProgress: () =>
+    request<BlockRemovalProgress>(`/api/remove-blocks`),
+  stopBlockRemoval: () =>
+    request<BlockRemovalProgress>(`/api/remove-blocks/stop`, { method: 'POST' }),
 
   // --- Data validation ---------------------------------------------------
   // Video rows whose FilePath no longer resolves on disk. By default
