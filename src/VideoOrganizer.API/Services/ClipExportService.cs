@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using VideoOrganizer.Domain.Models;
 using VideoOrganizer.Import.Services;
 using VideoOrganizer.Infrastructure.Data;
+using VideoOrganizer.Shared.Dto;
 using Xabe.FFmpeg;
 
 namespace VideoOrganizer.API.Services;
@@ -42,28 +43,37 @@ public sealed class ClipExportService
 
     public enum StartResult { Started, AlreadyRunning, NothingToDo }
 
-    public async Task<StartResult> TryStartAsync(IReadOnlyList<Guid> clipIds, CancellationToken ct)
+    public async Task<StartResult> TryStartAsync(IReadOnlyList<ExportClipItem> items, CancellationToken ct)
     {
         if (_progress.IsActive) return StartResult.AlreadyRunning;
 
+        var ids = items.Select(i => i.ClipId).ToList();
         List<Guid> valid;
         using (var scope = _scopeFactory.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<VideoOrganizerDbContext>();
             valid = await db.Videos.AsNoTracking()
-                .Where(v => clipIds.Contains(v.Id) && v.ParentVideoId != null && !v.ClipExported
+                .Where(v => ids.Contains(v.Id) && v.ParentVideoId != null && !v.ClipExported
+                    && !v.MarkedForDeletion
                     && v.ClipStartSeconds != null && v.ClipEndSeconds != null)
                 .Select(v => v.Id)
                 .ToListAsync(ct);
         }
         if (valid.Count == 0) return StartResult.NothingToDo;
 
+        // Per-clip chosen names (#173); last write wins on dupes.
+        var validSet = valid.ToHashSet();
+        var nameById = items
+            .Where(i => validSet.Contains(i.ClipId))
+            .GroupBy(i => i.ClipId)
+            .ToDictionary(g => g.Key, g => g.Last().Name);
+
         _progress.Begin(valid.Count);
-        _ = Task.Run(() => RunExportAsync(valid));
+        _ = Task.Run(() => RunExportAsync(valid, nameById));
         return StartResult.Started;
     }
 
-    private async Task RunExportAsync(List<Guid> clipIds)
+    private async Task RunExportAsync(List<Guid> clipIds, Dictionary<Guid, string?> nameById)
     {
         var ct = _lifetime.ApplicationStopping;
         // One import job id groups this run's new files in the Background Tasks UI.
@@ -76,7 +86,7 @@ public sealed class ClipExportService
                 if (_progress.StopRequested || ct.IsCancellationRequested) break;
                 try
                 {
-                    var name = await ExportOneAsync(clipId, jobId, ct);
+                    var name = await ExportOneAsync(clipId, nameById.GetValueOrDefault(clipId), jobId, ct);
                     _progress.SetCurrent(name);
                     producedAny = true;
                 }
@@ -105,7 +115,7 @@ public sealed class ClipExportService
         }
     }
 
-    private async Task<string> ExportOneAsync(Guid clipId, Guid jobId, CancellationToken ct)
+    private async Task<string> ExportOneAsync(Guid clipId, string? desiredName, Guid jobId, CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<VideoOrganizerDbContext>();
@@ -127,7 +137,10 @@ public sealed class ClipExportService
 
         var start = clip.ClipStartSeconds.Value;
         var duration = Math.Max(0.05, clip.ClipEndSeconds.Value - start);
-        var outPath = MediaExport.ComputeOutputPath(parent.FilePath, "_clip");
+        // User-chosen name (#173), else the default "<parent>_clip".
+        var outPath = string.IsNullOrWhiteSpace(desiredName)
+            ? MediaExport.ComputeOutputPath(parent.FilePath, "_clip")
+            : MediaExport.ComputeNamedOutputPath(parent.FilePath, desiredName!);
 
         // ffmpeg stream-copy the [start, start+duration] range. -ss before -i is
         // a fast input seek that snaps to the keyframe at/before start; -c copy
@@ -145,12 +158,12 @@ public sealed class ClipExportService
         // Ingest the new file as a fresh top-level video.
         var newVideo = await MediaExport.BuildVideoFromFileAsync(_metadata, outPath, jobId, _logger, ct);
 
-        // Copy the clip's tags, then ensure the "Clip" tag is present.
-        var clipTagId = await MediaExport.GetOrCreateTagAsync(db, "Clip", "Clips", ct);
-        var tagIds = clip.VideoTags.Select(t => t.TagId).ToHashSet();
-        tagIds.Add(clipTagId);
-        foreach (var tid in tagIds)
-            newVideo.VideoTags.Add(new VideoTag { TagId = tid });
+        // Carry the clip's tags, and flag the new file as a Clip / Exported
+        // clip (#167) — flags, not tags.
+        foreach (var t in clip.VideoTags)
+            newVideo.VideoTags.Add(new VideoTag { TagId = t.TagId });
+        newVideo.IsClip = true;
+        newVideo.IsExportedClip = true;
 
         db.Videos.Add(newVideo);
 

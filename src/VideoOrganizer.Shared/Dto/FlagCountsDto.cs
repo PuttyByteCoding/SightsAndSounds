@@ -5,12 +5,15 @@ namespace VideoOrganizer.Shared.Dto;
 // the Flags section of the browse-page filter sidebar so the user
 // can see how many rows would match before applying the filter.
 //
-// IsClip is structural (ParentVideoId.HasValue) rather than a real
-// column, but it's surfaced through the same UI as the other flags
-// so the user can filter clips in / out without leaving the tree.
+// Clip is the umbrella (embedded OR user-marked OR exported); Embedded is
+// the structural child-clip subset (ParentVideoId.HasValue); Exported and
+// Edited are the produced-file flags (#69/#70/#167).
 public record FlagCountsDto(
     int Favorite,
     int NeedsReview,
     int PlaybackIssue,
     int MarkedForDeletion,
-    int IsClip);
+    int Clip,
+    int Embedded,
+    int Exported,
+    int Edited);

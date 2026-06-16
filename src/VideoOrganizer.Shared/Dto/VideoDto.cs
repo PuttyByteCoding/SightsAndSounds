@@ -42,6 +42,8 @@ public record VideoDto(
     double? ClipStartSeconds,
     double? ClipEndSeconds,
     bool IsClip,
+    bool IsExportedClip,
+    bool IsEdited,
     IReadOnlyList<ChapterMarkerDto> ChapterMarkers,
     IReadOnlyList<VideoBlockDto> VideoBlocks,
     IReadOnlyList<VideoTagSummaryDto> Tags,

@@ -72,7 +72,7 @@ public sealed class ClipExportTests
 
             // Export it.
             var start = await _api.Client.PostAsJsonAsync("/api/clips-export",
-                new { clipIds = new[] { clipId } });
+                new { clips = new[] { new { clipId, name = (string?)null } } });
             Assert.Equal(HttpStatusCode.Accepted, start.StatusCode);
 
             ExportProgress? prog = null;
@@ -101,9 +101,12 @@ public sealed class ClipExportTests
                 Assert.NotNull(exported);
                 Assert.Null(exported!.ParentVideoId);               // top-level, not a clip
                 Assert.True(exported.Duration > TimeSpan.Zero);     // ffprobe ran
+                // Clip / Exported are flags now (#167), not tags.
+                Assert.True(exported.IsClip);
+                Assert.True(exported.IsExportedClip);
                 var names = exported.VideoTags.Select(t => t.Tag!.Name).ToList();
-                Assert.Contains("Clip", names);
-                Assert.Contains("tag-" + token, names);
+                Assert.DoesNotContain("Clip", names);               // no auto tag
+                Assert.Contains("tag-" + token, names);             // inherited tag still copied
 
                 // Source clip is marked exported and points at the new video.
                 var src = await db.Videos.AsNoTracking().FirstAsync(v => v.Id == clipId);
@@ -129,6 +132,57 @@ public sealed class ClipExportTests
                 await db.Tags.Where(t => t.Id == tagId).ExecuteDeleteAsync();
                 await db.TagGroups.Where(g => g.Id == groupId).ExecuteDeleteAsync();
             });
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [SkippableFact]
+    public async Task Export_uses_the_chosen_name_for_the_output_file()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        Skip.IfNot(TestFfmpeg.Available, "ffmpeg not available");
+
+        var token = Guid.NewGuid().ToString("N")[..8];
+        var dir = Path.Combine(Path.GetTempPath(), "sas-clipname-" + token);
+        Directory.CreateDirectory(dir);
+        var parentPath = Path.Combine(dir, "source.mp4");
+        var parentId = Guid.NewGuid();
+        var clipId = Guid.NewGuid();
+        var chosen = "beach-sunset-" + token;
+
+        try
+        {
+            await MakeVideoAsync(parentPath, seconds: 6);
+            await _api.WithDbAsync(async db =>
+            {
+                db.Videos.Add(new Video { Id = parentId, FileName = "source.mp4", FilePath = parentPath, Duration = TimeSpan.FromSeconds(6) });
+                db.Videos.Add(new Video
+                {
+                    Id = clipId, FileName = "c", FilePath = parentPath, ParentVideoId = parentId,
+                    ClipStartSeconds = 1.0, ClipEndSeconds = 3.0, Duration = TimeSpan.FromSeconds(2),
+                });
+                await db.SaveChangesAsync();
+            });
+
+            var start = await _api.Client.PostAsJsonAsync("/api/clips-export",
+                new { clips = new[] { new { clipId, name = chosen } } });
+            Assert.Equal(HttpStatusCode.Accepted, start.StatusCode);
+
+            for (var i = 0; i < 120; i++)
+            {
+                await Task.Delay(500);
+                var p = await _api.Client.GetFromJsonAsync<ExportProgress>("/api/clips-export");
+                if (p is { active: false }) break;
+            }
+
+            // Output keeps the parent's extension and uses the chosen base name.
+            Assert.True(File.Exists(Path.Combine(dir, chosen + ".mp4")),
+                $"expected {chosen}.mp4 on disk");
+        }
+        finally
+        {
+            await _api.WithDbAsync(async db =>
+                await db.Videos.Where(v => v.Id == parentId || v.FilePath.StartsWith(dir)).ExecuteDeleteAsync());
             try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
         }
     }

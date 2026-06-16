@@ -88,6 +88,19 @@ public class Video
     public double? ClipStartSeconds { get; set; }
     public double? ClipEndSeconds { get; set; }
 
+    // Clip / edit classification flags (#167). Surfaced in the browse "Flags"
+    // sidebar (Status filter), not tags.
+    //   IsClip         — the umbrella "this is a clip" flag. User-settable (so
+    //                    imported standalone clips can be marked), and auto-set
+    //                    on embedded clips (CreateClip) and exported clips. The
+    //                    Clip filter is the union ParentVideoId|IsClip|IsExportedClip,
+    //                    so embedded/exported clips count even on old rows.
+    //   IsExportedClip — this file was exported from a parent's clip range (#69).
+    //   IsEdited       — this file is the output of removing "Hide" blocks (#70).
+    public bool IsClip { get; set; }
+    public bool IsExportedClip { get; set; }
+    public bool IsEdited { get; set; }
+
     // Clip export (issue #69). When a clip (a child row with ParentVideoId) is
     // exported to its own standalone file, the source clip row is NOT deleted —
     // it's marked exported so it (a) disappears from the library/export queue

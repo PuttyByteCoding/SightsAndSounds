@@ -79,7 +79,8 @@ public static partial class ApiEndpoints
             v.WatchCount, v.Notes,
             v.NeedsReview, v.PlaybackIssue, v.MarkedForDeletion, v.IsFavorite,
             v.ParentVideoId, v.ClipStartSeconds, v.ClipEndSeconds,
-            v.ParentVideoId.HasValue,
+            v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip, // Clip umbrella (#167)
+            v.IsExportedClip, v.IsEdited,
             v.ChapterMarkers.Select(c => new ChapterMarkerDto(c.Offset, c.Comment)).ToList(),
             v.VideoBlocks.Select(b => new VideoBlockDto(
                 b.OffsetInSeconds, b.LengthInSeconds, (Shared.Dto.VideoBlockTypes)(int)b.VideoBlockType)).ToList(),
@@ -747,11 +748,13 @@ public static partial class ApiEndpoints
                     "playbackIssue" => v.PlaybackIssue,
                     "markedForDeletion" => v.MarkedForDeletion,
                     "favorite" => v.IsFavorite,
-                    // "isClip" reads off the structural ParentVideoId
-                    // — a Video row is a clip iff it has a parent. No
-                    // separate boolean column; clips are flagged
-                    // automatically when CreateClip inserts the row.
-                    "isClip" => v.ParentVideoId.HasValue,
+                    // Clip flags (#167): "clip" is the umbrella (embedded child
+                    // OR user-marked OR exported); the others narrow it.
+                    "clip" => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip,
+                    "embedded" => v.ParentVideoId.HasValue,
+                    "exported" => v.IsExportedClip,
+                    "edited" => v.IsEdited,
+                    "isClip" => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip, // back-compat
                     _ => false
                 };
             default:
@@ -1585,20 +1588,23 @@ public static partial class ApiEndpoints
         {
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (enabledRoots.Count == 0)
-                return Results.Ok(new FlagCountsDto(0, 0, 0, 0, 0));
+                return Results.Ok(new FlagCountsDto(0, 0, 0, 0, 0, 0, 0, 0));
             var scoped = db.Videos.AsNoTracking()
                 .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
-            // Five small COUNT queries against indexed boolean / FK
-            // columns — Postgres handles this in milliseconds. Doing
-            // them sequentially (rather than as a single grouped
-            // aggregate) keeps the EF translation stable.
+            // Small COUNT queries against indexed boolean / FK columns —
+            // Postgres handles these in milliseconds. Sequential (rather than
+            // one grouped aggregate) keeps the EF translation stable.
             var favorite = await scoped.CountAsync(v => v.IsFavorite, ct);
             var needsReview = await scoped.CountAsync(v => v.NeedsReview, ct);
             var playbackIssue = await scoped.CountAsync(v => v.PlaybackIssue, ct);
             var markedForDeletion = await scoped.CountAsync(v => v.MarkedForDeletion, ct);
-            var isClip = await scoped.CountAsync(v => v.ParentVideoId.HasValue, ct);
+            // Clip is the umbrella: embedded (child) OR user-marked OR exported.
+            var clip = await scoped.CountAsync(v => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip, ct);
+            var embedded = await scoped.CountAsync(v => v.ParentVideoId.HasValue, ct);
+            var exported = await scoped.CountAsync(v => v.IsExportedClip, ct);
+            var edited = await scoped.CountAsync(v => v.IsEdited, ct);
             return Results.Ok(new FlagCountsDto(
-                favorite, needsReview, playbackIssue, markedForDeletion, isClip));
+                favorite, needsReview, playbackIssue, markedForDeletion, clip, embedded, exported, edited));
         }).Produces<FlagCountsDto>(StatusCodes.Status200OK)
           .WithName("GetFlagCounts");
 
@@ -2530,6 +2536,28 @@ public static partial class ApiEndpoints
             return Results.NoContent();
         }).WithName("UnmarkVideoFavorite");
 
+        // Clip flag (#167) — user-settable umbrella so imported standalone clips
+        // can be marked. (Embedded/exported clips are flagged automatically.)
+        api.MapPost("/videos/{id:guid}/mark-clip", async (
+            Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var v = await db.Videos.FindAsync(new object[] { id }, ct);
+            if (v is null) return Results.NotFound();
+            v.IsClip = true;
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        }).WithName("MarkVideoClip");
+
+        api.MapPost("/videos/{id:guid}/unmark-clip", async (
+            Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var v = await db.Videos.FindAsync(new object[] { id }, ct);
+            if (v is null) return Results.NotFound();
+            v.IsClip = false;
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        }).WithName("UnmarkVideoClip");
+
         api.MapPost("/videos/{id:guid}/watched", async (
             Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
         {
@@ -2598,7 +2626,8 @@ public static partial class ApiEndpoints
                 Notes = parent.Notes,
                 ParentVideoId = parent.Id,
                 ClipStartSeconds = start,
-                ClipEndSeconds = end
+                ClipEndSeconds = end,
+                IsClip = true   // embedded clip → Clip flag (#167)
             };
 
             // Inherit parent tags.
@@ -2628,7 +2657,10 @@ public static partial class ApiEndpoints
                 .AsNoTracking()
                 .Where(v => v.ParentVideoId == parentId
                     && v.ClipStartSeconds != null
-                    && v.ClipEndSeconds != null)
+                    && v.ClipEndSeconds != null
+                    // A deleted (marked-for-deletion) child clip drops its band
+                    // from the parent's scrubber (#69 follow-up).
+                    && !v.MarkedForDeletion)
                 .OrderBy(v => v.ClipStartSeconds)
                 .Select(v => new ClipSummaryDto(
                     v.Id, v.FileName, v.ClipStartSeconds!.Value, v.ClipEndSeconds!.Value, v.ClipExported))
@@ -2643,7 +2675,7 @@ public static partial class ApiEndpoints
             VideoOrganizerDbContext db, CancellationToken ct) =>
         {
             var clips = await db.Videos.AsNoTracking()
-                .Where(v => v.ParentVideoId != null && !v.ClipExported
+                .Where(v => v.ParentVideoId != null && !v.ClipExported && !v.MarkedForDeletion
                     && v.ClipStartSeconds != null && v.ClipEndSeconds != null)
                 .Select(v => new
                 {
@@ -2708,10 +2740,10 @@ public static partial class ApiEndpoints
             ExportClipsRequest req, ClipExportService exporter,
             ClipExportProgress progress, CancellationToken ct) =>
         {
-            var ids = req.ClipIds ?? Array.Empty<Guid>();
-            if (ids.Count == 0) return Results.BadRequest(new { error = "No clips selected." });
+            var items = req.Clips ?? Array.Empty<ExportClipItem>();
+            if (items.Count == 0) return Results.BadRequest(new { error = "No clips selected." });
 
-            var result = await exporter.TryStartAsync(ids, ct);
+            var result = await exporter.TryStartAsync(items, ct);
             return result switch
             {
                 ClipExportService.StartResult.AlreadyRunning =>

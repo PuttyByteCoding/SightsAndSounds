@@ -19,6 +19,16 @@
   let selectedClipIds = $state<Set<string>>(new Set());
   let deleteParentIds = $state<Set<string>>(new Set());
   let keyframeByClip = $state<Record<string, KeyframeCut>>({});
+  // Editable output name per clip (#173), defaulting to "<parent-stem>_clip".
+  let clipNames = $state<Record<string, string>>({});
+
+  function stripExt(name: string): string {
+    const i = name.lastIndexOf('.');
+    return i > 0 ? name.slice(0, i) : name;
+  }
+  function defaultClipName(parentFileName: string): string {
+    return `${stripExt(parentFileName)}_clip`;
+  }
 
   let progress = $state<ClipExportProgress | null>(null);
   let busy = $state(false);
@@ -50,6 +60,12 @@
       }
       const present = new Set(queue.flatMap((q) => q.clips.map((c) => c.id)));
       selectedClipIds = new Set([...selectedClipIds].filter((id) => present.has(id)));
+      // Seed a default output name for any clip we haven't named yet.
+      const names = { ...clipNames };
+      for (const q of queue)
+        for (const c of q.clips)
+          if (!(c.id in names)) names[c.id] = defaultClipName(q.parentFileName);
+      clipNames = names;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -145,12 +161,13 @@
     busy = true;
     error = null;
     const ids = [...selectedClipIds];
+    const clips = ids.map((id) => ({ clipId: id, name: clipNames[id]?.trim() || undefined }));
     // Only delete a parent if every one of its clips is in this export.
     pendingDeletes = queue
       .filter((q) => deleteParentIds.has(q.parentId) && q.clips.every((c) => selectedClipIds.has(c.id)))
       .map((q) => q.parentId);
     try {
-      progress = await api.startClipExport(ids);
+      progress = await api.startClipExport(clips);
       startPolling();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -288,6 +305,18 @@
                   disabled={exporting}
                 />
                 <span class="text-xs font-medium truncate">{clip.fileName}</span>
+              </label>
+              <!-- Editable output name (#173). Defaults to "<parent>_clip"; the
+                   parent's extension is kept automatically. -->
+              <label class="flex items-center gap-1 text-[0.7rem] text-base-content/60">
+                <span class="shrink-0">Name</span>
+                <input
+                  type="text"
+                  class="input input-xs input-bordered flex-1 font-mono"
+                  bind:value={clipNames[clip.id]}
+                  placeholder={selectedParent ? defaultClipName(selectedParent.parentFileName) : 'clip'}
+                  disabled={exporting}
+                />
               </label>
               <!-- svelte-ignore a11y_media_has_caption -->
               <video

@@ -147,13 +147,11 @@ public sealed class BlockRemovalService
         }
 
         // Ingest the trimmed file as a fresh video, carrying the source's tags
-        // plus a "Trimmed" tag so block-removed files are identifiable (#70).
+        // and flagged Edited (#167) — a flag, not a tag.
         var trimmed = await MediaExport.BuildVideoFromFileAsync(_metadata, outPath, jobId, _logger, ct);
-        var trimmedTagId = await MediaExport.GetOrCreateTagAsync(db, "Trimmed", "Trimmed", ct);
-        var tagIds = video.VideoTags.Select(t => t.TagId).ToHashSet();
-        tagIds.Add(trimmedTagId);
-        foreach (var tid in tagIds)
-            trimmed.VideoTags.Add(new VideoTag { TagId = tid });
+        foreach (var t in video.VideoTags)
+            trimmed.VideoTags.Add(new VideoTag { TagId = t.TagId });
+        trimmed.IsEdited = true;
         db.Videos.Add(trimmed);
         await db.SaveChangesAsync(ct);
         _logger.LogInformation("Trimmed {VideoId} -> {Path} ({NewId})", videoId, outPath, trimmed.Id);

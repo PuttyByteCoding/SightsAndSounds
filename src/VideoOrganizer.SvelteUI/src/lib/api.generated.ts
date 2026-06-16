@@ -852,6 +852,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/videos/{id}/mark-clip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["MarkVideoClip"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/videos/{id}/unmark-clip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["UnmarkVideoClip"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/videos/{id}/watched": {
         parameters: {
             query?: never;
@@ -2104,8 +2136,13 @@ export interface components {
         };
         /** @enum {string} */
         DuplicateStatusDto: "pending" | "confirmed" | "rejected";
+        ExportClipItem: {
+            /** Format: uuid */
+            clipId: string;
+            name: null | string;
+        };
         ExportClipsRequest: {
-            clipIds: string[];
+            clips: components["schemas"]["ExportClipItem"][];
         };
         ExtraDiskFileDto: {
             filePath: string;
@@ -2158,7 +2195,13 @@ export interface components {
             /** Format: int32 */
             markedForDeletion: number;
             /** Format: int32 */
-            isClip: number;
+            clip: number;
+            /** Format: int32 */
+            embedded: number;
+            /** Format: int32 */
+            exported: number;
+            /** Format: int32 */
+            edited: number;
         };
         ImportBrowseDirectory: {
             name: string;
@@ -2698,6 +2741,9 @@ export interface components {
             clipStartSeconds?: null | number;
             /** Format: double */
             clipEndSeconds?: null | number;
+            isClip?: boolean;
+            isExportedClip?: boolean;
+            isEdited?: boolean;
             clipExported?: boolean;
             /** Format: uuid */
             exportedToVideoId?: null | string;
@@ -2781,6 +2827,8 @@ export interface components {
             /** Format: double */
             clipEndSeconds: null | number;
             isClip: boolean;
+            isExportedClip: boolean;
+            isEdited: boolean;
             chapterMarkers: components["schemas"]["ChapterMarkerDto"][];
             videoBlocks: components["schemas"]["VideoBlockDto"][];
             tags: components["schemas"]["VideoTagSummaryDto"][];
@@ -4038,6 +4086,46 @@ export interface operations {
         };
     };
     UnmarkVideoFavorite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MarkVideoClip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UnmarkVideoClip: {
         parameters: {
             query?: never;
             header?: never;

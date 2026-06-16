@@ -113,7 +113,13 @@ internal static class VideoFilterTranslator
                     "playbackIssue" => v => v.PlaybackIssue,
                     "markedForDeletion" => v => v.MarkedForDeletion,
                     "favorite" => v => v.IsFavorite,
-                    "isClip" => v => v.ParentVideoId.HasValue,
+                    // Clip flags (#167). "clip" is the umbrella; the others narrow.
+                    "clip" => v => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip,
+                    "embedded" => v => v.ParentVideoId.HasValue,
+                    "exported" => v => v.IsExportedClip,
+                    "edited" => v => v.IsEdited,
+                    // Back-compat: the old single clip flag value.
+                    "isClip" => v => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip,
                     _ => NeverMatches,
                 };
 
