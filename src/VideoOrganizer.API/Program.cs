@@ -203,6 +203,10 @@ builder.Services.AddSingleton<ClipExportService>();
 // + a live-progress singleton polled by the remove-blocked page.
 builder.Services.AddSingleton<BlockRemovalProgress>();
 builder.Services.AddSingleton<BlockRemovalService>();
+// Join (issue #163): concatenate several videos into one new file + a
+// live-progress singleton polled by the Join page.
+builder.Services.AddSingleton<JoinProgress>();
+builder.Services.AddSingleton<JoinService>();
 // Encode/convert to a configurable profile (issue #164): ffmpeg or HandBrake,
 // + a live-progress singleton polled by the Encode page.
 builder.Services.AddSingleton<EncodeProgress>();

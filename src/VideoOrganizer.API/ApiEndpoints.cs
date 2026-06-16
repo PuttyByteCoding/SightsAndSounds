@@ -39,6 +39,11 @@ public static partial class ApiEndpoints
         (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
         => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
 
+    // Project the JoinProgress snapshot tuple to the wire DTO.
+    private static JoinProgressDto ToJoinDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
     // Project the EncodeProgress snapshot tuple to the wire DTO.
     private static EncodeProgressDto ToEncodeDto(
         (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
@@ -2838,6 +2843,42 @@ public static partial class ApiEndpoints
             return Results.Ok(ToBlockRemovalDto(progress.Snapshot()));
         }).Produces<BlockRemovalProgressDto>(StatusCodes.Status200OK)
           .WithName("StopBlockRemoval");
+
+        // === Join (concatenate) videos (issue #163) =========================
+
+        // POST /api/join — concatenate the given videos (in order) into one new
+        // file. 202 / 409 (already running) / 400 (need ≥2).
+        api.MapPost("/join", async (
+            JoinRequest req, JoinService joiner, JoinProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count < 2) return Results.BadRequest(new { error = "Select at least two videos to join." });
+
+            var result = await joiner.TryStartAsync(ids, req.Reencode, req.Name, ct);
+            return result switch
+            {
+                JoinService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "A join is already running." }),
+                JoinService.StartResult.NotEnough =>
+                    Results.BadRequest(new { error = "Need at least two existing videos to join." }),
+                _ => Results.Json(ToJoinDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<JoinProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartJoin");
+
+        // GET /api/join — poll the join run's progress.
+        api.MapGet("/join", (JoinProgress progress) =>
+            Results.Ok(ToJoinDto(progress.Snapshot())))
+          .Produces<JoinProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetJoinProgress");
+
+        // POST /api/join/stop — stop the run.
+        api.MapPost("/join/stop", (JoinProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToJoinDto(progress.Snapshot()));
+        }).Produces<JoinProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopJoin");
 
         // === Encode/convert to a profile (issue #164) =======================
 

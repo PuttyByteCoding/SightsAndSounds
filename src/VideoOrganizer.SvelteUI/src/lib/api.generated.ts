@@ -1028,6 +1028,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/join": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetJoinProgress"];
+        put?: never;
+        post: operations["StartJoin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/join/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["StopJoin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/encode": {
         parameters: {
             query?: never;
@@ -2378,6 +2410,22 @@ export interface components {
             pending: number;
             /** Format: int32 */
             failed: number;
+        };
+        JoinProgressDto: {
+            active: boolean;
+            /** Format: int32 */
+            total: number;
+            /** Format: int32 */
+            done: number;
+            current: string;
+            phase: string;
+            errors: string[];
+        };
+        JoinRequest: {
+            videoIds: string[];
+            /** @default false */
+            reencode: boolean;
+            name?: null | string;
         };
         KeyframeCutDto: {
             /** Format: double */
@@ -4466,6 +4514,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BlockRemovalProgressDto"];
+                };
+            };
+        };
+    };
+    GetJoinProgress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinProgressDto"];
+                };
+            };
+        };
+    };
+    StartJoin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JoinRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinProgressDto"];
+                };
+            };
+        };
+    };
+    StopJoin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinProgressDto"];
                 };
             };
         };
