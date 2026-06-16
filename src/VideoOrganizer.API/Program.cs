@@ -203,6 +203,10 @@ builder.Services.AddSingleton<ClipExportService>();
 // + a live-progress singleton polled by the remove-blocked page.
 builder.Services.AddSingleton<BlockRemovalProgress>();
 builder.Services.AddSingleton<BlockRemovalService>();
+// Join (issue #163): concatenate several videos into one new file + a
+// live-progress singleton polled by the Join page.
+builder.Services.AddSingleton<JoinProgress>();
+builder.Services.AddSingleton<JoinService>();
 
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
