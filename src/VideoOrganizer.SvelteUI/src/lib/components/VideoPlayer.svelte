@@ -14,6 +14,14 @@
   import { api } from '$lib/api';
   import { loadProgressFraction } from '$lib/videoLoadProgress';
   import { parseScrubberFrames, type ScrubFrame } from '$lib/scrubber';
+  import {
+    numpadPlaybackAction,
+    shiftDigitSeek,
+    plainDigitPlaybackAction,
+    altFlagDigit,
+    isTypingTarget,
+    type PlaybackAction
+  } from '$lib/playerKeyboard';
   import type { Tag, Video, FfprobeResult, ClipSummary, TagSuggestion } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
@@ -1840,10 +1848,16 @@
 
   // --- Keyboard -------------------------------------------------------------
 
-  function isTypingTarget(t: EventTarget | null): boolean {
-    if (!(t instanceof HTMLElement)) return false;
-    const tag = t.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
+  // isTypingTarget + the playback-key resolvers live in $lib/playerKeyboard
+  // (unit-tested). This dispatches a resolved PlaybackAction to the component's
+  // playback methods.
+  function dispatchPlayback(a: PlaybackAction) {
+    switch (a.kind) {
+      case 'seek': seekBy(a.seconds); break;
+      case 'playPause': togglePlayPause(); break;
+      case 'seekToStart': seekToStart(); break;
+      case 'seekToNearEnd': seekToNearEnd(); break;
+    }
   }
 
   // `{` / `}` (Shift+[ / Shift+]) keep their single-press manual-block actions
@@ -1964,14 +1978,7 @@
     // Alt+1..9 toggles the Nth tag (by SortOrder) of the first
     // displayAsCheckboxes group. Top-row digits and numpad both work.
     if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-      let digit: number | null = null;
-      if (e.code.startsWith('Digit')) {
-        const d = parseInt(e.code.substring(5), 10);
-        if (d >= 1 && d <= 9) digit = d;
-      } else if (e.code.startsWith('Numpad')) {
-        const d = parseInt(e.code.substring(6), 10);
-        if (d >= 1 && d <= 9) digit = d;
-      }
+      const digit = altFlagDigit(e.code);
       if (digit !== null) {
         e.preventDefault();
         e.stopPropagation();
@@ -1989,53 +1996,21 @@
     //                         regardless of NumLock, unlike the top-row '5'.
     //   Numpad 0            — jump to start (00:00)
     //   Numpad -            — jump to 10s from the end
-    if (e.code === 'Numpad5') {
+    const numpadAction = numpadPlaybackAction(e.code, playbackSettings);
+    if (numpadAction) {
       e.preventDefault();
       e.stopPropagation();
-      togglePlayPause();
-      return;
-    }
-    if (e.code === 'Numpad0') {
-      e.preventDefault();
-      e.stopPropagation();
-      seekToStart();
-      return;
-    }
-    if (e.code === 'NumpadSubtract') {
-      e.preventDefault();
-      e.stopPropagation();
-      seekToNearEnd();
-      return;
-    }
-    const numpadSeek =
-      e.code === 'Numpad1' ? -playbackSettings.key1Seconds :
-      e.code === 'Numpad3' ? playbackSettings.key3Seconds :
-      e.code === 'Numpad4' ? -playbackSettings.key4Seconds :
-      e.code === 'Numpad6' ? playbackSettings.key6Seconds :
-      e.code === 'Numpad7' ? -playbackSettings.key7Seconds :
-      e.code === 'Numpad9' ? playbackSettings.key9Seconds :
-      null;
-    if (numpadSeek !== null) {
-      e.preventDefault();
-      e.stopPropagation();
-      seekBy(numpadSeek);
+      dispatchPlayback(numpadAction);
       return;
     }
     // Shift+top-row digit is the keyboard-based equivalent for users without
     // a numpad. Match on e.code and the shifted character.
     if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      const shiftSeek =
-        e.code === 'Digit1' || e.key === '!' ? -playbackSettings.key1Seconds :
-        e.code === 'Digit3' || e.key === '#' ? playbackSettings.key3Seconds :
-        e.code === 'Digit4' || e.key === '$' ? -playbackSettings.key4Seconds :
-        e.code === 'Digit6' || e.key === '^' ? playbackSettings.key6Seconds :
-        e.code === 'Digit7' || e.key === '&' ? -playbackSettings.key7Seconds :
-        e.code === 'Digit9' || e.key === '(' ? playbackSettings.key9Seconds :
-        null;
-      if (shiftSeek !== null) {
+      const shiftAction = shiftDigitSeek(e.code, e.key, playbackSettings);
+      if (shiftAction) {
         e.preventDefault();
         e.stopPropagation();
-        seekBy(shiftSeek);
+        dispatchPlayback(shiftAction);
         return;
       }
     }
@@ -2140,17 +2115,11 @@
     if (e.key === '[') { e.preventDefault(); zoomOut(); return; }
     if (e.key === ']') { e.preventDefault(); zoomIn(); return; }
     if (e.key === '\\') { e.preventDefault(); fitSize(); return; }
-    switch (e.key) {
-      case '1': e.preventDefault(); seekBy(-playbackSettings.key1Seconds); break;
-      case '3': e.preventDefault(); seekBy(playbackSettings.key3Seconds); break;
-      case '4': e.preventDefault(); seekBy(-playbackSettings.key4Seconds); break;
-      // 5 — play/pause (in addition to Space). (issue #41)
-      case '5': e.preventDefault(); togglePlayPause(); break;
-      case '6': e.preventDefault(); seekBy(playbackSettings.key6Seconds); break;
-      case '7': e.preventDefault(); seekBy(-playbackSettings.key7Seconds); break;
-      // 8 — jump to 10s from the end (same as Numpad-minus). (issue #41)
-      case '8': e.preventDefault(); seekToNearEnd(); break;
-      case '9': e.preventDefault(); seekBy(playbackSettings.key9Seconds); break;
+    // Plain top-row digits: seek / play-pause / near-end (see playerKeyboard).
+    const digitAction = plainDigitPlaybackAction(e.key, playbackSettings);
+    if (digitAction) {
+      e.preventDefault();
+      dispatchPlayback(digitAction);
     }
   }
 </script>
