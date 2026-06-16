@@ -237,6 +237,9 @@ export type PurgeMissingFilesResult = S['PurgeMissingFilesResultDto'];
 
 // Parent marked for deletion that still holds embedded (un-exported) clips (#174).
 export type PurgeClipWarning = S['PurgeClipWarningDto'];
+
+// Live state of an encode/convert run (issue #164).
+export type EncodeProgress = S['EncodeProgressDto'];
 export type ExtraDiskFile = S['ExtraDiskFileDto'];
 export type Md5Candidate = S['Md5CandidateDto'];
 export type Md5CheckResult = S['Md5CheckResultDto'];
