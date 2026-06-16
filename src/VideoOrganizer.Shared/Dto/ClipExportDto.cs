@@ -8,9 +8,15 @@ public record ClipExportQueueItemDto(
     double ParentDurationSeconds,
     System.Collections.Generic.IReadOnlyList<ClipSummaryDto> Clips);
 
-// Request to export a set of clips to their own files (issue #69).
+// One clip selected for export, with an optional output name (#173). Name is
+// the base file name without extension; blank falls back to "<parent>_clip".
+public record ExportClipItem(
+    System.Guid ClipId,
+    string? Name);
+
+// Request to export a set of clips to their own files (issue #69 / #173).
 public record ExportClipsRequest(
-    System.Collections.Generic.IReadOnlyList<System.Guid> ClipIds);
+    System.Collections.Generic.IReadOnlyList<ExportClipItem> Clips);
 
 // Live state of the clip-export run, polled by the page.
 // Phase: "idle" | "exporting" | "stopping" | "done" | "error".

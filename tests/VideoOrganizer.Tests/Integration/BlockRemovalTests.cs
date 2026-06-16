@@ -82,9 +82,10 @@ public sealed class BlockRemovalTests
                 Assert.True(trimmed.Duration > TimeSpan.FromSeconds(1), "trimmed should have real content");
                 Assert.True(trimmed.Duration < TimeSpan.FromSeconds(8),
                     $"trimmed duration {trimmed.Duration} should be well under the 9s source");
+                Assert.True(trimmed.IsEdited);              // Edited is a flag now (#167), not a tag
                 var names = trimmed.VideoTags.Select(t => t.Tag!.Name).ToList();
-                Assert.Contains("tag-" + token, names);   // inherited source tag
-                Assert.Contains("Trimmed", names);          // identifies block-removed files (#70)
+                Assert.Contains("tag-" + token, names);     // inherited source tag
+                Assert.DoesNotContain("Trimmed", names);    // no auto tag
             });
         }
         finally

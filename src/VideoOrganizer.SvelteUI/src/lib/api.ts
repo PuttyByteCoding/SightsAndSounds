@@ -274,6 +274,12 @@ export const api = {
       body: JSON.stringify(body)
     }),
 
+  // Clip flag (#167) — user-settable so imported standalone clips can be marked.
+  markClip: (id: string) =>
+    request<void>(`/api/videos/${id}/mark-clip`, { method: 'POST' }),
+  unmarkClip: (id: string) =>
+    request<void>(`/api/videos/${id}/unmark-clip`, { method: 'POST' }),
+
   markForDeletion: (id: string) =>
     request<Video>(`/api/videos/${id}/mark-for-deletion`, { method: 'POST' }),
   unmarkForDeletion: (id: string) =>
@@ -311,11 +317,12 @@ export const api = {
   // The keyframe-snapped start the stream-copy export will actually use.
   getClipKeyframeCut: (clipId: string) =>
     request<KeyframeCut>(`/api/videos/${clipId}/keyframe-cut`),
-  // Start / poll / stop a background export run.
-  startClipExport: (clipIds: string[]) =>
+  // Start / poll / stop a background export run. Each item carries an optional
+  // output name (#173); blank uses the default "<parent>_clip".
+  startClipExport: (clips: { clipId: string; name?: string }[]) =>
     request<ClipExportProgress>(`/api/clips-export`, {
       method: 'POST',
-      body: JSON.stringify({ clipIds })
+      body: JSON.stringify({ clips })
     }),
   getClipExportProgress: () =>
     request<ClipExportProgress>(`/api/clips-export`),

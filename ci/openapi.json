@@ -1557,6 +1557,54 @@
         }
       }
     },
+    "/api/videos/{id}/mark-clip": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "MarkVideoClip",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/videos/{id}/unmark-clip": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "UnmarkVideoClip",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/videos/{id}/watched": {
       "post": {
         "tags": [
@@ -4326,17 +4374,35 @@
         ],
         "type": "string"
       },
-      "ExportClipsRequest": {
+      "ExportClipItem": {
         "required": [
-          "clipIds"
+          "clipId",
+          "name"
         ],
         "type": "object",
         "properties": {
-          "clipIds": {
+          "clipId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ExportClipsRequest": {
+        "required": [
+          "clips"
+        ],
+        "type": "object",
+        "properties": {
+          "clips": {
             "type": "array",
             "items": {
-              "type": "string",
-              "format": "uuid"
+              "$ref": "#/components/schemas/ExportClipItem"
             }
           }
         }
@@ -4491,7 +4557,10 @@
           "needsReview",
           "playbackIssue",
           "markedForDeletion",
-          "isClip"
+          "clip",
+          "embedded",
+          "exported",
+          "edited"
         ],
         "type": "object",
         "properties": {
@@ -4511,7 +4580,19 @@
             "type": "integer",
             "format": "int32"
           },
-          "isClip": {
+          "clip": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "embedded": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "exported": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "edited": {
             "type": "integer",
             "format": "int32"
           }
@@ -6372,6 +6453,15 @@
             ],
             "format": "double"
           },
+          "isClip": {
+            "type": "boolean"
+          },
+          "isExportedClip": {
+            "type": "boolean"
+          },
+          "isEdited": {
+            "type": "boolean"
+          },
           "clipExported": {
             "type": "boolean"
           },
@@ -6531,6 +6621,8 @@
           "clipStartSeconds",
           "clipEndSeconds",
           "isClip",
+          "isExportedClip",
+          "isEdited",
           "chapterMarkers",
           "videoBlocks",
           "tags",
@@ -6690,6 +6782,12 @@
             "format": "double"
           },
           "isClip": {
+            "type": "boolean"
+          },
+          "isExportedClip": {
+            "type": "boolean"
+          },
+          "isEdited": {
             "type": "boolean"
           },
           "chapterMarkers": {
