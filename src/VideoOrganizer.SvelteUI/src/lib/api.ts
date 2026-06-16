@@ -45,6 +45,7 @@ import type {
   Video,
   PurgeClipWarning,
   RepairProgress,
+  JoinProgress,
   EncodeProgress,
   VideoSet,
   VideoSetInput,
@@ -282,6 +283,15 @@ export const api = {
     request<void>(`/api/videos/${id}/mark-clip`, { method: 'POST' }),
   unmarkClip: (id: string) =>
     request<void>(`/api/videos/${id}/unmark-clip`, { method: 'POST' }),
+
+  // Join (concatenate) videos in order into one new file (#163).
+  startJoin: (videoIds: string[], reencode: boolean, name?: string) =>
+    request<JoinProgress>('/api/join', {
+      method: 'POST',
+      body: JSON.stringify({ videoIds, reencode, name })
+    }),
+  getJoinProgress: () => request<JoinProgress>('/api/join'),
+  stopJoin: () => request<JoinProgress>('/api/join/stop', { method: 'POST' }),
 
   // Encode/convert videos to the configured profile (#164).
   startEncode: (videoIds: string[]) =>

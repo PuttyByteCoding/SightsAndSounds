@@ -1976,6 +1976,74 @@
         }
       }
     },
+    "/api/join": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StartJoin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinProgressDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetJoinProgress",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/join/stop": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StopJoin",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/encode": {
       "post": {
         "tags": [
@@ -5209,6 +5277,67 @@
           "failed": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "JoinProgressDto": {
+        "required": [
+          "active",
+          "total",
+          "done",
+          "current",
+          "phase",
+          "errors"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "current": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "JoinRequest": {
+        "required": [
+          "videoIds"
+        ],
+        "type": "object",
+        "properties": {
+          "videoIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "reencode": {
+            "type": "boolean",
+            "default": false
+          },
+          "name": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         }
       },

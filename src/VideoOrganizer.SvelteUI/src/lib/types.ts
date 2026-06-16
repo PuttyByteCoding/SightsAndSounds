@@ -241,6 +241,9 @@ export type PurgeClipWarning = S['PurgeClipWarningDto'];
 // Live state of a video-repair run (issue #165).
 export type RepairProgress = S['RepairProgressDto'];
 
+// Live state of a join (concatenate) run (issue #163).
+export type JoinProgress = S['JoinProgressDto'];
+
 // Live state of an encode/convert run (issue #164).
 export type EncodeProgress = S['EncodeProgressDto'];
 export type ExtraDiskFile = S['ExtraDiskFileDto'];
