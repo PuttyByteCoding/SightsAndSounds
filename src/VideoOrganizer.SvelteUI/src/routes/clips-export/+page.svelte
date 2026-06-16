@@ -7,6 +7,8 @@
   // keyframes, so each clip can preview the actual (snapped) in-point.
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/api';
+  import { handleVideoKey } from '$lib/videoKeyboard';
+  import { playbackSettings } from '$lib/playbackSettings.svelte';
   import type { ClipExportQueueItem, ClipExportProgress, KeyframeCut } from '$lib/types';
 
   let queue = $state<ClipExportQueueItem[]>([]);
@@ -167,7 +169,21 @@
   }
 
   const selectedCount = $derived(selectedClipIds.size);
+
+  // Player keyboard shortcuts (#69 follow-up): the app's numpad / Shift+digit /
+  // plain-digit / space seek scheme drives the focused clip player, or the
+  // selected parent's player otherwise — so videos are navigable here too.
+  let parentVideoEl = $state<HTMLVideoElement | null>(null);
+  function onPlaybackKey(e: KeyboardEvent) {
+    const ae = document.activeElement;
+    // Don't hijack keys while a control (button/checkbox/etc.) is focused.
+    if (ae && ['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA'].includes(ae.tagName)) return;
+    const el = ae instanceof HTMLVideoElement ? ae : parentVideoEl;
+    handleVideoKey(e, el, playbackSettings);
+  }
 </script>
+
+<svelte:window onkeydowncapture={onPlaybackKey} />
 
 <div class="flex flex-col h-[calc(100vh-3.5rem)]">
   <!-- Header + run controls -->
@@ -252,6 +268,7 @@
             src={api.streamUrl(selectedParent.parentId)}
             controls
             preload="metadata"
+            bind:this={parentVideoEl}
           ></video>
         {/if}
       </div>

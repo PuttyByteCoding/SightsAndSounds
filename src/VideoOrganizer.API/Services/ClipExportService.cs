@@ -146,7 +146,7 @@ public sealed class ClipExportService
         var newVideo = await MediaExport.BuildVideoFromFileAsync(_metadata, outPath, jobId, _logger, ct);
 
         // Copy the clip's tags, then ensure the "Clip" tag is present.
-        var clipTagId = await GetOrCreateClipTagAsync(db, ct);
+        var clipTagId = await MediaExport.GetOrCreateTagAsync(db, "Clip", "Clips", ct);
         var tagIds = clip.VideoTags.Select(t => t.TagId).ToHashSet();
         tagIds.Add(clipTagId);
         foreach (var tid in tagIds)
@@ -162,27 +162,6 @@ public sealed class ClipExportService
         await db.SaveChangesAsync(ct);
         _logger.LogInformation("Exported clip {ClipId} -> {Path} ({NewId})", clipId, outPath, newVideo.Id);
         return Path.GetFileName(outPath);
-    }
-
-    // Find an existing "Clip" tag (any group) or create one in a "Clips" group.
-    private static async Task<Guid> GetOrCreateClipTagAsync(VideoOrganizerDbContext db, CancellationToken ct)
-    {
-        var existing = await db.Tags
-            .Where(t => t.Name.ToLower() == "clip")
-            .Select(t => t.Id)
-            .FirstOrDefaultAsync(ct);
-        if (existing != Guid.Empty) return existing;
-
-        var group = await db.TagGroups.FirstOrDefaultAsync(g => g.Name.ToLower() == "clips", ct);
-        if (group is null)
-        {
-            group = new TagGroup { Id = Guid.NewGuid(), Name = "Clips", AllowMultiple = true };
-            db.TagGroups.Add(group);
-        }
-        var tag = new Tag { Id = Guid.NewGuid(), Name = "Clip", TagGroupId = group.Id };
-        db.Tags.Add(tag);
-        await db.SaveChangesAsync(ct);
-        return tag.Id;
     }
 
     // Keyframe-snapped cut points for the preview (issue #69): with input-seek
