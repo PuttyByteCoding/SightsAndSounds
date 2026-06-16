@@ -21,7 +21,7 @@ public sealed class ApiEndpointsPaginationTests
     public ApiEndpointsPaginationTests(PostgresApiFixture api) => _api = api;
 
     private sealed record VideoRow(Guid id, string fileName);
-    private sealed record Page(List<VideoRow> videos, string? nextCursor, int hiddenCount);
+    private sealed record Page(List<VideoRow> videos, string? nextCursor, int totalCount, int hiddenCount);
 
     // 7 videos sharing one fresh tag (so the filter isolates them), with distinct
     // sortable fields plus one duplicate FileName to exercise the Id tiebreaker.
@@ -136,6 +136,27 @@ public sealed class ApiEndpointsPaginationTests
                 Assert.Equal(ids.Count, ids.Distinct().Count());
                 Assert.Equal(w.Ids.ToHashSet(), ids.ToHashSet());
             }
+        }
+        finally { await CleanupAsync(w); }
+    }
+
+    [SkippableFact]
+    public async Task Total_count_is_the_full_match_set_not_the_page()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        var w = await SeedAsync();
+        try
+        {
+            // Page size 2, but totalCount must be the whole 7-row match set so the
+            // "video N of M" badge shows M, not the loaded count.
+            var res = await _api.Client.PostAsJsonAsync(
+                "/api/videos/filter-page?sort=fileName&limit=2",
+                new { required = new[] { new { type = "tag", value = w.Tag.ToString() } } });
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var page = await res.Content.ReadFromJsonAsync<Page>();
+            Assert.Equal(2, page!.videos.Count);
+            Assert.Equal(w.Ids.Count, page.totalCount); // 7
+            Assert.NotNull(page.nextCursor);
         }
         finally { await CleanupAsync(w); }
     }

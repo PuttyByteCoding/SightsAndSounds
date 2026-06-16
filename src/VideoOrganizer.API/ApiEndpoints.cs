@@ -1728,7 +1728,7 @@ public static partial class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled)
                 .Select(s => s.Path).ToListAsync(ct);
             if (enabledRoots.Count == 0)
-                return Results.Ok(new FilteredVideosPage(Array.Empty<VideoDto>(), null, 0));
+                return Results.Ok(new FilteredVideosPage(Array.Empty<VideoDto>(), null, 0, 0));
 
             var candidatesQuery = IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
@@ -1783,8 +1783,12 @@ public static partial class ApiEndpoints
                     if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
                     return true;
                 }).ToList();
-                return Results.Ok(new FilteredVideosPage(matched.Select(ToDto).ToList(), null, hiddenCount));
+                return Results.Ok(new FilteredVideosPage(matched.Select(ToDto).ToList(), null, matched.Count, hiddenCount));
             }
+
+            // Full match count (visible, after auto-hide) for the "video N of M"
+            // badge — the client only holds the pages it has scrolled to.
+            var totalCount = await narrowed.CountAsync(ct);
 
             var pageSize = Math.Clamp(limit ?? 48, 1, 200);
             var mode = VideoPagination.ParseSort(sort);
@@ -1806,7 +1810,7 @@ public static partial class ApiEndpoints
                 rows = rows.Take(pageSize).ToList();
             }
 
-            return Results.Ok(new FilteredVideosPage(rows.Select(ToDto).ToList(), nextCursor, hiddenCount));
+            return Results.Ok(new FilteredVideosPage(rows.Select(ToDto).ToList(), nextCursor, totalCount, hiddenCount));
         }).Produces<FilteredVideosPage>(StatusCodes.Status200OK)
           .WithName("FilterVideosPage");
 

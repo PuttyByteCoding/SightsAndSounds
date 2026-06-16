@@ -1922,6 +1922,8 @@ export interface components {
             videos: components["schemas"]["VideoDto"][];
             nextCursor: null | string;
             /** Format: int32 */
+            totalCount: number;
+            /** Format: int32 */
             hiddenCount: number;
         };
         FilterRef: {

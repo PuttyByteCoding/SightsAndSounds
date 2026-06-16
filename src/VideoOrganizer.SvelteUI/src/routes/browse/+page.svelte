@@ -107,6 +107,9 @@
   // there's no client-side sort/shuffle anymore.
   const PAGE_SIZE = 48;
   let nextCursor = $state<string | null>(null);
+  // Full count of the current filter's matches (the server total, not just the
+  // pages loaded so far) — drives the "video N of M" badge.
+  let totalCount = $state(0);
   let loadingMore = $state(false);
   // Bumped on every page-1 refresh; a loadMore that started under an older
   // generation discards its result so stale pages can't append to a new filter.
@@ -395,6 +398,7 @@
       if (ac.signal.aborted) return; // superseded mid-flight — a newer fetch owns the result
       activeFilter = filter;
       nextCursor = result.nextCursor;
+      totalCount = result.totalCount;
       hiddenByTagCount = result.hiddenCount;
       // Decide the playing video. A filter/search change restarts the queue
       // from position 0 (issue #21): the current video stops and the new
@@ -1139,8 +1143,10 @@
       v.id === dupAnchor!.id
       || Math.abs(tsToSeconds(v.duration) - anchorSeconds) <= tol);
     // Client-side narrowing of the loaded set — stop paginating so a later
-    // scroll doesn't append unfiltered pages over the narrowed view.
+    // scroll doesn't append unfiltered pages over the narrowed view, and the
+    // "N of M" badge reflects the narrowed count.
     nextCursor = null;
+    totalCount = videos.length;
     dupMessage = `Narrowed to ${videos.length} video${videos.length === 1 ? '' : 's'} within ±${tol}s of the anchor.`;
     dupMessageIsError = false;
   }
@@ -2006,7 +2012,7 @@
                 shortcutsEnabled={true}
                 maxVideoHeightPx={Math.max(100, playerHeight - 72)}
                 playlistIndex={playingIndex}
-                playlistTotal={videos.length}
+                playlistTotal={totalCount}
                 tagsPanelOpen={showEditTagsPanel}
                 onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
                 onToggleFileInfo={() => (showFileInfo = !showFileInfo)}
