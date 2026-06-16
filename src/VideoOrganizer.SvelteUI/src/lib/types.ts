@@ -143,6 +143,12 @@ export interface FilterTag extends FilterRef {
 
 export type PlaylistFilterRequest = S['PlaylistFilterRequest'];
 
+// One keyset-paginated page of filtered videos (#127).
+export type FilteredVideosPage = S['FilteredVideosPage'];
+
+// Sort modes for the paginated browse query — match the server's `sort` param.
+export type BrowseSort = 'shuffle' | 'fileName' | 'fileSize' | 'duration' | 'folderFile';
+
 // --- Duplicates -------------------------------------------------------------
 
 export type DuplicateStatus = S['DuplicateStatusDto'];

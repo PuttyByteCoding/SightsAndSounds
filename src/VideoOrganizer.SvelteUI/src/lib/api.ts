@@ -25,6 +25,8 @@ import type {
   LogEvent,
   PlaylistDto,
   PlaylistFilterRequest,
+  FilteredVideosPage,
+  BrowseSort,
   PlaylistNavigationDto,
   PropertyDefinition,
   SetPropertyValuesRequest,
@@ -186,6 +188,26 @@ export const api = {
     const videos = res.status === 204 ? [] : ((await res.json()) as Video[]);
     const hiddenCount = Number(res.headers.get('X-Hidden-Count') ?? '0') || 0;
     return { videos, hiddenCount };
+  },
+
+  // Keyset-paginated filter (#127). Returns one page + an opaque cursor for the
+  // next (null when last). `seed` only matters for shuffle. Pass `signal` so a
+  // superseded filter change can abort the in-flight page.
+  filterVideosPage: (
+    filter: PlaylistFilterRequest,
+    opts: { sort: BrowseSort; dir?: 'asc' | 'desc'; limit?: number; cursor?: string | null; seed?: string },
+    signal?: AbortSignal
+  ): Promise<FilteredVideosPage> => {
+    const qs = new URLSearchParams({ sort: opts.sort });
+    if (opts.dir) qs.set('dir', opts.dir);
+    if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts.cursor) qs.set('cursor', opts.cursor);
+    if (opts.seed) qs.set('seed', opts.seed);
+    return request<FilteredVideosPage>(`/api/videos/filter-page?${qs.toString()}`, {
+      method: 'POST',
+      body: JSON.stringify(filter),
+      signal
+    });
   },
 
   // Simple AND-of-tags filter. For richer filtering use filterVideos.
