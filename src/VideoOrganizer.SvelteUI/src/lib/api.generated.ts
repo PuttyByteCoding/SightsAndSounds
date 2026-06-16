@@ -516,6 +516,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/videos/{id}/ocr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OcrVideoFrame"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/videos/{id}/ocr-scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetOcrScanProgress"];
+        put?: never;
+        post: operations["StartOcrScan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/videos/{id}/ocr-scan/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["StopOcrScan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/videos/{id}/ocr-text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetVideoOcrText"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/library/remove-folder": {
         parameters: {
             query?: never;
@@ -2130,6 +2194,37 @@ export interface components {
         MoveVideoRequest: {
             targetDirectory: string;
         };
+        OcrResultDto: {
+            /** Format: double */
+            timeSeconds: number;
+            text: string;
+        };
+        OcrScanProgressDto: {
+            active: boolean;
+            /** Format: double */
+            scannedThroughSeconds: number;
+            /** Format: double */
+            durationSeconds: number;
+            /** Format: int32 */
+            hits: number;
+            phase: string;
+            error: null | string;
+        };
+        OcrTextLine: {
+            /** Format: uuid */
+            id?: string;
+            /** Format: uuid */
+            videoId?: string;
+            video?: null | components["schemas"]["Video"];
+            /** Format: double */
+            timeSeconds?: number;
+            text?: string;
+        };
+        OcrTextLineDto: {
+            /** Format: double */
+            timeSeconds: number;
+            text: string;
+        };
         PlaylistDto: {
             /** Format: uuid */
             id: string;
@@ -2282,14 +2377,14 @@ export interface components {
             tagGroupId?: string;
             tagGroup?: null | components["schemas"]["TagGroup"];
             name: string;
-            aliases?: string[];
+            aliases?: unknown;
             isFavorite?: boolean;
             /** Format: int32 */
             sortOrder?: number;
             notes?: string;
             hiddenByDefault?: boolean;
-            videoTags?: components["schemas"]["VideoTag"][];
-            propertyValues?: components["schemas"]["TagPropertyValue"][];
+            videoTags?: unknown;
+            propertyValues?: unknown;
         };
         TagDto: {
             /** Format: uuid */
@@ -2311,18 +2406,7 @@ export interface components {
             /** @default false */
             hiddenByDefault: boolean;
         };
-        TagGroup: {
-            /** Format: uuid */
-            id?: string;
-            name: string;
-            allowMultiple?: boolean;
-            displayAsCheckboxes?: boolean;
-            /** Format: int32 */
-            sortOrder?: number;
-            notes?: string;
-            tags?: unknown;
-            propertyDefinitions?: components["schemas"]["PropertyDefinition"][];
-        };
+        TagGroup: unknown;
         TagGroupDto: {
             /** Format: uuid */
             id: string;
@@ -2342,15 +2426,6 @@ export interface components {
              * @default 0
              */
             videosMissingCount: number;
-        };
-        TagPropertyValue: {
-            /** Format: uuid */
-            tagId?: string;
-            tag?: null | components["schemas"]["Tag"];
-            /** Format: uuid */
-            propertyDefinitionId?: string;
-            propertyDefinition?: null | components["schemas"]["PropertyDefinition"];
-            value?: string;
         };
         TagSearchHit: {
             /** Format: uuid */
@@ -2460,8 +2535,11 @@ export interface components {
             clipStartSeconds?: null | number;
             /** Format: double */
             clipEndSeconds?: null | number;
+            /** Format: double */
+            ocrScannedThroughSeconds?: null | number;
             chapterMarkers?: components["schemas"]["ChapterMarker"][];
             videoBlocks?: components["schemas"]["VideoBlock"][];
+            ocrTextLines?: components["schemas"]["OcrTextLine"][];
             videoTags?: components["schemas"]["VideoTag"][];
             propertyValues?: components["schemas"]["VideoPropertyValue"][];
         };
@@ -3323,6 +3401,120 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VideoDto"][];
+                };
+            };
+        };
+    };
+    OcrVideoFrame: {
+        parameters: {
+            query?: {
+                t?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OcrResultDto"];
+                };
+            };
+        };
+    };
+    GetOcrScanProgress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OcrScanProgressDto"];
+                };
+            };
+        };
+    };
+    StartOcrScan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OcrScanProgressDto"];
+                };
+            };
+        };
+    };
+    StopOcrScan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OcrScanProgressDto"];
+                };
+            };
+        };
+    };
+    GetVideoOcrText: {
+        parameters: {
+            query?: {
+                q?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OcrTextLineDto"][];
                 };
             };
         };

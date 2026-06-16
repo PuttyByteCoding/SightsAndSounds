@@ -88,8 +88,16 @@ public class Video
     public double? ClipStartSeconds { get; set; }
     public double? ClipEndSeconds { get; set; }
 
+    // How far (in seconds) a full-video OCR text scan has reached (issue #5).
+    // Null = never scanned. The scan is resumable: "Scan more" continues from
+    // here rather than re-reading frames already covered. Tracked separately
+    // from OcrTextLines because frames with no text leave no row, yet the scan
+    // still advanced past them.
+    public double? OcrScannedThroughSeconds { get; set; }
+
     public List<ChapterMarker> ChapterMarkers { get; set; } = new();
     public List<VideoBlock> VideoBlocks { get; set; } = new();
+    public List<OcrTextLine> OcrTextLines { get; set; } = new();
 
     // Tagging + custom properties.
     public List<VideoTag> VideoTags { get; set; } = new();

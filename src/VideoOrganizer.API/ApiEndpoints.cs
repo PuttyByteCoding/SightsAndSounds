@@ -23,6 +23,12 @@ public static partial class ApiEndpoints
 
     // --- Video DTO projection ----------------------------------------------
 
+    // Project the OcrScanProgress singleton's snapshot tuple to the wire DTO.
+    private static OcrScanProgressDto ToScanDto(
+        (bool Active, Guid VideoId, double ScannedThroughSeconds, double DurationSeconds,
+         int Hits, string Phase, string? Error) s)
+        => new(s.Active, s.ScannedThroughSeconds, s.DurationSeconds, s.Hits, s.Phase, s.Error);
+
     private static VideoDto ToDto(Video v)
     {
         var tags = v.VideoTags
@@ -847,7 +853,9 @@ public static partial class ApiEndpoints
                     EF.Functions.ILike(v.FilePath, pat) ||
                     EF.Functions.ILike(v.Notes, pat) ||
                     (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
-                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)) ||
+                    // On-screen text found by an OCR scan (issue #5).
+                    v.OcrTextLines.Any(o => EF.Functions.ILike(o.Text, pat)));
 
             // Hidden-by-default videos (#84) are never findable via search — hidden
             // means hidden everywhere. (Search has no tag-filter to "reveal" via.)
@@ -876,6 +884,16 @@ public static partial class ApiEndpoints
                 .Take(lim)
                 .ToListAsync(ct);
 
+            // Which of this page's videos have an OCR-text hit for the query
+            // (issue #5). Done as one narrow id query rather than Include-ing
+            // every stored line — a scanned video can have thousands.
+            var pageIds = rows.Select(v => v.Id).ToList();
+            var ocrMatchIds = (await db.OcrTextLines.AsNoTracking()
+                .Where(o => pageIds.Contains(o.VideoId) && EF.Functions.ILike(o.Text, pat))
+                .Select(o => o.VideoId)
+                .Distinct()
+                .ToListAsync(ct)).ToHashSet();
+
             var results = rows.Select(v =>
             {
                 // Tag matches in this iteration so the UI can surface
@@ -886,6 +904,7 @@ public static partial class ApiEndpoints
                 if (v.FilePath.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("filePath");
                 if (v.Notes.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("notes");
                 if (v.Md5 != null && v.Md5.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("md5");
+                if (ocrMatchIds.Contains(v.Id)) matched.Add("ocrText");
                 foreach (var vt in v.VideoTags)
                 {
                     if (vt.Tag != null && vt.Tag.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
@@ -1658,7 +1677,9 @@ public static partial class ApiEndpoints
                     EF.Functions.ILike(v.FilePath, pat) ||
                     EF.Functions.ILike(v.Notes, pat) ||
                     (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
-                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)) ||
+                    // On-screen text found by an OCR scan (issue #5).
+                    v.OcrTextLines.Any(o => EF.Functions.ILike(o.Text, pat)));
             }
 
             var required = filter?.Required ?? new();
@@ -1743,7 +1764,9 @@ public static partial class ApiEndpoints
                     EF.Functions.ILike(v.FilePath, pat) ||
                     EF.Functions.ILike(v.Notes, pat) ||
                     (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
-                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)) ||
+                    // On-screen text found by an OCR scan (issue #5).
+                    v.OcrTextLines.Any(o => EF.Functions.ILike(o.Text, pat)));
             }
 
             var required = filter?.Required ?? new();
@@ -2004,7 +2027,84 @@ public static partial class ApiEndpoints
             {
                 try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort cleanup */ }
             }
-        }).WithName("OcrVideoFrame");
+        }).Produces<OcrResultDto>(StatusCodes.Status200OK)
+          .WithName("OcrVideoFrame");
+
+        // POST /api/videos/{id}/ocr-scan — start (or resume) a full-video OCR
+        // text scan (issue #5, ask 2). Returns 202 with the live progress;
+        // 409 if a scan is already running, 404/400 if the video or its file
+        // is gone. The scan runs in the background; poll the GET below.
+        api.MapPost("/videos/{id:guid}/ocr-scan", async (
+            Guid id, OcrScanService scanner, OcrScanProgress progress, CancellationToken ct) =>
+        {
+            var result = await scanner.TryStartAsync(id, ct);
+            return result switch
+            {
+                OcrScanService.StartResult.NotFound => Results.NotFound(),
+                OcrScanService.StartResult.FileMissing =>
+                    Results.BadRequest(new { error = "The video's file is missing on disk." }),
+                OcrScanService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "An OCR scan is already running." }),
+                _ => Results.Json(ToScanDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<OcrScanProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartOcrScan");
+
+        // GET /api/videos/{id}/ocr-scan — poll OCR scan progress. Returns the
+        // live snapshot while this video is scanning (or just finished); else a
+        // synthesized idle state from the durable resume marker + stored hit
+        // count, so the panel can render "scanned up to MM:SS, N hits" on load.
+        api.MapGet("/videos/{id:guid}/ocr-scan", async (
+            Guid id, OcrScanProgress progress, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var snap = progress.Snapshot();
+            if (snap.VideoId == id && (snap.Active || snap.Phase is not "idle"))
+                return Results.Ok(ToScanDto(snap));
+
+            var video = await db.Videos.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+
+            var hits = await db.OcrTextLines.CountAsync(o => o.VideoId == id, ct);
+            return Results.Ok(new OcrScanProgressDto(
+                Active: false,
+                ScannedThroughSeconds: video.OcrScannedThroughSeconds ?? 0,
+                DurationSeconds: video.Duration.TotalSeconds,
+                Hits: hits,
+                Phase: "idle",
+                Error: null));
+        }).Produces<OcrScanProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetOcrScanProgress");
+
+        // POST /api/videos/{id}/ocr-scan/stop — request the running scan stop.
+        // Cooperative: the scan halts after the current frame, keeping its
+        // resume marker so "Scan more" can pick up where it left off.
+        api.MapPost("/videos/{id:guid}/ocr-scan/stop", (
+            Guid id, OcrScanProgress progress) =>
+        {
+            var snap = progress.Snapshot();
+            if (snap.Active && snap.VideoId == id) progress.RequestStop();
+            return Results.Ok(ToScanDto(progress.Snapshot()));
+        }).Produces<OcrScanProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopOcrScan");
+
+        // GET /api/videos/{id}/ocr-text?q= — list a video's stored OCR hits in
+        // playhead order, optionally filtered to those containing q. Drives the
+        // results list (click a line → seek to its timestamp).
+        api.MapGet("/videos/{id:guid}/ocr-text", async (
+            Guid id, string? q, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var query = db.OcrTextLines.AsNoTracking().Where(o => o.VideoId == id);
+            if (!string.IsNullOrWhiteSpace(q))
+                query = query.Where(o => EF.Functions.ILike(o.Text, $"%{q.Trim()}%"));
+
+            var lines = await query
+                .OrderBy(o => o.TimeSeconds)
+                .Select(o => new OcrTextLineDto(o.TimeSeconds, o.Text))
+                .ToListAsync(ct);
+            return Results.Ok(lines);
+        }).Produces<List<OcrTextLineDto>>(StatusCodes.Status200OK)
+          .WithName("GetVideoOcrText");
 
         // POST /api/library/remove-folder — drop every imported video under a
         // folder from the library (issue #53). Files on disk are NOT touched;

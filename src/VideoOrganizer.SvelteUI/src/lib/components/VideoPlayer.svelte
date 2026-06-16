@@ -413,6 +413,105 @@
       ocrLoading = false;
     }
   }
+
+  // --- Full-video OCR text scan (issue #5, ask 2) ------------------------
+  // "Scan for text" runs a resumable background scan that samples frames,
+  // OCRs each, and stores the hits so they're searchable and seekable.
+  let ocrScanOpen = $state(false);
+  let ocrScan = $state<import('$lib/types').OcrScanProgress | null>(null);
+  let ocrHits = $state<import('$lib/types').OcrTextLine[]>([]);
+  let ocrScanBusy = $state(false);
+  let ocrScanPoll: ReturnType<typeof setInterval> | null = null;
+
+  // % of the video the scan has covered so far (0–100), for the progress bar.
+  const ocrScanPct = $derived(
+    ocrScan && ocrScan.durationSeconds > 0
+      ? Math.min(100, Math.round((ocrScan.scannedThroughSeconds / ocrScan.durationSeconds) * 100))
+      : 0
+  );
+  // True once the scan has covered the whole video (nothing left to "scan more").
+  const ocrScanComplete = $derived(
+    !!ocrScan && !ocrScan.active && ocrScan.durationSeconds > 0 &&
+    ocrScan.scannedThroughSeconds >= ocrScan.durationSeconds - 0.001
+  );
+
+  function stopOcrPolling() {
+    if (ocrScanPoll) { clearInterval(ocrScanPoll); ocrScanPoll = null; }
+  }
+
+  async function refreshOcrHits(vid: string) {
+    try {
+      const hits = await api.getVideoOcrText(vid);
+      if (video?.id === vid) ocrHits = hits;
+    } catch { /* leave the prior list */ }
+  }
+
+  // Open the scan panel and load any prior scan state + stored hits.
+  async function openOcrScan() {
+    if (!video) return;
+    const vid = video.id;
+    ocrScanOpen = true;
+    try {
+      const [prog] = await Promise.all([api.getOcrScanProgress(vid), refreshOcrHits(vid)]);
+      if (video?.id !== vid) return;
+      ocrScan = prog;
+      if (prog.active) startOcrPolling(vid);
+    } catch (e) {
+      if (video?.id === vid) ocrScan = null;
+    }
+  }
+
+  function startOcrPolling(vid: string) {
+    stopOcrPolling();
+    ocrScanPoll = setInterval(async () => {
+      if (video?.id !== vid) { stopOcrPolling(); return; }
+      try {
+        const prog = await api.getOcrScanProgress(vid);
+        if (video?.id !== vid) { stopOcrPolling(); return; }
+        ocrScan = prog;
+        if (!prog.active) { stopOcrPolling(); await refreshOcrHits(vid); }
+      } catch { stopOcrPolling(); }
+    }, 1000);
+  }
+
+  // Start (or resume "scan more") a background scan.
+  async function startOcrScan() {
+    if (!video || ocrScanBusy) return;
+    const vid = video.id;
+    ocrScanBusy = true;
+    try {
+      ocrScan = await api.startOcrScan(vid);
+      if (video?.id === vid) startOcrPolling(vid);
+    } catch (e) {
+      if (video?.id === vid && ocrScan) ocrScan = { ...ocrScan, phase: 'error', error: String(e) };
+    } finally {
+      ocrScanBusy = false;
+    }
+  }
+
+  async function stopOcrScan() {
+    if (!video) return;
+    const vid = video.id;
+    try {
+      ocrScan = await api.stopOcrScan(vid);
+    } catch { /* poll will reconcile */ }
+  }
+
+  // Seek the player to a stored hit's timestamp.
+  function seekToOcrHit(t: number) {
+    if (videoEl) { videoEl.currentTime = t; syncScrubberFromVideo(); }
+  }
+
+  // Reset scan state when the video changes (and stop polling on unmount), so
+  // one video's hits/progress never bleed into another's.
+  $effect(() => {
+    const _ = video?.id;
+    stopOcrPolling();
+    ocrScan = null;
+    ocrHits = [];
+    ocrScanOpen = false;
+    return () => stopOcrPolling();
+  });
   // Hover tracking for the in-video scrubber overlay. When false, the
   // scrubber fades out so it doesn't obscure the picture; when true (or
   // while actively scrubbing via scrubHoverX), it's fully visible.
@@ -2993,6 +3092,83 @@
             </div>
             <pre class="text-xs whitespace-pre-wrap bg-base-200 rounded p-2 max-h-40 overflow-auto">{ocrText}</pre>
           {/if}
+        </div>
+      {/if}
+
+      <!-- Full-video OCR text scan (issue #5, ask 2): samples frames, OCRs
+           them, and stores hits so they're searchable and seekable. -->
+      <button
+        type="button"
+        class="btn btn-xs btn-ghost gap-1 ml-1"
+        onclick={openOcrScan}
+        title="Scan the whole video for on-screen text so it becomes searchable"
+      >
+        <span aria-hidden="true">🔎</span>
+        Scan for text
+      </button>
+
+      {#if ocrScanOpen}
+        <div class="mt-1 border border-base-300 rounded p-2">
+          <div class="flex items-center gap-2 flex-wrap">
+            {#if ocrScan?.active}
+              <button type="button" class="btn btn-xs btn-warning" onclick={stopOcrScan}>
+                Stop
+              </button>
+              <span class="text-xs text-base-content/70">
+                <span class="loading loading-spinner loading-xs"></span>
+                Scanning… {ocrScanPct}% (up to {formatClock(ocrScan.scannedThroughSeconds)})
+              </span>
+            {:else}
+              <button
+                type="button"
+                class="btn btn-xs btn-primary"
+                onclick={startOcrScan}
+                disabled={ocrScanBusy || ocrScanComplete}
+              >
+                {#if ocrScanBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
+                {ocrScanComplete
+                  ? 'Fully scanned'
+                  : (ocrScan && ocrScan.scannedThroughSeconds > 0 ? 'Scan more' : 'Start scan')}
+              </button>
+              {#if ocrScan && ocrScan.scannedThroughSeconds > 0}
+                <span class="text-xs text-base-content/60">
+                  Scanned to {formatClock(ocrScan.scannedThroughSeconds)} ({ocrScanPct}%)
+                </span>
+              {/if}
+            {/if}
+          </div>
+
+          {#if ocrScan?.durationSeconds}
+            <progress class="progress progress-primary w-full h-1.5 mt-1.5" value={ocrScanPct} max="100"></progress>
+          {/if}
+          {#if ocrScan?.phase === 'error' && ocrScan.error}
+            <div class="text-xs text-error mt-1 whitespace-pre-wrap">{ocrScan.error}</div>
+          {/if}
+
+          <div class="mt-2">
+            {#if ocrHits.length === 0}
+              <div class="text-xs text-base-content/50 italic">
+                {ocrScan?.active ? 'No text found yet…' : 'No on-screen text found.'}
+              </div>
+            {:else}
+              <div class="text-xs text-base-content/60 mb-1">{ocrHits.length} text hit{ocrHits.length === 1 ? '' : 's'} — click to jump</div>
+              <ul class="max-h-48 overflow-auto flex flex-col gap-0.5">
+                {#each ocrHits as hit (hit.timeSeconds)}
+                  <li>
+                    <button
+                      type="button"
+                      class="w-full text-left text-xs hover:bg-base-200 rounded px-1.5 py-1 flex gap-2"
+                      onclick={() => seekToOcrHit(hit.timeSeconds)}
+                      title="Jump to {formatClock(hit.timeSeconds)}"
+                    >
+                      <span class="font-mono text-base-content/50 shrink-0">{formatClock(hit.timeSeconds)}</span>
+                      <span class="truncate">{hit.text}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
         </div>
       {/if}
     </div>
