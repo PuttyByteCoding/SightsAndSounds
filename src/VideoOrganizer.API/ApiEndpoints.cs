@@ -54,6 +54,11 @@ public static partial class ApiEndpoints
         (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
         => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
 
+    // Project the StreamingOptimizeProgress snapshot tuple to the wire DTO.
+    private static StreamingOptimizeProgressDto ToOptimizeDto(
+        (bool Active, int Total, int Done, int Optimized, int Skipped, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Optimized, s.Skipped, s.Current, s.Phase, s.Errors);
+
     private static VideoDto ToDto(Video v)
     {
         var tags = v.VideoTags
@@ -3025,6 +3030,43 @@ public static partial class ApiEndpoints
             return Results.Ok(ToEncodeDto(progress.Snapshot()));
         }).Produces<EncodeProgressDto>(StatusCodes.Status200OK)
           .WithName("StopEncode");
+
+        // === Optimize for streaming (faststart) (issue #166) ================
+
+        // POST /api/optimize-streaming — faststart-remux the given videos in
+        // place (skips already-optimized / non-MP4). 202 / 409 / 400.
+        api.MapPost("/optimize-streaming", async (
+            OptimizeStreamingRequest req, StreamingOptimizeService optimizer,
+            StreamingOptimizeProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count == 0) return Results.BadRequest(new { error = "No videos selected." });
+
+            var result = await optimizer.TryStartAsync(ids, ct);
+            return result switch
+            {
+                StreamingOptimizeService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "An optimize run is already going." }),
+                StreamingOptimizeService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected videos can be optimized." }),
+                _ => Results.Json(ToOptimizeDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<StreamingOptimizeProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartOptimizeStreaming");
+
+        // GET /api/optimize-streaming — poll the optimize run's progress.
+        api.MapGet("/optimize-streaming", (StreamingOptimizeProgress progress) =>
+            Results.Ok(ToOptimizeDto(progress.Snapshot())))
+          .Produces<StreamingOptimizeProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetOptimizeStreamingProgress");
+
+        // POST /api/optimize-streaming/stop — stop after the current video.
+        api.MapPost("/optimize-streaming/stop", (StreamingOptimizeProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToOptimizeDto(progress.Snapshot()));
+        }).Produces<StreamingOptimizeProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopOptimizeStreaming");
 
         api.MapGet("/videos/marked-for-deletion", async (
             VideoOrganizerDbContext db, CancellationToken ct) =>

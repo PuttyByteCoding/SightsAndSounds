@@ -215,6 +215,10 @@ builder.Services.AddSingleton<JoinService>();
 // + a live-progress singleton polled by the Encode page.
 builder.Services.AddSingleton<EncodeProgress>();
 builder.Services.AddSingleton<EncodeService>();
+// Optimize for streaming (issue #166): faststart remux so large MP4s start
+// playing immediately, + a live-progress singleton polled by the Optimize page.
+builder.Services.AddSingleton<StreamingOptimizeProgress>();
+builder.Services.AddSingleton<StreamingOptimizeService>();
 
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();

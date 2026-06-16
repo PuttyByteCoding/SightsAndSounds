@@ -238,6 +238,9 @@ export type PurgeMissingFilesResult = S['PurgeMissingFilesResultDto'];
 // Parent marked for deletion that still holds embedded (un-exported) clips (#174).
 export type PurgeClipWarning = S['PurgeClipWarningDto'];
 
+// Live state of an optimize-for-streaming (faststart) run (issue #166).
+export type StreamingOptimizeProgress = S['StreamingOptimizeProgressDto'];
+
 // Live state of a video-repair run (issue #165).
 export type RepairProgress = S['RepairProgressDto'];
 
