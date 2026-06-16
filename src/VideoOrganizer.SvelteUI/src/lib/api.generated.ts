@@ -468,6 +468,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/videos/filter-page": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["FilterVideosPage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/videos/{id}": {
         parameters: {
             query?: never;
@@ -1902,6 +1918,12 @@ export interface components {
             movedAt: string;
             revertedAt: null | string;
         };
+        FilteredVideosPage: {
+            videos: components["schemas"]["VideoDto"][];
+            nextCursor: null | string;
+            /** Format: int32 */
+            hiddenCount: number;
+        };
         FilterRef: {
             type?: components["schemas"]["FilterRefType"];
             value?: string;
@@ -3179,6 +3201,36 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VideoDto"][];
+                };
+            };
+        };
+    };
+    FilterVideosPage: {
+        parameters: {
+            query?: {
+                sort?: string;
+                dir?: string;
+                limit?: number;
+                cursor?: string;
+                seed?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": null | components["schemas"]["PlaylistFilterRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilteredVideosPage"];
                 };
             };
         };

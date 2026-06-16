@@ -1714,6 +1714,102 @@ public static partial class ApiEndpoints
         }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
           .WithName("FilterVideos");
 
+        // Keyset-paginated variant of /videos/filter (#127). Same filter body;
+        // pagination via query params: sort (shuffle|fileName|fileSize|duration|
+        // folderFile), dir (asc|desc), limit, cursor (opaque), seed (shuffle).
+        // Returns one page + the cursor for the next, so the browser never pulls
+        // the whole matched set at once.
+        api.MapPost("/videos/filter-page", async (
+            PlaylistFilterRequest? filter,
+            string? sort, string? dir, int? limit, string? cursor, string? seed,
+            VideoOrganizerDbContext db,
+            CancellationToken ct) =>
+        {
+            var enabledRoots = await db.VideoSets.Where(s => s.Enabled)
+                .Select(s => s.Path).ToListAsync(ct);
+            if (enabledRoots.Count == 0)
+                return Results.Ok(new FilteredVideosPage(Array.Empty<VideoDto>(), null, 0));
+
+            var candidatesQuery = IncludeForVideoDto(db.Videos)
+                .AsNoTracking()
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+
+            var searchQuery = filter?.SearchQuery?.Trim();
+            if (!string.IsNullOrEmpty(searchQuery))
+            {
+                var pat = $"%{SqlHelpers.EscapeLikePattern(searchQuery)}%";
+                candidatesQuery = candidatesQuery.Where(v =>
+                    EF.Functions.ILike(v.FileName, pat) ||
+                    EF.Functions.ILike(v.FilePath, pat) ||
+                    EF.Functions.ILike(v.Notes, pat) ||
+                    (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+            }
+
+            var required = filter?.Required ?? new();
+            var optional = filter?.Optional ?? new();
+            var excluded = filter?.Excluded ?? new();
+            var referencedTagIds = required.Concat(optional)
+                .Where(f => f.Type == FilterRefType.Tag && Guid.TryParse(f.Value, out _))
+                .Select(f => Guid.Parse(f.Value))
+                .ToHashSet();
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
+
+            // Total auto-hidden matches (whole filter, not just this page) for the
+            // "N hidden" status — count of filter-matching rows carrying a hidden tag.
+            var hiddenCount = 0;
+            if (autoHideTagIds.Count > 0)
+            {
+                var (allMatches, _) = VideoFilterTranslator.Apply(
+                    candidatesQuery, required, optional, excluded, Array.Empty<Guid>());
+                var hiddenIds = autoHideTagIds.ToList();
+                hiddenCount = await allMatches.CountAsync(v => v.VideoTags.Any(vt => hiddenIds.Contains(vt.TagId)), ct);
+            }
+
+            // Apply the filter with auto-hide suppressed in SQL so pages exclude
+            // hidden rows. Folder filters can't translate → fall back to the
+            // full in-memory pass (no cursor; the client windows it).
+            var (narrowed, needsInMemory) =
+                VideoFilterTranslator.Apply(candidatesQuery, required, optional, excluded, autoHideTagIds);
+
+            if (needsInMemory)
+            {
+                var lookup = await LoadTagLookupAsync(db, ct);
+                var loaded = await narrowed.ToListAsync(ct);
+                var matched = loaded.Where(v =>
+                {
+                    if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
+                    if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
+                    if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
+                    return true;
+                }).ToList();
+                return Results.Ok(new FilteredVideosPage(matched.Select(ToDto).ToList(), null, hiddenCount));
+            }
+
+            var pageSize = Math.Clamp(limit ?? 48, 1, 200);
+            var mode = VideoPagination.ParseSort(sort);
+            var descending = dir == "desc";
+            var theSeed = string.IsNullOrEmpty(seed) ? "0" : seed!;
+            var cur = VideoPagination.Decode(cursor);
+
+            // Fetch pageSize + 1 to know whether a further page exists.
+            var rows = await VideoPagination.OrderAndSeek(narrowed, mode, descending, cur, theSeed)
+                .Take(pageSize + 1)
+                .ToListAsync(ct);
+
+            string? nextCursor = null;
+            if (rows.Count > pageSize)
+            {
+                var last = rows[pageSize - 1];
+                nextCursor = VideoPagination.Encode(
+                    new VideoPagination.Cursor(VideoPagination.KeyOf(last, mode, theSeed), last.Id));
+                rows = rows.Take(pageSize).ToList();
+            }
+
+            return Results.Ok(new FilteredVideosPage(rows.Select(ToDto).ToList(), nextCursor, hiddenCount));
+        }).Produces<FilteredVideosPage>(StatusCodes.Status200OK)
+          .WithName("FilterVideosPage");
+
         api.MapGet("/videos/{id:guid}", async (VideoOrganizerDbContext db, Guid id, CancellationToken ct) =>
         {
             var video = await IncludeForVideoDto(db.Videos)
