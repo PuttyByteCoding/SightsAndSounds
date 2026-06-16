@@ -34,6 +34,11 @@ public static partial class ApiEndpoints
         (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
         => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
 
+    // Project the BlockRemovalProgress snapshot tuple to the wire DTO.
+    private static BlockRemovalProgressDto ToBlockRemovalDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
     private static VideoDto ToDto(Video v)
     {
         var tags = v.VideoTags
@@ -2732,6 +2737,70 @@ public static partial class ApiEndpoints
             return Results.Ok(ToClipExportDto(progress.Snapshot()));
         }).Produces<ClipExportProgressDto>(StatusCodes.Status200OK)
           .WithName("StopClipExport");
+
+        // === Remove blocked sections (issue #70) ============================
+
+        // GET /api/remove-blocks/queue — videos with "Hide" blocks that can be
+        // trimmed into a new file. VideoBlocks are a JSON column, so the Hide
+        // filter is applied in memory after loading the (non-clip) rows.
+        api.MapGet("/remove-blocks/queue", async (
+            VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var rows = await db.Videos.AsNoTracking()
+                .Where(v => v.ParentVideoId == null)
+                .Select(v => new { v.Id, v.FileName, v.Duration, v.VideoBlocks })
+                .ToListAsync(ct);
+
+            var items = rows
+                .Where(r => r.VideoBlocks.Any(b => b.VideoBlockType == Domain.Models.VideoBlockTypes.Hide))
+                .Select(r => new BlockRemovalQueueItemDto(
+                    r.Id, r.FileName, r.Duration.TotalSeconds,
+                    r.VideoBlocks
+                        .Where(b => b.VideoBlockType == Domain.Models.VideoBlockTypes.Hide)
+                        .OrderBy(b => b.OffsetInSeconds)
+                        .Select(b => new VideoBlockDto(b.OffsetInSeconds, b.LengthInSeconds,
+                            (Shared.Dto.VideoBlockTypes)(int)b.VideoBlockType))
+                        .ToList()))
+                .OrderBy(i => i.FileName)
+                .ToList();
+            return Results.Ok(items);
+        }).Produces<List<BlockRemovalQueueItemDto>>(StatusCodes.Status200OK)
+          .WithName("GetBlockRemovalQueue");
+
+        // POST /api/remove-blocks — start a background run that builds a trimmed
+        // file (Hide sections removed) for each video. 202 / 409 / 400.
+        api.MapPost("/remove-blocks", async (
+            RemoveBlocksRequest req, BlockRemovalService remover,
+            BlockRemovalProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count == 0) return Results.BadRequest(new { error = "No videos selected." });
+
+            var result = await remover.TryStartAsync(ids, ct);
+            return result switch
+            {
+                BlockRemovalService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "A block-removal run is already going." }),
+                BlockRemovalService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected videos have hidden sections." }),
+                _ => Results.Json(ToBlockRemovalDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<BlockRemovalProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartBlockRemoval");
+
+        // GET /api/remove-blocks — poll the run's progress.
+        api.MapGet("/remove-blocks", (BlockRemovalProgress progress) =>
+            Results.Ok(ToBlockRemovalDto(progress.Snapshot())))
+          .Produces<BlockRemovalProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetBlockRemovalProgress");
+
+        // POST /api/remove-blocks/stop — stop after the current video.
+        api.MapPost("/remove-blocks/stop", (BlockRemovalProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToBlockRemovalDto(progress.Snapshot()));
+        }).Produces<BlockRemovalProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopBlockRemoval");
 
         api.MapGet("/videos/marked-for-deletion", async (
             VideoOrganizerDbContext db, CancellationToken ct) =>

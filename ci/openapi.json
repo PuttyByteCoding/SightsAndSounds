@@ -1769,6 +1769,97 @@
         }
       }
     },
+    "/api/remove-blocks/queue": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetBlockRemovalQueue",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BlockRemovalQueueItemDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/remove-blocks": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StartBlockRemoval",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveBlocksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockRemovalProgressDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetBlockRemovalProgress",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockRemovalProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/remove-blocks/stop": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StopBlockRemoval",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockRemovalProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/videos/marked-for-deletion": {
       "get": {
         "tags": [
@@ -3702,6 +3793,70 @@
           }
         }
       },
+      "BlockRemovalProgressDto": {
+        "required": [
+          "active",
+          "total",
+          "done",
+          "current",
+          "phase",
+          "errors"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "current": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "BlockRemovalQueueItemDto": {
+        "required": [
+          "videoId",
+          "fileName",
+          "durationSeconds",
+          "hideBlocks"
+        ],
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "durationSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "hideBlocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoBlockDto"
+            }
+          }
+        }
+      },
       "BulkCreateTagsRequest": {
         "required": [
           "tagGroupId",
@@ -5415,6 +5570,21 @@
             "format": "int32"
           },
           "skippedPresentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "RemoveBlocksRequest": {
+        "required": [
+          "videoIds"
+        ],
+        "type": "object",
+        "properties": {
+          "videoIds": {
             "type": "array",
             "items": {
               "type": "string",

@@ -199,6 +199,10 @@ builder.Services.AddSingleton<OcrScanService>();
 // background + a live-progress singleton polled by the clips-export page.
 builder.Services.AddSingleton<ClipExportProgress>();
 builder.Services.AddSingleton<ClipExportService>();
+// Block removal (issue #70): build a new file with the "Hide" sections cut out,
+// + a live-progress singleton polled by the remove-blocked page.
+builder.Services.AddSingleton<BlockRemovalProgress>();
+builder.Services.AddSingleton<BlockRemovalService>();
 
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();

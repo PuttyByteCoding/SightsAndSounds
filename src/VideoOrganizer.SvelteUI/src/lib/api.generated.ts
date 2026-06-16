@@ -948,6 +948,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/remove-blocks/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetBlockRemovalQueue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/remove-blocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetBlockRemovalProgress"];
+        put?: never;
+        post: operations["StartBlockRemoval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/remove-blocks/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["StopBlockRemoval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/videos/marked-for-deletion": {
         parameters: {
             query?: never;
@@ -1893,6 +1941,24 @@ export interface components {
             writable: boolean;
             error: null | string;
         };
+        BlockRemovalProgressDto: {
+            active: boolean;
+            /** Format: int32 */
+            total: number;
+            /** Format: int32 */
+            done: number;
+            current: string;
+            phase: string;
+            errors: string[];
+        };
+        BlockRemovalQueueItemDto: {
+            /** Format: uuid */
+            videoId: string;
+            fileName: string;
+            /** Format: double */
+            durationSeconds: number;
+            hideBlocks: components["schemas"]["VideoBlockDto"][];
+        };
         BulkCreateTagsRequest: {
             /** Format: uuid */
             tagGroupId: string;
@@ -2398,6 +2464,9 @@ export interface components {
             /** Format: int32 */
             notFound: number;
             skippedPresentIds: string[];
+        };
+        RemoveBlocksRequest: {
+            videoIds: string[];
         };
         RemoveFolderRequest: {
             path: string;
@@ -4156,6 +4225,90 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClipExportProgressDto"];
+                };
+            };
+        };
+    };
+    GetBlockRemovalQueue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockRemovalQueueItemDto"][];
+                };
+            };
+        };
+    };
+    GetBlockRemovalProgress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockRemovalProgressDto"];
+                };
+            };
+        };
+    };
+    StartBlockRemoval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RemoveBlocksRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockRemovalProgressDto"];
+                };
+            };
+        };
+    };
+    StopBlockRemoval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockRemovalProgressDto"];
                 };
             };
         };
