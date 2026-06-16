@@ -12,6 +12,7 @@
     Tag,
     TagGroup,
     FilterRef,
+    PlaylistFilterRequest,
     ImportBrowseDirectory,
     VideoTagSummary,
     FlagCounts
@@ -99,43 +100,40 @@
   // order in Shuffle mode (see browseQueue.ts / planFilteredQueue).
   let firstLoad = true;
 
-  // --- Infinite-scroll chunking -----------------------------------------
-  // We render the grid in pages of CHUNK_SIZE so a 1000-video filter
-  // doesn't try to mount 1000 VideoCards (each of which warms a VTT) at
-  // once. An IntersectionObserver on a sentinel at the bottom of the
-  // grid bumps the visible count as the user scrolls.
-  const CHUNK_SIZE = 24;
-  let visibleCount = $state(CHUNK_SIZE);
-  // Reset back to one chunk whenever the underlying list changes — the
-  // user just changed filter / reshuffled, so old scroll position is
-  // meaningless. Using a counter trips the $effect even when length
-  // stays the same (e.g. reshuffle of the same set).
-  let visibleResetSeed = $state(0);
-  $effect(() => {
-    void visibleResetSeed;
-    visibleCount = CHUNK_SIZE;
-  });
-  const visibleVideos = $derived(videos.slice(0, visibleCount));
+  // --- Server-side keyset pagination (#127) -----------------------------
+  // The grid pulls one page at a time from /videos/filter-page and appends as
+  // the user scrolls, instead of fetching the whole matched set and windowing
+  // it client-side. The server owns ordering (including seeded shuffle), so
+  // there's no client-side sort/shuffle anymore.
+  const PAGE_SIZE = 48;
+  let nextCursor = $state<string | null>(null);
+  let loadingMore = $state(false);
+  // Bumped on every page-1 refresh; a loadMore that started under an older
+  // generation discards its result so stale pages can't append to a new filter.
+  let loadGen = 0;
+  // Per-session shuffle seed so shuffle pages are stable across scrolls;
+  // reshuffle picks a new one.
+  let shuffleSeed = $state(newSeed());
+  function newSeed(): string {
+    return typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  }
+  // The filter used for the current result set — reused by loadMore so a
+  // mid-scroll filter change can't interleave pages from different filters.
+  let activeFilter: PlaylistFilterRequest | null = null;
   let scrollSentinelEl: HTMLDivElement | null = $state(null);
   $effect(() => {
-    // Reading visibleCount makes this effect re-run after each chunk bump,
-    // which re-creates the observer. An IntersectionObserver only fires on
-    // intersection *changes*, so once the sentinel is in view it won't fire
-    // again on its own as more cards render beneath it — leaving it stuck
-    // on "Loading more…" forever (issue #33). Recreating the observer
-    // re-checks the sentinel against the now-larger list and keeps loading
-    // until it scrolls out of range or everything is shown. Svelte runs
-    // effects after the DOM update, so the fresh observer sees the
-    // post-render layout.
-    void visibleCount;
+    // Re-create the observer whenever the loaded count changes so it re-checks
+    // the (now lower) sentinel and keeps loading while it stays in view —
+    // without this it fires only on the first intersection (issue #33).
+    void videos.length;
+    void nextCursor;
     const el = scrollSentinelEl;
     if (!el) return;
     const obs = new IntersectionObserver((entries) => {
       for (const e of entries) {
-        if (e.isIntersecting && visibleCount < videos.length) {
-          // Bump by a chunk; clamp at the total so we don't overshoot.
-          visibleCount = Math.min(videos.length, visibleCount + CHUNK_SIZE);
-        }
+        if (e.isIntersecting) void loadMore();
       }
     }, { rootMargin: '300px' });
     obs.observe(el);
@@ -300,14 +298,6 @@
     localStorage.setItem('browsePlayerHeight', String(playerHeight));
   }
 
-  function shuffleInPlace<T>(arr: T[]): T[] {
-    const a = [...arr];
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-  }
 
   // User-triggered reshuffle of the current grid into a new random order
   // and jump to the new first video. Resets the infinite-scroll window
@@ -316,11 +306,9 @@
   // and leaving the select on e.g. "File size" while showing a random
   // grid would lie about the current order.
   function reshufflePlaylist() {
-    if (videos.length === 0) return;
+    shuffleSeed = newSeed();        // new random order
     setSortMode('shuffle');
-    videos = shuffleInPlace(videos);
-    playingVideo = videos[0];
-    visibleResetSeed++;
+    refreshVideos({ resetPlayback: true }); // jump to the new first video
   }
 
   // --- Sorting -----------------------------------------------------------
@@ -341,71 +329,28 @@
   // mode's natural default when the mode changes; the ↑↓ button flips it.
   let sortDescending = $state(false);
 
-  // ".NET TimeSpan: [d.]hh:mm:ss[.fffffff]" → total seconds. Returns 0
-  // for unparseable values so they sink to the short end of the sort.
-  function durationSeconds(ts: string | null | undefined): number {
-    if (!ts) return 0;
-    const m = ts.match(/^(?:(\d+)\.)?(\d+):(\d{2}):(\d{2})(?:\.(\d+))?$/);
-    if (!m) return 0;
-    const days = m[1] ? parseInt(m[1], 10) : 0;
-    return ((days * 24 + parseInt(m[2], 10)) * 60 + parseInt(m[3], 10)) * 60
-      + parseInt(m[4], 10);
-  }
-
-  // Directory part of the absolute file path — the "folder" key for the
-  // folder-then-file-name mode. Handles both separator styles.
-  function folderOf(path: string): string {
-    const i = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return i >= 0 ? path.slice(0, i) : '';
-  }
-
-  function compareVideos(a: Video, b: Video, mode: SortMode): number {
-    switch (mode) {
-      case 'fileName':
-        return a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base', numeric: true });
-      case 'fileSize':
-        return a.fileSize - b.fileSize;
-      case 'duration':
-        return durationSeconds(a.duration) - durationSeconds(b.duration);
-      case 'folderFile':
-        return folderOf(a.filePath).localeCompare(folderOf(b.filePath), undefined, { sensitivity: 'base', numeric: true })
-          || a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base', numeric: true });
-      default:
-        return 0;
-    }
-  }
-
-  // Order a result set according to the current mode. Shuffle mode
-  // randomizes; explicit modes sort (with direction applied).
-  function orderVideos(list: Video[]): Video[] {
-    if (sortMode === 'shuffle') return shuffleInPlace(list);
-    const sorted = [...list].sort((a, b) => compareVideos(a, b, sortMode));
-    if (sortDescending) sorted.reverse();
-    return sorted;
-  }
+  // Ordering is server-side now (#127): /videos/filter-page sorts + paginates
+  // per `sortMode`/`sortDescending`/`shuffleSeed`, so the old client-side
+  // compareVideos/orderVideos/shuffleInPlace are gone.
 
   function setSortMode(mode: SortMode) {
     sortMode = mode;
     if (typeof localStorage !== 'undefined') localStorage.setItem('browseSortMode', mode);
   }
 
-  // Select-change handler: re-order the current grid in place. Picking
-  // an explicit sort keeps the playing video as-is (its x-position just
-  // changes); picking Shuffle behaves like the Reshuffle button.
+  // Select-change handler: refetch page 1 in the new order (the server sorts +
+  // paginates now). Keeps the currently-playing video — its grid position just
+  // changes; the Reshuffle button is the explicit "jump to a new first" action.
   function onSortModeChange(mode: SortMode) {
     setSortMode(mode);
     sortDescending = false;
-    if (videos.length === 0) return;
-    videos = orderVideos(videos);
-    if (sortMode === 'shuffle' && videos.length > 0) playingVideo = videos[0];
-    visibleResetSeed++;
+    refreshVideos({ resetPlayback: false });
   }
 
   function toggleSortDirection() {
     if (sortMode === 'shuffle') return;
     sortDescending = !sortDescending;
-    videos = [...videos].reverse();
-    visibleResetSeed++;
+    refreshVideos({ resetPlayback: false });
   }
 
   // refreshVideos re-fetches the filtered list. `fromFilter` marks the
@@ -417,7 +362,9 @@
   // changes can't resolve out of order (last-issued wins, not last-to-return). (#131)
   let inFlightFilter: AbortController | null = null;
 
-  async function refreshVideos({ fromFilter = false }: { fromFilter?: boolean } = {}) {
+  async function refreshVideos(
+    { fromFilter = false, resetPlayback }: { fromFilter?: boolean; resetPlayback?: boolean } = {}
+  ) {
     // Empty-install case: loadSidebar has navigated to /import. Skip
     // the filter call so we don't pop a transient error banner during
     // the navigation.
@@ -425,6 +372,7 @@
     inFlightFilter?.abort();
     const ac = new AbortController();
     inFlightFilter = ac;
+    const gen = ++loadGen; // supersedes any in-flight loadMore too
     videosLoading = true;
     loadError = null;
     try {
@@ -432,36 +380,39 @@
       // filter. Drives the "Play all results" path from the Ctrl+K
       // search palette. Trimmed; empty string is treated as no search.
       const searchQuery = (page.url.searchParams.get('searchQuery') ?? '').trim();
-      const filter = {
+      const filter: PlaylistFilterRequest = {
         required: filterStore.required.map((t): FilterRef => ({ type: t.type, value: t.value })),
         optional: filterStore.optional.map((t): FilterRef => ({ type: t.type, value: t.value })),
         excluded: filterStore.excluded.map((t): FilterRef => ({ type: t.type, value: t.value })),
         searchQuery: searchQuery.length > 0 ? searchQuery : undefined
       };
-      const { videos: fetched, hiddenCount } = await api.filterVideos(filter, ac.signal);
+      // Fetch the FIRST page; subsequent pages come from loadMore via the cursor.
+      const result = await api.filterVideosPage(
+        filter,
+        { sort: sortMode, dir: sortDescending ? 'desc' : 'asc', limit: PAGE_SIZE, seed: shuffleSeed },
+        ac.signal
+      );
       if (ac.signal.aborted) return; // superseded mid-flight — a newer fetch owns the result
-      hiddenByTagCount = hiddenCount;
-      // Decide the next queue + playing video. A filter/search change
-      // restarts the queue from position 0 (issue #21): the current
-      // video stops and the new queue's first entry plays. We suppress
-      // that reset while a ?id= deep-link is opening a specific video
-      // (deepLinkInFlight) so the deep-link's pick isn't clobbered by a
-      // concurrent filter refresh. See browseQueue.ts for ordering.
+      activeFilter = filter;
+      nextCursor = result.nextCursor;
+      hiddenByTagCount = result.hiddenCount;
+      // Decide the playing video. A filter/search change restarts the queue
+      // from position 0 (issue #21): the current video stops and the new
+      // queue's first entry plays. We suppress that reset while a ?id=
+      // deep-link is opening a specific video (deepLinkInFlight). The server
+      // already ordered the page, so `order` is identity here.
       const plan = planFilteredQueue({
-        fetched,
+        fetched: result.videos,
         playing: playingVideo,
         firstLoad,
         isShuffle: sortMode === 'shuffle',
         hasSearchQuery: !!filter.searchQuery,
-        resetPlayback: fromFilter && !deepLinkInFlight,
-        order: orderVideos
+        resetPlayback: resetPlayback ?? (fromFilter && !deepLinkInFlight),
+        order: (l) => l
       });
       firstLoad = false;
       videos = plan.videos;
       playingVideo = plan.playing;
-      // Filter change → reset the infinite-scroll window so the new
-      // result set starts from the top.
-      visibleResetSeed++;
     } catch (e: any) {
       if (ac.signal.aborted || e?.name === 'AbortError') return; // superseded — ignore
       loadError = e?.message ?? 'Failed to load videos';
@@ -475,6 +426,32 @@
         // "still loading", so the slow-load dialog shouldn't fire for it.
         firstVideosReady = true;
       }
+    }
+  }
+
+  // Fetch + append the next keyset page when the scroll sentinel scrolls into
+  // view (#127). Guarded against concurrent runs and against appending a stale
+  // page after the filter/sort changed (loadGen).
+  async function loadMore() {
+    if (loadingMore || nextCursor === null || activeFilter === null) return;
+    const gen = loadGen;
+    const cursor = nextCursor;
+    loadingMore = true;
+    try {
+      const result = await api.filterVideosPage(activeFilter, {
+        sort: sortMode,
+        dir: sortDescending ? 'desc' : 'asc',
+        limit: PAGE_SIZE,
+        cursor,
+        seed: shuffleSeed
+      });
+      if (gen !== loadGen) return; // filter/sort changed mid-flight — discard
+      videos = [...videos, ...result.videos];
+      nextCursor = result.nextCursor;
+    } catch {
+      // Non-fatal: keep what's loaded; a later scroll retries.
+    } finally {
+      loadingMore = false;
     }
   }
 
@@ -1161,7 +1138,9 @@
     videos = videos.filter(v =>
       v.id === dupAnchor!.id
       || Math.abs(tsToSeconds(v.duration) - anchorSeconds) <= tol);
-    visibleResetSeed++;
+    // Client-side narrowing of the loaded set — stop paginating so a later
+    // scroll doesn't append unfiltered pages over the narrowed view.
+    nextCursor = null;
     dupMessage = `Narrowed to ${videos.length} video${videos.length === 1 ? '' : 's'} within ±${tol}s of the anchor.`;
     dupMessageIsError = false;
   }
@@ -1180,10 +1159,14 @@
   // VideoPlayer's arrow-key handlers; the player gates by `tagsPanelOpen`
   // so plain arrows nav when the panel is closed and Shift+arrows do when
   // it's open.
-  function goNext() {
+  async function goNext() {
     if (!playingVideo) return;
     const idx = videos.findIndex(v => v.id === playingVideo!.id);
-    if (idx >= 0 && idx + 1 < videos.length) playingVideo = videos[idx + 1];
+    if (idx < 0) return;
+    // At the end of the loaded pages but more exist → pull the next page first
+    // so autoplay/Next doesn't dead-end before the result set is exhausted (#127).
+    if (idx + 1 >= videos.length && nextCursor) await loadMore();
+    if (idx + 1 < videos.length) playingVideo = videos[idx + 1];
   }
   function goPrev() {
     if (!playingVideo) return;
@@ -2080,7 +2063,7 @@
           {#if videosLoading}
             Loading…
           {:else}
-            {videos.length} videos{#if visibleCount < videos.length} · showing {visibleCount}{/if}
+            {videos.length} loaded{#if nextCursor} · more on scroll{/if}
           {/if}
         </p>
         <div class="flex items-center gap-3 ml-auto">
@@ -2175,7 +2158,7 @@
              active (centerOnActive) — near the ends the browser clamps the
              scroll so it sits as close to center as the queue allows. -->
         <div class="flex gap-3 overflow-x-auto pb-2">
-          {#each visibleVideos as v (v.id)}
+          {#each videos as v (v.id)}
             <div class="shrink-0" style="width: {thumbWidth}px;">
               <VideoCard
                 video={v}
@@ -2188,12 +2171,12 @@
           {/each}
           <!-- Horizontal sentinel: the IntersectionObserver loads the
                next chunk as the user scrolls toward the right end. -->
-          {#if visibleCount < videos.length}
+          {#if nextCursor}
             <div
               bind:this={scrollSentinelEl}
               class="shrink-0 w-32 flex items-center justify-center text-xs text-base-content/50"
             >
-              Loading more… ({videos.length - visibleCount})
+              Loading more…
             </div>
           {/if}
         </div>
@@ -2210,7 +2193,7 @@
             class="grid gap-3"
             style="grid-template-columns: repeat(auto-fill, minmax({thumbWidth}px, 1fr));"
           >
-            {#each visibleVideos as v (v.id)}
+            {#each videos as v (v.id)}
               <VideoCard
                 video={v}
                 onopen={open}
@@ -2223,9 +2206,9 @@
           <!-- Sentinel: empty div the IntersectionObserver watches for to
                load the next chunk. Lives inside the scroll region so its
                intersections fire against the right root. -->
-          {#if visibleCount < videos.length}
+          {#if nextCursor}
             <div bind:this={scrollSentinelEl} class="h-12 flex items-center justify-center text-xs text-base-content/50">
-              Loading more… ({videos.length - visibleCount} remaining)
+              Loading more…
             </div>
           {/if}
 
