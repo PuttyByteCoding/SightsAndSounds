@@ -1,4 +1,6 @@
 using System.Threading.Channels;
+using Microsoft.EntityFrameworkCore;
+using VideoOrganizer.Infrastructure.Data;
 using VideoOrganizer.Shared.Dto;
 
 namespace VideoOrganizer.API.Services;
@@ -118,6 +120,11 @@ public sealed class ImportQueueService : BackgroundService
                 item.JobId,
                 stoppingToken);
 
+            // Set any pre-staged flags on the videos this job created (#168).
+            // They're stamped with ImportJobId, so a scoped bulk update is
+            // enough — no need to thread flags through the import service.
+            await ApplyInitialFlagsAsync(scope, item.JobId, r.InitialFlags, stoppingToken);
+
             _progressTracker.MarkCompleted(item.JobId);
             // Wake the downstream workers so the new Videos start getting
             // thumbnails + Md5 right away. They serialize among themselves
@@ -131,5 +138,24 @@ public sealed class ImportQueueService : BackgroundService
             _logger.LogError(ex, "Import job {JobId} failed", item.JobId);
             _progressTracker.MarkFailed(item.JobId, ex.Message);
         }
+    }
+
+    // Apply the request's pre-staged flags to every video this job created.
+    // Only the no-side-effect, user-settable flags are honored: "favorite"
+    // and "clip". (playbackIssue/markedForDeletion move files on disk, so
+    // they're not offered at import; exported/edited/embedded are system-set.)
+    private static async Task ApplyInitialFlagsAsync(
+        IServiceScope scope, Guid jobId, List<string>? flags, CancellationToken ct)
+    {
+        if (flags is not { Count: > 0 }) return;
+        var set = new HashSet<string>(flags, StringComparer.OrdinalIgnoreCase);
+        var db = scope.ServiceProvider.GetRequiredService<VideoOrganizerDbContext>();
+
+        if (set.Contains("favorite"))
+            await db.Videos.Where(v => v.ImportJobId == jobId)
+                .ExecuteUpdateAsync(s => s.SetProperty(v => v.IsFavorite, true), ct);
+        if (set.Contains("clip"))
+            await db.Videos.Where(v => v.ImportJobId == jobId)
+                .ExecuteUpdateAsync(s => s.SetProperty(v => v.IsClip, true), ct);
     }
 }

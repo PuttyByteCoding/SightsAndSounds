@@ -2110,6 +2110,7 @@ export interface components {
             name?: null | string;
             notes?: null | string;
             initialTagIds?: null | string[];
+            initialFlags?: null | string[];
         };
         /** @enum {string} */
         DomainCameraTypes: "unknown" | "cellPhone" | "hiddenCamera" | "camcorder" | "professionalCamera" | "notChecked";

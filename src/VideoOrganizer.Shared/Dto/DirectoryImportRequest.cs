@@ -10,5 +10,9 @@ public record DirectoryImportRequest(
     // the client doesn't supply one.
     string? Name = null,
     string? Notes = null,
-    List<Guid>? InitialTagIds = null
+    List<Guid>? InitialTagIds = null,
+    // Flags to set on every imported video (#168). Recognized keys: "favorite",
+    // "clip". Structural flags (exported/edited/embedded) are system-set, and
+    // playbackIssue/markedForDeletion are excluded (they move files on disk).
+    List<string>? InitialFlags = null
 );
