@@ -1140,6 +1140,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/optimize-streaming": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetOptimizeStreamingProgress"];
+        put?: never;
+        post: operations["StartOptimizeStreaming"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/optimize-streaming/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["StopOptimizeStreaming"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/videos/marked-for-deletion": {
         parameters: {
             query?: never;
@@ -2586,6 +2618,9 @@ export interface components {
             timeSeconds: number;
             text: string;
         };
+        OptimizeStreamingRequest: {
+            videoIds: string[];
+        };
         PlaylistDto: {
             /** Format: uuid */
             id: string;
@@ -2756,6 +2791,20 @@ export interface components {
         };
         SetVideoTagsRequest: {
             tagIds: string[];
+        };
+        StreamingOptimizeProgressDto: {
+            active: boolean;
+            /** Format: int32 */
+            total: number;
+            /** Format: int32 */
+            done: number;
+            /** Format: int32 */
+            optimized: number;
+            /** Format: int32 */
+            skipped: number;
+            current: string;
+            phase: string;
+            errors: string[];
         };
         Tag: {
             /** Format: uuid */
@@ -4796,6 +4845,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EncodeProgressDto"];
+                };
+            };
+        };
+    };
+    GetOptimizeStreamingProgress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StreamingOptimizeProgressDto"];
+                };
+            };
+        };
+    };
+    StartOptimizeStreaming: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OptimizeStreamingRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StreamingOptimizeProgressDto"];
+                };
+            };
+        };
+    };
+    StopOptimizeStreaming: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StreamingOptimizeProgressDto"];
                 };
             };
         };

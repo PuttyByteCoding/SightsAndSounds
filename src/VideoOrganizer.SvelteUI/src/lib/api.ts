@@ -44,6 +44,7 @@ import type {
   UpdateVideoRequest,
   Video,
   PurgeClipWarning,
+  StreamingOptimizeProgress,
   RepairProgress,
   JoinProgress,
   EncodeProgress,
@@ -283,6 +284,12 @@ export const api = {
     request<void>(`/api/videos/${id}/mark-clip`, { method: 'POST' }),
   unmarkClip: (id: string) =>
     request<void>(`/api/videos/${id}/unmark-clip`, { method: 'POST' }),
+
+  // Optimize videos for streaming — faststart remux in place (#166).
+  startOptimizeStreaming: (videoIds: string[]) =>
+    request<StreamingOptimizeProgress>('/api/optimize-streaming', { method: 'POST', body: JSON.stringify({ videoIds }) }),
+  getOptimizeStreamingProgress: () => request<StreamingOptimizeProgress>('/api/optimize-streaming'),
+  stopOptimizeStreaming: () => request<StreamingOptimizeProgress>('/api/optimize-streaming/stop', { method: 'POST' }),
 
   // Rename the video's file in place (same folder, new base name). (#172)
   renameVideo: (id: string, newName: string) =>

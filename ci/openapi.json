@@ -2153,6 +2153,74 @@
         }
       }
     },
+    "/api/optimize-streaming": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StartOptimizeStreaming",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptimizeStreamingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamingOptimizeProgressDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetOptimizeStreamingProgress",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamingOptimizeProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/optimize-streaming/stop": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StopOptimizeStreaming",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamingOptimizeProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/videos/marked-for-deletion": {
       "get": {
         "tags": [
@@ -5760,6 +5828,21 @@
           }
         }
       },
+      "OptimizeStreamingRequest": {
+        "required": [
+          "videoIds"
+        ],
+        "type": "object",
+        "properties": {
+          "videoIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
       "PlaylistDto": {
         "required": [
           "id",
@@ -6396,6 +6479,52 @@
             "items": {
               "type": "string",
               "format": "uuid"
+            }
+          }
+        }
+      },
+      "StreamingOptimizeProgressDto": {
+        "required": [
+          "active",
+          "total",
+          "done",
+          "optimized",
+          "skipped",
+          "current",
+          "phase",
+          "errors"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "optimized": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "current": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }
