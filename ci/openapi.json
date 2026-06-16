@@ -3907,6 +3907,7 @@
         "required": [
           "videos",
           "nextCursor",
+          "totalCount",
           "hiddenCount"
         ],
         "type": "object",
@@ -3922,6 +3923,10 @@
               "null",
               "string"
             ]
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": "int32"
           },
           "hiddenCount": {
             "type": "integer",
