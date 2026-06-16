@@ -240,6 +240,9 @@ export type PurgeClipWarning = S['PurgeClipWarningDto'];
 
 // Live state of a join (concatenate) run (issue #163).
 export type JoinProgress = S['JoinProgressDto'];
+
+// Live state of an encode/convert run (issue #164).
+export type EncodeProgress = S['EncodeProgressDto'];
 export type ExtraDiskFile = S['ExtraDiskFileDto'];
 export type Md5Candidate = S['Md5CandidateDto'];
 export type Md5CheckResult = S['Md5CheckResultDto'];

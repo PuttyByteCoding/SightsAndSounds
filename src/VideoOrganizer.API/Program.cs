@@ -207,6 +207,10 @@ builder.Services.AddSingleton<BlockRemovalService>();
 // live-progress singleton polled by the Join page.
 builder.Services.AddSingleton<JoinProgress>();
 builder.Services.AddSingleton<JoinService>();
+// Encode/convert to a configurable profile (issue #164): ffmpeg or HandBrake,
+// + a live-progress singleton polled by the Encode page.
+builder.Services.AddSingleton<EncodeProgress>();
+builder.Services.AddSingleton<EncodeService>();
 
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
