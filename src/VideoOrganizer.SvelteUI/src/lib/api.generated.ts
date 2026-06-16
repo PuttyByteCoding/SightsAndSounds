@@ -1060,6 +1060,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/encode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetEncodeProgress"];
+        put?: never;
+        post: operations["StartEncode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encode/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["StopEncode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/videos/marked-for-deletion": {
         parameters: {
             query?: never;
@@ -2185,6 +2217,19 @@ export interface components {
         };
         /** @enum {string} */
         DuplicateStatusDto: "pending" | "confirmed" | "rejected";
+        EncodeProgressDto: {
+            active: boolean;
+            /** Format: int32 */
+            total: number;
+            /** Format: int32 */
+            done: number;
+            current: string;
+            phase: string;
+            errors: string[];
+        };
+        EncodeRequest: {
+            videoIds: string[];
+        };
         ExportClipItem: {
             /** Format: uuid */
             clipId: string;
@@ -4530,6 +4575,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepairProgressDto"];
+                };
+            };
+        };
+    };
+    GetEncodeProgress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EncodeProgressDto"];
+                };
+            };
+        };
+    };
+    StartEncode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EncodeRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EncodeProgressDto"];
+                };
+            };
+        };
+    };
+    StopEncode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EncodeProgressDto"];
                 };
             };
         };
