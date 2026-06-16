@@ -43,6 +43,7 @@ import type {
   UpdateTagRequest,
   UpdateVideoRequest,
   Video,
+  PurgeClipWarning,
   VideoSet,
   VideoSetInput,
   ReRootPreview,
@@ -391,6 +392,9 @@ export const api = {
     request<Video>(`/api/file-moves/${moveId}/revert`, { method: 'POST' }),
 
   getMarkedForDeletion: () => request<Video[]>('/api/videos/marked-for-deletion'),
+  // Parents marked for deletion that still have embedded (un-exported) clips (#174).
+  getPurgeClipWarnings: () =>
+    request<PurgeClipWarning[]>('/api/videos/purge-clip-warnings'),
   purgeVideo: (id: string) =>
     request<void>(`/api/videos/${id}/purge`, { method: 'POST' }),
   purgeAllMarkedForDeletion: () =>
