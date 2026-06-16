@@ -3,7 +3,6 @@
   // video filtered by tag + status + folder filters. Plays inline with
   // the existing VideoPlayer and offers the generic EditTagsPanel.
   import { onMount } from 'svelte';
-  import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
   import type {
@@ -361,9 +360,9 @@
   async function refreshVideos(
     { fromFilter = false, resetPlayback }: { fromFilter?: boolean; resetPlayback?: boolean } = {}
   ) {
-    // Empty-install case: loadSidebar has navigated to /import. Skip
-    // the filter call so we don't pop a transient error banner during
-    // the navigation.
+    // Empty-library case: the welcome panel is showing instead of the
+    // grid, so skip the (pointless) filter fetch and just mark this half
+    // of the load gate done.
     if (isEmptyInstall) { firstVideosReady = true; return; }
     inFlightFilter?.abort();
     const ac = new AbortController();
@@ -522,12 +521,18 @@
     }
   }
 
-  // Once the initial sidebar load decides the DB is empty (no
-  // VideoSets configured) we skip the filterVideos call entirely and
-  // bounce to the import page. Tracked so the $effect that re-fetches
-  // on filter changes (below) doesn't kick off an /api/videos/filter
-  // request before the navigation completes.
+  // When the initial sidebar load finds nothing to browse (no VideoSets
+  // configured, OR sets exist but no videos imported yet) we show a
+  // welcome / empty-library panel in place of the filter UI rather than
+  // forcing the user to a setup page (issue #139 — the app no longer
+  // *requires* a video source on first run). The flag also lets the
+  // $effect that re-fetches on filter changes (below) skip the pointless
+  // /api/videos/filter call while the library is empty.
   let isEmptyInstall = $state(false);
+  // Distinguishes the two empty cases for the welcome copy: false = no
+  // source configured at all (offer "Add a source"); true = a source
+  // exists but it's empty (offer "Import videos").
+  let hasAnySource = $state(false);
 
   // Filter-tree collapse state. When collapsed the sidebar shrinks to
   // a thin column with just a re-open chevron, freeing the entire row
@@ -543,29 +548,26 @@
 
   async function loadSidebar() {
     try {
-      // VideoSets must load FIRST so the empty-install redirect fires
-      // before we try other sidebar fetches (tag-groups, tags). Those
-      // can also fail on a fresh DB if seeding hasn't completed, and
-      // there's no point loading them when we're about to navigate
-      // away anyway. Two redirect cases collapse into the same code
-      // path: no VideoSets configured, OR sets exist but no videos
-      // have been imported yet — in both, /browse has nothing to
-      // show, so send the user to /import.
+      // VideoSets must load FIRST so we can decide the empty-library
+      // case before the other sidebar fetches (tag-groups, tags), which
+      // have nothing to show on a fresh DB anyway. Two cases collapse
+      // into the welcome panel: no VideoSets configured, OR sets exist
+      // but no videos have been imported yet. In both, /browse shows the
+      // welcome/empty-library state instead of the filter UI (issue
+      // #139) — no redirect, so the user can still explore the app.
       sets = await api.listVideoSets();
       if (sets.length === 0) {
         isEmptyInstall = true;
+        hasAnySource = false;
         sidebarReady = true;
-        goto('/import', { replaceState: true });
         return;
       }
       const totalVideos = await api.getVideoCount();
       if (totalVideos === 0) {
-        // Sets exist but the library is empty — same destination.
-        // replaceState keeps the back-button history clean so the
-        // user doesn't get bounced /browse → /import → /browse.
+        // A source exists but the library is empty — offer Import.
         isEmptyInstall = true;
+        hasAnySource = true;
         sidebarReady = true;
-        goto('/import', { replaceState: true });
         return;
       }
       groups = await api.listTagGroups();
@@ -1242,6 +1244,42 @@
     </div>
   {/if}
 
+  {#if isEmptyInstall}
+    <!-- First-run / empty-library welcome (issue #139). The app no longer
+         requires a video source up front, so instead of bouncing to a
+         setup page we explain what's missing and offer the next step,
+         while leaving the rest of the app reachable via the nav. -->
+    <div class="hero bg-base-200 rounded-box py-16">
+      <div class="hero-content text-center max-w-xl">
+        <div class="flex flex-col items-center gap-4">
+          <svg class="w-16 h-16 text-base-content/40" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm6 4v8l6-4-6-4z" />
+          </svg>
+          <h2 class="text-2xl font-semibold">Your library is empty</h2>
+          {#if hasAnySource}
+            <p class="text-base-content/70">
+              You've added a source, but no videos have been imported yet.
+              Run an import to scan it and start browsing.
+            </p>
+            <div class="flex flex-wrap gap-2 justify-center mt-2">
+              <a href="/import" class="btn btn-primary">Import videos</a>
+              <a href="/sources" class="btn btn-ghost">Manage sources</a>
+            </div>
+          {:else}
+            <p class="text-base-content/70">
+              No video source is configured yet. Add a folder of videos as a
+              source, then import it — or explore the rest of the app from the
+              menu in the meantime.
+            </p>
+            <div class="flex flex-wrap gap-2 justify-center mt-2">
+              <a href="/sources" class="btn btn-primary">Add a source</a>
+              <a href="/import" class="btn btn-ghost">Import tool</a>
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {:else}
   <!-- Grid columns swap based on sidebar collapse state. Collapsed
        state shrinks the aside to a 48px chevron-only column so the
        player + thumbnails get the full width back. Both transitions
@@ -2238,6 +2276,7 @@
       {/if}
     </section>
   </div>
+  {/if}
 </div>
 
 <MoveFileDialog
