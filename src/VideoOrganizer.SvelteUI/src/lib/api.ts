@@ -169,13 +169,15 @@ export const api = {
   // matches the auto-hide (#84) suppressed (from the X-Hidden-Count header), so
   // the browse bar can show an "N hidden" status.
   filterVideos: async (
-    filter: PlaylistFilterRequest
+    filter: PlaylistFilterRequest,
+    signal?: AbortSignal
   ): Promise<{ videos: Video[]; hiddenCount: number }> => {
     const url = `${BASE}/api/videos/filter`;
     const res = await fetch(url, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify(filter)
+      body: JSON.stringify(filter),
+      signal
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -412,7 +414,7 @@ export const api = {
   // discriminated SearchResponse so the caller can pattern-match on
   // result.kind. Empty / whitespace queries short-circuit to an empty
   // response without a network round-trip.
-  search: async (opts: SearchRequestOpts): Promise<SearchResponse> => {
+  search: async (opts: SearchRequestOpts, signal?: AbortSignal): Promise<SearchResponse> => {
     const q = opts.q.trim();
     if (!q) {
       return { query: '', totalCount: 0, truncated: false, results: [] };
@@ -422,7 +424,7 @@ export const api = {
     if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
     if (opts.offset !== undefined) qs.set('offset', String(opts.offset));
     if (opts.kinds !== undefined) qs.set('kinds', opts.kinds);
-    return request<SearchResponse>(`/api/search?${qs.toString()}`);
+    return request<SearchResponse>(`/api/search?${qs.toString()}`, { signal });
   },
   setTagProperties: (id: string, body: SetPropertyValuesRequest) =>
     request<void>(`/api/tags/${id}/properties`, {

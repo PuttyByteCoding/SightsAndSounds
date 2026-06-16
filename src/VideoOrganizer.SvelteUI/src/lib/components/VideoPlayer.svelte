@@ -358,6 +358,15 @@
     }
   }
 
+  // Screen-reader announcement for the tag-flash overlay (#131). The visual
+  // overlay is conditionally mounted (unreliable for live regions), so a
+  // persistent sr-only region mirrors the latest entry and announces it politely.
+  const flashAnnouncement = $derived.by(() => {
+    const e = tagFlash.entries.at(-1);
+    if (!e) return '';
+    return e.kind === 'removed' ? `Removed tag ${e.text}` : `Tagged ${e.text}`;
+  });
+
   // Scrubber (ScrubFrame + VTT parsing live in $lib/scrubber for unit testing)
   let scrubFrames = $state<ScrubFrame[]>([]);
   let scrubSpriteSize = $state<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -2289,8 +2298,11 @@
          away from the video. Stacked vertically so rapid-fire applies
          (Alt+1, Alt+2, …) each stay readable. pointer-events:none so
          click-to-pause still goes through. -->
+    <!-- Persistent polite live region so screen readers hear tag changes; the
+         visual overlay below is aria-hidden to avoid a double read (#131). -->
+    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{flashAnnouncement}</div>
     {#if tagFlash.entries.length > 0}
-      <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 pointer-events-none overflow-hidden">
+      <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 pointer-events-none overflow-hidden" aria-hidden="true">
         {#each tagFlash.entries as entry (entry.id)}
           <span
             class="tag-flash px-4 py-1.5 rounded-full text-xl font-semibold shadow-lg

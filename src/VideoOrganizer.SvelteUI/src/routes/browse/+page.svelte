@@ -413,11 +413,18 @@
   // restart the queue from position 0 per issue #21. Other callers
   // (post-edit refreshPlaying, the "Show all" button) pass nothing and
   // leave playback untouched.
+  // Cancels the previous filter fetch when a newer one starts, so rapid filter
+  // changes can't resolve out of order (last-issued wins, not last-to-return). (#131)
+  let inFlightFilter: AbortController | null = null;
+
   async function refreshVideos({ fromFilter = false }: { fromFilter?: boolean } = {}) {
     // Empty-install case: loadSidebar has navigated to /import. Skip
     // the filter call so we don't pop a transient error banner during
     // the navigation.
     if (isEmptyInstall) { firstVideosReady = true; return; }
+    inFlightFilter?.abort();
+    const ac = new AbortController();
+    inFlightFilter = ac;
     videosLoading = true;
     loadError = null;
     try {
@@ -431,7 +438,8 @@
         excluded: filterStore.excluded.map((t): FilterRef => ({ type: t.type, value: t.value })),
         searchQuery: searchQuery.length > 0 ? searchQuery : undefined
       };
-      const { videos: fetched, hiddenCount } = await api.filterVideos(filter);
+      const { videos: fetched, hiddenCount } = await api.filterVideos(filter, ac.signal);
+      if (ac.signal.aborted) return; // superseded mid-flight — a newer fetch owns the result
       hiddenByTagCount = hiddenCount;
       // Decide the next queue + playing video. A filter/search change
       // restarts the queue from position 0 (issue #21): the current
@@ -455,12 +463,18 @@
       // result set starts from the top.
       visibleResetSeed++;
     } catch (e: any) {
+      if (ac.signal.aborted || e?.name === 'AbortError') return; // superseded — ignore
       loadError = e?.message ?? 'Failed to load videos';
     } finally {
-      videosLoading = false;
-      // First video load is done (success or error) — the grid is no longer
-      // "still loading", so the slow-load dialog shouldn't fire for it.
-      firstVideosReady = true;
+      // Only the latest request owns the loading flags; a superseded one
+      // must not clear them out from under the newer fetch.
+      if (inFlightFilter === ac) {
+        inFlightFilter = null;
+        videosLoading = false;
+        // First video load is done (success or error) — the grid is no longer
+        // "still loading", so the slow-load dialog shouldn't fire for it.
+        firstVideosReady = true;
+      }
     }
   }
 
@@ -1222,7 +1236,7 @@
   <h1 class="text-2xl font-semibold">Videos</h1>
 
   {#if loadError}
-    <div class="alert alert-error">
+    <div class="alert alert-error" role="alert" aria-live="assertive">
       <span>{loadError}</span>
       <button class="btn btn-sm" onclick={() => (loadError = null)}>Dismiss</button>
     </div>
