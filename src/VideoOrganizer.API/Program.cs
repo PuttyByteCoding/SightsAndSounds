@@ -203,6 +203,10 @@ builder.Services.AddSingleton<ClipExportService>();
 // + a live-progress singleton polled by the remove-blocked page.
 builder.Services.AddSingleton<BlockRemovalProgress>();
 builder.Services.AddSingleton<BlockRemovalService>();
+// Repair (issue #165): re-encode unplayable videos to browser-friendly H.264,
+// + a live-progress singleton polled by the Playback Issues page.
+builder.Services.AddSingleton<RepairProgress>();
+builder.Services.AddSingleton<RepairService>();
 
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();

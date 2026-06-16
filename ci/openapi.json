@@ -1908,6 +1908,74 @@
         }
       }
     },
+    "/api/repair": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StartRepair",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairProgressDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetRepairProgress",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/repair/stop": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "StopRepair",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairProgressDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/videos/marked-for-deletion": {
       "get": {
         "tags": [
@@ -5747,6 +5815,57 @@
           "removed": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "RepairProgressDto": {
+        "required": [
+          "active",
+          "total",
+          "done",
+          "current",
+          "phase",
+          "errors"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "current": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RepairRequest": {
+        "required": [
+          "videoIds"
+        ],
+        "type": "object",
+        "properties": {
+          "videoIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         }
       },
