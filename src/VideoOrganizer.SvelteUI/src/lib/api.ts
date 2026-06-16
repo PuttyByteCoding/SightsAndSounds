@@ -12,6 +12,9 @@ import type {
   ImportedFolder,
   ImportScanProgress,
   MoveProgress,
+  OcrResult,
+  OcrTextLine,
+  OcrScanProgress,
   FileMoveLog,
   ImportFailedFileRow,
   ImportFileListResponse,
@@ -232,6 +235,23 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body)
     }),
+
+  // OCR the on-screen text at time t (seconds) of the video (issue #5).
+  ocrVideoFrame: (id: string, t: number) =>
+    request<OcrResult>(`/api/videos/${id}/ocr?t=${encodeURIComponent(String(t))}`),
+
+  // Full-video OCR text scan (issue #5, ask 2). Start/resume runs a background
+  // scan; poll progress; stop is cooperative (keeps the resume marker).
+  startOcrScan: (id: string) =>
+    request<OcrScanProgress>(`/api/videos/${id}/ocr-scan`, { method: 'POST' }),
+  getOcrScanProgress: (id: string) =>
+    request<OcrScanProgress>(`/api/videos/${id}/ocr-scan`),
+  stopOcrScan: (id: string) =>
+    request<OcrScanProgress>(`/api/videos/${id}/ocr-scan/stop`, { method: 'POST' }),
+  // A video's stored OCR hits in playhead order (optionally filtered by q).
+  getVideoOcrText: (id: string, q?: string) =>
+    request<OcrTextLine[]>(
+      `/api/videos/${id}/ocr-text${q ? `?q=${encodeURIComponent(q)}` : ''}`),
 
   // Tags whose name/alias appears in this video's file name or folder path,
   // excluding ones already applied (issue #10).

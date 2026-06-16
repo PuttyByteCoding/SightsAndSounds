@@ -24,6 +24,8 @@ public sealed class VideoOrganizerDbContext : DbContext
 
     public DbSet<FileMoveLog> FileMoveLogs => Set<FileMoveLog>();
 
+    public DbSet<OcrTextLine> OcrTextLines => Set<OcrTextLine>();
+
     // Postgres md5(text). Used to derive a stable, seedable shuffle order for
     // keyset pagination (#127): ORDER BY md5(id || seed) is deterministic per
     // seed, so pages don't overlap or repeat. DB-only — never called in memory.

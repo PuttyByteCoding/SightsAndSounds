@@ -149,6 +149,17 @@ export type FilteredVideosPage = S['FilteredVideosPage'];
 // Sort modes for the paginated browse query — match the server's `sort` param.
 export type BrowseSort = 'shuffle' | 'fileName' | 'fileSize' | 'duration' | 'folderFile';
 
+// --- On-screen text OCR (issue #5) -----------------------------------------
+
+// Text read off a single video frame (the "Read text" button at the playhead).
+export type OcrResult = S['OcrResultDto'];
+
+// One stored OCR hit from a full-video scan: the text and where it appears.
+export type OcrTextLine = S['OcrTextLineDto'];
+
+// Live state of a background OCR scan (start → poll → stop / resume).
+export type OcrScanProgress = S['OcrScanProgressDto'];
+
 // --- Duplicates -------------------------------------------------------------
 
 export type DuplicateStatus = S['DuplicateStatusDto'];

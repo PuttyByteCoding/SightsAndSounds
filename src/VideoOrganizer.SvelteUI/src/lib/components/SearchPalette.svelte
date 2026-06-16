@@ -258,6 +258,7 @@
       case 'filePath': return 'path';
       case 'notes':    return 'notes';
       case 'md5':      return 'md5';
+      case 'ocrText':  return 'on-screen text';
       default:         return field;
     }
   }
