@@ -4261,6 +4261,15 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          "initialFlags": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

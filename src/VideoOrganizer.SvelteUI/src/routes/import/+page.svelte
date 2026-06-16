@@ -66,6 +66,9 @@
   let importName = $state('');
   // Generic tag picker — IDs of tags to apply to every newly-imported video.
   let initialTagIds = $state<string[]>([]);
+  // Flags to pre-stage on every imported video (#168).
+  let flagFavorite = $state(false);
+  let flagClip = $state(false);
   let initialTagPickerInput = $state('');
   let initialTagSuggestions = $state<{ tagId: string; name: string; tagGroupName: string }[]>([]);
   let initialTagLabels = $state<Record<string, string>>({});
@@ -762,7 +765,8 @@
           includeSubdirectories,
           name,
           initialTagIds: initialTagIds.length > 0 ? initialTagIds : null,
-          notes: importNotes.trim().length > 0 ? importNotes.trim() : null
+          notes: importNotes.trim().length > 0 ? importNotes.trim() : null,
+          initialFlags: [...(flagFavorite ? ['favorite'] : []), ...(flagClip ? ['clip'] : [])]
         };
         try {
           await api.startImport(request);
@@ -1354,6 +1358,20 @@
                   bind:value={importNotes}
                 ></textarea>
               </label>
+
+              <!-- Flags to set on every imported video (#168). Only the
+                   no-side-effect, user-settable flags are offered here. -->
+              <div class="mt-4 flex flex-col items-start gap-1">
+                <span class="label-text font-medium">Flags to apply</span>
+                <label class="label cursor-pointer gap-2 p-0 justify-start">
+                  <input type="checkbox" class="checkbox checkbox-sm" bind:checked={flagFavorite} />
+                  <span class="text-sm">Favorite</span>
+                </label>
+                <label class="label cursor-pointer gap-2 p-0 justify-start">
+                  <input type="checkbox" class="checkbox checkbox-sm" bind:checked={flagClip} />
+                  <span class="text-sm">Clip</span>
+                </label>
+              </div>
             </div>
           {/if}
         </section>
