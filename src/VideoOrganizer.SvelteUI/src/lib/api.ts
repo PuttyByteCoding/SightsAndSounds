@@ -284,6 +284,13 @@ export const api = {
   unmarkClip: (id: string) =>
     request<void>(`/api/videos/${id}/unmark-clip`, { method: 'POST' }),
 
+  // Rename the video's file in place (same folder, new base name). (#172)
+  renameVideo: (id: string, newName: string) =>
+    request<Video>(`/api/videos/${id}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ newName })
+    }),
+
   // Join (concatenate) videos in order into one new file (#163).
   startJoin: (videoIds: string[], reencode: boolean, name?: string) =>
     request<JoinProgress>('/api/join', {

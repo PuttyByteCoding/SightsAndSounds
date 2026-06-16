@@ -2255,6 +2255,74 @@ public static partial class ApiEndpoints
         }).Produces<VideoDto>(StatusCodes.Status200OK)
           .WithName("MoveVideo");
 
+        // POST /api/videos/{id}/rename — rename the file in place (same folder,
+        // new base name; original extension kept). A same-volume File.Move, so
+        // it's instant. Child clips share the parent's file, so their FilePath
+        // is updated too. Rejects on name collision (the user picked the name).
+        // (issue #172)
+        api.MapPost("/videos/{id:guid}/rename", async (
+            Guid id, RenameVideoRequest req, VideoOrganizerDbContext db,
+            DirectoryScanCache scanCache, ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (video.ParentVideoId.HasValue)
+                return Results.BadRequest(new { error = "Clips share their parent's file and can't be renamed on their own." });
+            if (!File.Exists(video.FilePath))
+                return Results.BadRequest(new { error = "The video's file is missing on disk." });
+
+            // Sanitize to a bare file name (no path separators / illegal chars),
+            // and keep the original extension regardless of what the user typed.
+            var ext = Path.GetExtension(video.FilePath);
+            var invalid = Path.GetInvalidFileNameChars();
+            var cleaned = new string((req.NewName ?? string.Empty)
+                .Where(c => !invalid.Contains(c) && c != Path.DirectorySeparatorChar && c != Path.AltDirectorySeparatorChar)
+                .ToArray()).Trim().Trim('.');
+            if (ext.Length > 0 && cleaned.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+                cleaned = cleaned[..^ext.Length];
+            if (cleaned.Length == 0)
+                return Results.BadRequest(new { error = "Please provide a valid file name." });
+
+            var dir = Path.GetDirectoryName(video.FilePath) ?? ".";
+            var newFileName = cleaned + ext;
+            var dest = Path.Combine(dir, newFileName);
+            var fromPath = video.FilePath;
+            if (string.Equals(Path.GetFullPath(dest), Path.GetFullPath(fromPath), StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "That's already the file's name." });
+            if (File.Exists(dest))
+                return Results.BadRequest(new { error = "A file with that name already exists in this folder." });
+
+            try
+            {
+                File.Move(fromPath, dest);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to rename {Src} to {Dst}", fromPath, dest);
+                return Results.Problem($"Could not rename file: {ex.Message}");
+            }
+
+            var normalizedDest = PathNormalizer.Normalize(dest);
+            video.FilePath = normalizedDest;
+            video.FileName = newFileName;
+            // Child clips point at the same physical file — keep them in sync.
+            await db.Videos.Where(v => v.ParentVideoId == id)
+                .ExecuteUpdateAsync(s => s.SetProperty(v => v.FilePath, normalizedDest), ct);
+            db.FileMoveLogs.Add(new FileMoveLog
+            {
+                VideoId = id,
+                FileName = newFileName,
+                FromPath = PathNormalizer.Normalize(fromPath),
+                ToPath = normalizedDest,
+                MovedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync(ct);
+            EvictMovedDirs(scanCache, dir, dir);
+            logger.LogInformation("Renamed video {VideoId} from {From} to {To}", id, fromPath, dest);
+            return await ReturnFreshDtoAsync(db, id, ct);
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("RenameVideo");
+
         // GET /api/videos/{id}/move-progress — live byte progress for an
         // in-flight move/undo of this video; idle when nothing is moving it.
         api.MapGet("/videos/{id:guid}/move-progress", (Guid id, FileMoveProgress progress) =>

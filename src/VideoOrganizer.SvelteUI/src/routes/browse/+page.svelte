@@ -1211,6 +1211,15 @@
     void refreshFlagCounts();
   }
 
+  // Rename the currently-playing video's file (#172). Throws on failure so the
+  // FileInfoPanel can surface the server's message inline.
+  async function renameCurrentVideo(newName: string) {
+    if (!playingVideo) return;
+    const updated = await api.renameVideo(playingVideo.id, newName);
+    playingVideo = updated;
+    patchVideoInGrid(updated);
+  }
+
   onMount(loadSidebar);
 </script>
 
@@ -2211,6 +2220,7 @@
           <FileInfoPanel
             bind:show={showFileInfo}
             video={playingVideo}
+            onRename={renameCurrentVideo}
           />
         </div>
       {/if}

@@ -1126,6 +1126,47 @@
         }
       }
     },
+    "/api/videos/{id}/rename": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "RenameVideo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameVideoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/videos/{id}/move-progress": {
       "get": {
         "tags": [
@@ -6063,6 +6104,17 @@
           "removed": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "RenameVideoRequest": {
+        "required": [
+          "newName"
+        ],
+        "type": "object",
+        "properties": {
+          "newName": {
+            "type": "string"
           }
         }
       },
