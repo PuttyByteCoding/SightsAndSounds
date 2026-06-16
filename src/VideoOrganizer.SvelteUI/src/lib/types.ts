@@ -238,6 +238,9 @@ export type PurgeMissingFilesResult = S['PurgeMissingFilesResultDto'];
 // Parent marked for deletion that still holds embedded (un-exported) clips (#174).
 export type PurgeClipWarning = S['PurgeClipWarningDto'];
 
+// Live state of a video-repair run (issue #165).
+export type RepairProgress = S['RepairProgressDto'];
+
 // Live state of a join (concatenate) run (issue #163).
 export type JoinProgress = S['JoinProgressDto'];
 

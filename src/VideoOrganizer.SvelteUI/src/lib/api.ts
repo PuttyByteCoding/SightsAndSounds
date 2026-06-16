@@ -44,6 +44,7 @@ import type {
   UpdateVideoRequest,
   Video,
   PurgeClipWarning,
+  RepairProgress,
   JoinProgress,
   EncodeProgress,
   VideoSet,
@@ -430,6 +431,12 @@ export const api = {
   // Triage list — videos the user has flagged with PlaybackIssue.
   // Powers the /playback-issues page (parallel to /purge).
   getPlaybackIssues: () => request<Video[]>('/api/videos/playback-issues'),
+
+  // Repair (re-encode to browser-friendly H.264) the given videos (#165).
+  startRepair: (videoIds: string[]) =>
+    request<RepairProgress>('/api/repair', { method: 'POST', body: JSON.stringify({ videoIds }) }),
+  getRepairProgress: () => request<RepairProgress>('/api/repair'),
+  stopRepair: () => request<RepairProgress>('/api/repair/stop', { method: 'POST' }),
   // Bulk-purge every PlaybackIssue row in one shot. Same response
   // shape as purgeAllMarkedForDeletion so the page's bulk-progress
   // modal can consume both interchangeably.
