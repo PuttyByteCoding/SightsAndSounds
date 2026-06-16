@@ -143,19 +143,29 @@
     return () => obs.disconnect();
   });
 
-  // --- Player / grid drag-resize ---------------------------------------
-  // The right pane is a sticky-player-on-top + thumbnail-grid-below
-  // layout. The drag handle controls the player's min-height so the
-  // player still grows when the video naturally needs more space.
-  // Persisted so the layout survives navigation away and back.
+  // --- Player auto-sizing (#171) ---------------------------------------
+  // The player and the thumbnail strip share the viewport: the queue strip
+  // is ALWAYS fully visible, and the video fills the height left above it.
+  // We measure the player card's top plus the header-row/strip heights and
+  // size the card to "everything left after the strip", so the strip never
+  // gets pushed below the fold. The video itself is capped at 2× its native
+  // size inside VideoPlayer (fitMaxWidth), so a tall pane never upscales it
+  // past that ceiling — it just letterboxes.
   const PLAYER_HEIGHT_MIN = 220;
-  const PLAYER_HEIGHT_DEFAULT = 480;
-  let playerHeight = $state(PLAYER_HEIGHT_DEFAULT);
-  let dragging = $state(false);
-  // Snapshot of the values at the moment dragging starts so we don't
-  // re-read the DOM on every mousemove tick.
-  let dragStartY = 0;
-  let dragStartHeight = 0;
+  let playerHeight = $state(480);
+  let playerCardEl = $state<HTMLDivElement | null>(null);
+  let playerHeaderRowEl = $state<HTMLDivElement | null>(null);
+  let playerStripEl = $state<HTMLDivElement | null>(null);
+
+  function recomputePlayerHeight() {
+    if (typeof window === 'undefined' || !playerCardEl) return;
+    const top = playerCardEl.getBoundingClientRect().top;
+    // Strip + header-row heights are content-driven and don't change when the
+    // player grows, so reserving them keeps the strip on-screen.
+    const below = (playerHeaderRowEl?.offsetHeight ?? 0)
+      + (playerStripEl?.offsetHeight ?? 0) + 28; // inter-element gaps/margins
+    playerHeight = Math.max(PLAYER_HEIGHT_MIN, Math.round(window.innerHeight - top - below));
+  }
 
   // --- Thumbnail size --------------------------------------------------
   // User-controlled minimum tile width; the grid uses auto-fill +
@@ -229,10 +239,6 @@
   }
 
   onMount(() => {
-    const stored = Number(localStorage.getItem('browsePlayerHeight'));
-    if (Number.isFinite(stored) && stored >= PLAYER_HEIGHT_MIN) {
-      playerHeight = stored;
-    }
     const storedThumb = Number(localStorage.getItem('browseThumbWidth'));
     if (Number.isFinite(storedThumb) && storedThumb >= THUMB_WIDTH_MIN && storedThumb <= THUMB_WIDTH_MAX) {
       thumbWidth = storedThumb;
@@ -260,7 +266,24 @@
     const slowLoadTimer = setTimeout(() => {
       if (!pageReady && !isEmptyInstall) showLoadStatus = true;
     }, SLOW_LOAD_MS);
-    return () => clearTimeout(slowLoadTimer);
+
+    // Auto-size the player to fill the viewport above the strip (#171).
+    const onResize = () => recomputePlayerHeight();
+    window.addEventListener('resize', onResize);
+    requestAnimationFrame(recomputePlayerHeight);
+    return () => {
+      clearTimeout(slowLoadTimer);
+      window.removeEventListener('resize', onResize);
+    };
+  });
+
+  // Re-measure when the playing video, view mode, or queue length changes —
+  // any of which can shift the strip/header heights or the player's top.
+  $effect(() => {
+    void playingVideo?.id;
+    void viewMode;
+    void totalCount;
+    if (viewMode === 'player') requestAnimationFrame(recomputePlayerHeight);
   });
 
   // Save on each change. Cheap (a few writes per drag) and keeps the
@@ -270,36 +293,6 @@
     localStorage.setItem('browseThumbWidth', String(thumbWidth));
   });
 
-  // Pointer-event-based drag (works for mouse, touch, pen). Using
-  // PointerEvent + setPointerCapture means even if the cursor sails off
-  // the handle mid-drag we keep getting move events from the same
-  // pointer — no need for window-level listeners or worrying about
-  // child-element pointer leakage.
-  function startDrag(e: PointerEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    dragging = true;
-    dragStartY = e.clientY;
-    dragStartHeight = playerHeight;
-    const target = e.currentTarget as Element;
-    target.setPointerCapture(e.pointerId);
-  }
-  function onDragMove(e: PointerEvent) {
-    if (!dragging) return;
-    const delta = e.clientY - dragStartY;
-    // Clamp so the player can't shrink below a usable size or grow
-    // past the viewport. The 300px floor reserves room for at least
-    // one row of thumbnails below.
-    const max = window.innerHeight - 300;
-    playerHeight = Math.max(PLAYER_HEIGHT_MIN, Math.min(max, dragStartHeight + delta));
-  }
-  function endDrag(e: PointerEvent) {
-    if (!dragging) return;
-    dragging = false;
-    const target = e.currentTarget as Element;
-    if (target.hasPointerCapture(e.pointerId)) target.releasePointerCapture(e.pointerId);
-    localStorage.setItem('browsePlayerHeight', String(playerHeight));
-  }
 
 
   // User-triggered reshuffle of the current grid into a new random order
@@ -2014,8 +2007,9 @@
                  (p-3 + button row + gap) so the picture fits cleanly
                  inside the wrapper. Hidden in grid view (issue #23). -->
             <div
+              bind:this={playerCardEl}
               class="card bg-base-200 p-3"
-              style="min-height: {playerHeight}px;"
+              style="height: {playerHeight}px;"
             >
               <VideoPlayer
                 bind:video={playingVideo}
@@ -2036,45 +2030,10 @@
         </div>
       {/if}
 
-      {#if playingVideo && viewMode === 'player'}
-        <!-- Drag handle: 12px hit area, visible 4px bar with three grip
-             dots. Pointer-event-based drag with setPointerCapture so the
-             cursor can leave the handle mid-drag. Double-click resets to
-             the default height. Stays in normal flow (not sticky) —
-             it's an occasional control. -->
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize player (double-click to reset)"
-          tabindex="0"
-          class="group relative h-3 shrink-0 cursor-ns-resize select-none w-full touch-none"
-          title="Drag to resize · double-click to reset"
-          onpointerdown={startDrag}
-          onpointermove={onDragMove}
-          onpointerup={endDrag}
-          onpointercancel={endDrag}
-          ondblclick={() => { playerHeight = PLAYER_HEIGHT_DEFAULT; localStorage.setItem('browsePlayerHeight', String(PLAYER_HEIGHT_DEFAULT)); }}
-        >
-          <span
-            class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1 rounded-full transition-colors pointer-events-none
-                   {dragging ? 'bg-primary' : 'bg-base-300 group-hover:bg-primary/60'}"
-          ></span>
-          <span
-            class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-1 pointer-events-none"
-            aria-hidden="true"
-          >
-            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
-            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
-            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
-          </span>
-        </div>
-      {/if}
-
       <!-- Header row — count, loading indicator, thumb-size slider,
            reshuffle. flex-wrap so the slider drops to its own row on
            narrow viewports instead of squeezing into nothing. -->
-      <div class="flex justify-between items-center shrink-0 mb-2 mt-2 gap-3 flex-wrap">
+      <div bind:this={playerHeaderRowEl} class="flex justify-between items-center shrink-0 mb-2 mt-2 gap-3 flex-wrap">
         <p class="text-sm text-base-content/70">
           {#if videosLoading}
             Loading…
@@ -2173,7 +2132,7 @@
              upcoming ones to its right. VideoCard centers itself when
              active (centerOnActive) — near the ends the browser clamps the
              scroll so it sits as close to center as the queue allows. -->
-        <div class="flex gap-3 overflow-x-auto pb-2">
+        <div bind:this={playerStripEl} class="flex gap-3 overflow-x-auto pb-2">
           {#each videos as v (v.id)}
             <div class="shrink-0" style="width: {thumbWidth}px;">
               <VideoCard
