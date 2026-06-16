@@ -2846,6 +2846,38 @@ public static partial class ApiEndpoints
         }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
           .WithName("GetMarkedForDeletionVideos");
 
+        // GET /api/videos/purge-clip-warnings — parents marked for deletion that
+        // still have embedded (non-exported, non-deleted) clips (#174). Purging
+        // them loses those clip ranges, so the Purge page warns + offers export.
+        api.MapGet("/videos/purge-clip-warnings", async (
+            VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var marked = await db.Videos.AsNoTracking()
+                .Where(v => v.MarkedForDeletion && v.ParentVideoId == null)
+                .Select(v => new { v.Id, v.FileName })
+                .ToListAsync(ct);
+            if (marked.Count == 0)
+                return Results.Ok(new List<PurgeClipWarningDto>());
+
+            var ids = marked.Select(m => m.Id).ToList();
+            var counts = await db.Videos.AsNoTracking()
+                .Where(c => c.ParentVideoId != null && ids.Contains(c.ParentVideoId.Value)
+                    && !c.ClipExported && !c.MarkedForDeletion
+                    && c.ClipStartSeconds != null && c.ClipEndSeconds != null)
+                .GroupBy(c => c.ParentVideoId!.Value)
+                .Select(g => new { ParentId = g.Key, Count = g.Count() })
+                .ToListAsync(ct);
+            var countById = counts.ToDictionary(x => x.ParentId, x => x.Count);
+
+            var result = marked
+                .Where(m => countById.ContainsKey(m.Id))
+                .Select(m => new PurgeClipWarningDto(m.Id, m.FileName, countById[m.Id]))
+                .OrderBy(w => w.FileName)
+                .ToList();
+            return Results.Ok(result);
+        }).Produces<List<PurgeClipWarningDto>>(StatusCodes.Status200OK)
+          .WithName("GetPurgeClipWarnings");
+
         // List of videos flagged with PlaybackIssue. Mirrors the
         // marked-for-deletion list and powers the /playback-issues
         // triage page (which mirrors /purge).

@@ -1931,6 +1931,29 @@
         }
       }
     },
+    "/api/videos/purge-clip-warnings": {
+      "get": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetPurgeClipWarnings",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PurgeClipWarningDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/videos/playback-issues": {
       "get": {
         "tags": [
@@ -5620,6 +5643,27 @@
           },
           "value": {
             "type": "string"
+          }
+        }
+      },
+      "PurgeClipWarningDto": {
+        "required": [
+          "videoId",
+          "fileName",
+          "embeddedClipCount"
+        ],
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "embeddedClipCount": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       },
