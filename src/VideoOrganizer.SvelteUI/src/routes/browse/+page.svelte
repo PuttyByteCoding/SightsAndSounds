@@ -154,6 +154,7 @@
   // past that ceiling — it just letterboxes.
   const PLAYER_HEIGHT_MIN = 220;
   const VIDEO_HEIGHT_MIN = 120;
+  const CARD_PAD_Y = 24; // player card's vertical padding (p-3 top + bottom)
   let playerHeight = $state(480);
   // Height ceiling handed to VideoPlayer for the picture itself. It's the
   // player card's budget MINUS the player's own chrome below the video
@@ -178,14 +179,24 @@
     playerHeight = budget;
 
     // Cap the video to the budget minus the player's chrome below it (see
-    // videoHeightCap). scrollHeight is the card's full natural content height
-    // even while the card is height-capped; before metadata loads there's no
-    // video box yet, so fall back to a conservative fixed reserve.
+    // videoHeightCap). Measure the chrome from the card's NATURAL content span
+    // (first child top → last child bottom) rather than scrollHeight: a
+    // fixed-height card reports scrollHeight >= its own height, so when the
+    // content underflows, scrollHeight would clamp to the card height and the
+    // cap would degenerate to "whatever the video currently is" (pinning it at
+    // the floor). The content span isn't clamped and includes inter-element
+    // margins. Before metadata loads there's no video box, so fall back to a
+    // conservative fixed reserve.
     const videoEl = playerCardEl.querySelector('video');
-    videoHeightCap = videoEl
-      ? videoHeightCap_(budget, playerCardEl.scrollHeight,
-          videoEl.getBoundingClientRect().height, VIDEO_HEIGHT_MIN)
-      : Math.max(VIDEO_HEIGHT_MIN, budget - 72);
+    const kids = playerCardEl.children;
+    if (videoEl && kids.length > 0) {
+      const top = kids[0].getBoundingClientRect().top;
+      const contentNatural = kids[kids.length - 1].getBoundingClientRect().bottom - top;
+      videoHeightCap = videoHeightCap_(budget, contentNatural + CARD_PAD_Y,
+        videoEl.getBoundingClientRect().height, VIDEO_HEIGHT_MIN);
+    } else {
+      videoHeightCap = Math.max(VIDEO_HEIGHT_MIN, budget - 72);
+    }
   }
 
   // Re-measure once the <video>'s intrinsic size settles (metadata load): the
