@@ -164,10 +164,19 @@
 
 <div class="p-4 max-w-4xl mx-auto">
   <h1 class="text-2xl font-semibold mb-1">Help &amp; Features</h1>
-  <p class="text-base-content/70 mb-6">
+  <p class="text-base-content/70 mb-4">
     What each part of the app does and how the main workflows fit together. For the full key list, see
     <a class="link" href="/keyboard-shortcuts">Keyboard Shortcuts</a>.
   </p>
+
+  <!-- Launches the interactive guided tour (#170) on the Videos page, which
+       is where its spotlight targets (filter tree, player, flags) live. -->
+  <a class="btn btn-primary btn-sm gap-1 mb-6" href="/browse?tour=1">
+    <svg viewBox="0 0 24 24" class="w-4 h-4 fill-current" aria-hidden="true">
+      <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-5h2v2h-2v-2zm2.07-7.75c-.9.92-1.07 1.32-1.07 2.25h-2c0-1.13.34-1.87 1.29-2.83.5-.5.71-.95.71-1.42a1.5 1.5 0 00-3 0H7a3.5 3.5 0 117 0c0 .77-.31 1.47-.93 2z" />
+    </svg>
+    Take the guided tour
+  </a>
 
   <div class="flex flex-col gap-6">
     {#each groups as group (group.heading)}

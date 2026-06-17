@@ -6,6 +6,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
+  import { tour, type TourStep } from '$lib/tour.svelte';
   import type {
     Video,
     VideoSet,
@@ -237,6 +238,47 @@
       localStorage.setItem(`browseSection_${k}_collapsed`, sectionCollapsed[k] ? '1' : '0');
     }
   }
+
+  // --- Guided tour (issue #170) ------------------------------------------
+  // The Browse page is where the tour's targets live, so the steps and the
+  // trigger are owned here. Launched on demand (the "Take a tour" button
+  // below, or the Help page's button via ?tour=1) and once on first run.
+  const BROWSE_TOUR: TourStep[] = [
+    {
+      selector: '[data-tour="filter-tree"]',
+      title: 'Filter your library',
+      body: 'Narrow what you see by tags, flags, and folders. Combine them as Required, Optional, or Excluded to build exactly the playlist you want.'
+    },
+    {
+      selector: '[data-tour="player"]',
+      title: 'Play inline',
+      body: 'Videos play right here. Space toggles play/pause, ← / → save and move to the previous/next video, and the number keys seek. Press I for file info, T to edit tags.'
+    },
+    {
+      selector: '[data-tour="flags"]',
+      title: 'Flags keep things tidy',
+      body: 'Mark videos as Clip, Edited, Favorite, Needs Review, or Playback Issue. Flags filter just like tags — organizing your library without moving any files.'
+    },
+    {
+      selector: '[data-tour="tools-nav"]',
+      title: 'Tools & exports',
+      body: 'Everything else lives in this menu: import media, export clips, join or re-encode videos, optimize for streaming, and review duplicates.'
+    }
+  ];
+  function startTour() { tour.start(BROWSE_TOUR); }
+
+  // Auto-start once the empty/non-empty decision is in (never on an empty
+  // library — there'd be nothing to point at). Explicit ?tour=1 always
+  // starts; otherwise only on first run. `tourTriggered` guards re-fires.
+  let tourTriggered = false;
+  $effect(() => {
+    const wants = page.url.searchParams.get('tour') === '1';
+    if (tourTriggered || !sidebarReady || isEmptyInstall) return;
+    if (wants || !tour.hasSeen()) {
+      tourTriggered = true;
+      startTour();
+    }
+  });
 
   onMount(() => {
     const storedThumb = Number(localStorage.getItem('browseThumbWidth'));
@@ -1233,7 +1275,17 @@
        Playback Issue overlay — banner reminds remote users those
        buttons won't appear. -->
   <RemoteHostBanner />
-  <h1 class="text-2xl font-semibold">Videos</h1>
+  <div class="flex items-center justify-between gap-2">
+    <h1 class="text-2xl font-semibold">Videos</h1>
+    {#if !isEmptyInstall}
+      <button class="btn btn-ghost btn-sm gap-1" onclick={startTour} title="Take a quick guided tour">
+        <svg viewBox="0 0 24 24" class="w-4 h-4 fill-current" aria-hidden="true">
+          <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-5h2v2h-2v-2zm2.07-7.75c-.9.92-1.07 1.32-1.07 2.25h-2c0-1.13.34-1.87 1.29-2.83.5-.5.71-.95.71-1.42a1.5 1.5 0 00-3 0H7a3.5 3.5 0 117 0c0 .77-.31 1.47-.93 2z" />
+        </svg>
+        Take a tour
+      </button>
+    {/if}
+  </div>
 
   {#if loadError}
     <div class="alert alert-error" role="alert" aria-live="assertive">
@@ -1259,6 +1311,7 @@
          sticky video player when the user has scrolled both into the
          same vertical band. -->
     <aside
+      data-tour="filter-tree"
       class="card bg-base-200 sticky top-0 z-20 max-h-screen overflow-y-auto {sidebarCollapsed ? 'p-1' : 'p-3 space-y-3'}"
     >
       <!-- Sidebar header. Expanded shows the "Filters" title on the
@@ -1332,7 +1385,7 @@
       </div>
 
 
-      <div>
+      <div data-tour="flags">
         <button
           type="button"
           class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
@@ -2017,6 +2070,7 @@
                  inside the wrapper. Hidden in grid view (issue #23). -->
             <div
               bind:this={playerCardEl}
+              data-tour="player"
               class="card bg-base-200 p-3"
               style="height: {playerHeight}px;"
             >
