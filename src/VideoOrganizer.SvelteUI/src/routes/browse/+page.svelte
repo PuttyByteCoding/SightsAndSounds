@@ -6,6 +6,7 @@
   import { page } from '$app/state';
   import { api } from '$lib/api';
   import { tour, type TourStep } from '$lib/tour.svelte';
+  import { playerBudget, videoHeightCap as videoHeightCap_ } from '$lib/playerSizing';
   import type {
     Video,
     VideoSet,
@@ -152,7 +153,14 @@
   // size inside VideoPlayer (fitMaxWidth), so a tall pane never upscales it
   // past that ceiling — it just letterboxes.
   const PLAYER_HEIGHT_MIN = 220;
+  const VIDEO_HEIGHT_MIN = 120;
   let playerHeight = $state(480);
+  // Height ceiling handed to VideoPlayer for the picture itself. It's the
+  // player card's budget MINUS the player's own chrome below the video
+  // (scrubber, controls, tag badges, bookmark/block lists, card padding) — so
+  // the VIDEO, not the tag area, absorbs the leftover space and the content
+  // never spills past the card onto the header buttons / queue strip (#171).
+  let videoHeightCap = $state(408);
   let playerCardEl = $state<HTMLDivElement | null>(null);
   let playerHeaderRowEl = $state<HTMLDivElement | null>(null);
   let playerStripEl = $state<HTMLDivElement | null>(null);
@@ -161,10 +169,38 @@
     if (typeof window === 'undefined' || !playerCardEl) return;
     const top = playerCardEl.getBoundingClientRect().top;
     // Strip + header-row heights are content-driven and don't change when the
-    // player grows, so reserving them keeps the strip on-screen.
-    const below = (playerHeaderRowEl?.offsetHeight ?? 0)
-      + (playerStripEl?.offsetHeight ?? 0) + 28; // inter-element gaps/margins
-    playerHeight = Math.max(PLAYER_HEIGHT_MIN, Math.round(window.innerHeight - top - below));
+    // player grows, so reserving them keeps the strip fully on-screen.
+    const budget = playerBudget(
+      window.innerHeight, top,
+      playerHeaderRowEl?.offsetHeight ?? 0,
+      playerStripEl?.offsetHeight ?? 0,
+      28 /* inter-element gaps/margins */, PLAYER_HEIGHT_MIN);
+    playerHeight = budget;
+
+    // Cap the video to the budget minus the player's chrome below it (see
+    // videoHeightCap). scrollHeight is the card's full natural content height
+    // even while the card is height-capped; before metadata loads there's no
+    // video box yet, so fall back to a conservative fixed reserve.
+    const videoEl = playerCardEl.querySelector('video');
+    videoHeightCap = videoEl
+      ? videoHeightCap_(budget, playerCardEl.scrollHeight,
+          videoEl.getBoundingClientRect().height, VIDEO_HEIGHT_MIN)
+      : Math.max(VIDEO_HEIGHT_MIN, budget - 72);
+  }
+
+  // Re-measure once the <video>'s intrinsic size settles (metadata load): the
+  // chrome can't be measured until the picture has a real height. These fire
+  // from the media element on intrinsic-size changes, not from our CSS sizing,
+  // so there's no resize feedback loop.
+  let observedVideoEl: HTMLVideoElement | null = null;
+  function bindVideoResize() {
+    const el = (playerCardEl?.querySelector('video') ?? null) as HTMLVideoElement | null;
+    if (el === observedVideoEl) return;
+    observedVideoEl?.removeEventListener('loadedmetadata', recomputePlayerHeight);
+    observedVideoEl?.removeEventListener('resize', recomputePlayerHeight);
+    observedVideoEl = el;
+    el?.addEventListener('loadedmetadata', recomputePlayerHeight);
+    el?.addEventListener('resize', recomputePlayerHeight);
   }
 
   // --- Thumbnail size --------------------------------------------------
@@ -315,16 +351,20 @@
     return () => {
       clearTimeout(slowLoadTimer);
       window.removeEventListener('resize', onResize);
+      observedVideoEl?.removeEventListener('loadedmetadata', recomputePlayerHeight);
+      observedVideoEl?.removeEventListener('resize', recomputePlayerHeight);
     };
   });
 
   // Re-measure when the playing video, view mode, or queue length changes —
-  // any of which can shift the strip/header heights or the player's top.
+  // any of which can shift the strip/header heights or the player's top. Also
+  // (re)bind the intrinsic-size listener to the current <video> so the chrome
+  // gets re-measured once its metadata loads.
   $effect(() => {
     void playingVideo?.id;
     void viewMode;
     void totalCount;
-    if (viewMode === 'player') requestAnimationFrame(recomputePlayerHeight);
+    if (viewMode === 'player') requestAnimationFrame(() => { bindVideoResize(); recomputePlayerHeight(); });
   });
 
   // Save on each change. Cheap (a few writes per drag) and keeps the
@@ -2109,13 +2149,13 @@
             <div
               bind:this={playerCardEl}
               data-tour="player"
-              class="card bg-base-200 p-3"
+              class="card bg-base-200 p-3 overflow-hidden"
               style="height: {playerHeight}px;"
             >
               <VideoPlayer
                 bind:video={playingVideo}
                 shortcutsEnabled={true}
-                maxVideoHeightPx={Math.max(100, playerHeight - 72)}
+                maxVideoHeightPx={videoHeightCap}
                 playlistIndex={playingIndex}
                 playlistTotal={totalCount}
                 tagsPanelOpen={showEditTagsPanel}
@@ -2123,7 +2163,7 @@
                 onToggleFileInfo={() => (showFileInfo = !showFileInfo)}
                 onRequestNext={goNext}
                 onRequestPrev={goPrev}
-                onAfterSave={refreshSidebarTagCounts}
+                onAfterSave={() => { refreshSidebarTagCounts(); requestAnimationFrame(recomputePlayerHeight); }}
                 onVideoChanged={patchVideoInGrid}
               />
             </div>
