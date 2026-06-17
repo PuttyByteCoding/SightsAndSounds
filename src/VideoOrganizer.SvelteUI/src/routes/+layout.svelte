@@ -6,6 +6,7 @@
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { runtimeStore } from '$lib/runtimeStore.svelte';
   import SearchPalette from '$lib/components/SearchPalette.svelte';
+  import TourOverlay from '$lib/components/TourOverlay.svelte';
 
   let { children } = $props();
 
@@ -160,6 +161,10 @@
      Esc / result pick. -->
 <SearchPalette bind:open={searchOpen} />
 
+<!-- Guided tour overlay (issue #170). Mounted once here so it can spotlight
+     elements on any route, including this nav. Inert until tour.start(). -->
+<TourOverlay />
+
 <div class="drawer lg:drawer-open min-h-screen">
   <input id="main-drawer" type="checkbox" class="drawer-toggle" />
 
@@ -214,7 +219,7 @@
       {#if !collapsed}
         <div class="px-4 py-2 text-xs uppercase tracking-wider text-base-content/60">Pages</div>
       {/if}
-      <ul class="menu px-2">
+      <ul class="menu px-2" data-tour="tools-nav">
         {#each nav as item (item.href)}
           <li>
             <a
