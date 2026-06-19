@@ -101,14 +101,21 @@
   const isEdit = $derived(tag !== null && tag !== undefined);
 
   // When creating a tag, prompt to use an existing one if the entered name
-  // already exists as a tag name OR an alias anywhere (issue #10). Debounced
-  // exact-match search against /tags/search (name + alias).
+  // already exists as a tag name OR an alias (issue #10). Debounced exact-match
+  // search against /tags/search (name + alias).
+  //
+  // Scoped to the SELECTED GROUP (issue #191): the same name in a *different*
+  // group is intentional and distinct (e.g. a Producer "Tom Petty" and an
+  // Artist "Tom Petty"), so a cross-group match must NOT nudge the user to
+  // reuse the other group's tag. A new group (no selectedGroupId yet) can't
+  // collide with anything, so there's nothing to suggest.
   let nameMatches = $state<TagSearchHit[]>([]);
   $effect(() => {
     const q = name.trim();
+    const group = selectedGroupId;
     // Only in create mode — an edit renaming into a collision is the server's
     // job, and "use this other tag" makes no sense mid-edit.
-    if (!show || tag || q.length < 2) {
+    if (!show || tag || q.length < 2 || !group) {
       nameMatches = [];
       return;
     }
@@ -117,7 +124,8 @@
         const hits = await api.searchTags(q);
         const lc = q.toLowerCase();
         nameMatches = hits.filter(
-          h => h.name.toLowerCase() === lc || h.aliases.some(a => a.toLowerCase() === lc)
+          h => h.tagGroupId === group &&
+            (h.name.toLowerCase() === lc || h.aliases.some(a => a.toLowerCase() === lc))
         );
       } catch {
         nameMatches = [];
