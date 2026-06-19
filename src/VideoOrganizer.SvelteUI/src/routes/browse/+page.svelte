@@ -30,7 +30,7 @@
   import StartupStatus from '$lib/components/StartupStatus.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { planFilteredQueue } from '$lib/browseQueue';
-  import { pillClass, filterSlot, filterSlotClass, filterSlotDot } from '$lib/tagColors';
+  import { pillClass, filterSlot, filterSlotClass, filterSlotDot, filterSlotText } from '$lib/tagColors';
 
   let videos = $state<Video[]>([]);
   // How many videos matched the current filter but were suppressed by a
@@ -914,6 +914,14 @@
     });
   }
 
+  // Tag-tree name click (issue #192): walk the tag through the filter buckets
+  // in place — Required → Optional → Excluded → Off — instead of opening the
+  // old picker dialog. The ✎ pencil still opens the Edit Tag modal.
+  function cycleTag(id: string, name: string, tagGroupName?: string) {
+    filterStore.cycleOrClear({ type: 'tag', value: id, label: name, tagGroupName });
+  }
+  const CYCLE_HINT = 'click to cycle Required → Optional → Excluded → Off';
+
 
   // ✎ on tag-tree row.
   let editTagModalShow = $state(false);
@@ -1661,9 +1669,9 @@
                       <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
                       <button
                         type="button"
-                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
-                        onclick={() => pickTag(t)}
-                        title={slot ? `In filter: ${slot}` : `Filter by ${g.groupName}: ${t.name}`}
+                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline {filterSlotText(slot)}"
+                        onclick={() => cycleTag(t.id, t.name, t.tagGroupName)}
+                        title={`${t.name}${slot ? ` — ${slot}` : ''} · ${CYCLE_HINT}`}
                       >{t.name}</button>
                       <span class="shrink-0 text-xs tabular-nums opacity-50">{t.videoCount}</span>
                       <button
@@ -1752,20 +1760,9 @@
                       </span>
                       <button
                         type="button"
-                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
-                        onclick={() => pickTag({
-                          id: rt.tag.id,
-                          tagGroupId: rt.tag.tagGroupId,
-                          tagGroupName: rt.tag.tagGroupName,
-                          name: rt.tag.name,
-                          aliases: [],
-                          isFavorite: false,
-                          sortOrder: 0,
-                          notes: '',
-                          videoCount: rt.count,
-                          hiddenByDefault: false
-                        })}
-                        title={slot ? `In filter: ${slot}` : `Filter by ${g.groupName}: ${rt.tag.name}`}
+                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline {filterSlotText(slot)}"
+                        onclick={() => cycleTag(rt.tag.id, rt.tag.name, rt.tag.tagGroupName)}
+                        title={`${rt.tag.name}${slot ? ` — ${slot}` : ''} · ${CYCLE_HINT}`}
                       >{rt.tag.name}</button>
                       <span class="shrink-0 text-xs tabular-nums opacity-50">{rt.count}</span>
                     </div>
@@ -1940,11 +1937,9 @@
                     </span>
                     <button
                       type="button"
-                      class="flex-1 min-w-0 text-left truncate py-1 hover:underline {t.hiddenByDefault ? 'text-base-content/45' : ''}"
-                      onclick={() => pickTag(t)}
-                      title={t.hiddenByDefault
-                        ? `Hidden by default — filter for "${t.name}" to see its videos`
-                        : slot ? `In filter: ${slot}` : `Filter by ${g.name}: ${t.name}`}
+                      class="flex-1 min-w-0 text-left truncate py-1 hover:underline {filterSlotText(slot) || (t.hiddenByDefault ? 'text-base-content/45' : '')}"
+                      onclick={() => cycleTag(t.id, t.name, t.tagGroupName)}
+                      title={`${t.name}${slot ? ` — ${slot}` : ''} · ${CYCLE_HINT}${t.hiddenByDefault ? ' · hidden by default' : ''}`}
                     >{t.name}</button>
                     {#if t.hiddenByDefault}
                       <!-- Hidden-by-default marker (issue #84). -->

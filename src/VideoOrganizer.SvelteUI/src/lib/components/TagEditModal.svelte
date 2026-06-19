@@ -47,6 +47,7 @@
   let aliasInput = $state('');
   let aliases = $state<string[]>([]);
   let isFavorite = $state(false);
+  let hiddenByDefault = $state(false);
   let notes = $state('');
   let saving = $state(false);
   let error = $state<string | null>(null);
@@ -148,12 +149,14 @@
       name = tag.name;
       aliases = [...tag.aliases];
       isFavorite = tag.isFavorite;
+      hiddenByDefault = tag.hiddenByDefault;
       notes = tag.notes;
       selectedGroupId = tag.tagGroupId;
     } else {
       name = initialName;
       aliases = [];
       isFavorite = false;
+      hiddenByDefault = false;
       notes = '';
       selectedGroupId = focusGroup ? undefined : tagGroupId;
     }
@@ -240,6 +243,7 @@
           name: trimmed,
           aliases,
           isFavorite,
+          hiddenByDefault,
           sortOrder: tag.sortOrder,
           notes,
           tagGroupId: groupId
@@ -251,6 +255,7 @@
           name: trimmed,
           aliases,
           isFavorite,
+          hiddenByDefault,
           notes
         });
       }
@@ -492,6 +497,18 @@
       <div class="flex items-start gap-2 mb-3">
         <span class="label-text w-20 shrink-0 mt-2">Notes</span>
         <textarea class="textarea textarea-bordered flex-1" rows="2" bind:value={notes}></textarea>
+      </div>
+
+      <!-- Hidden-by-default (issue #84/#192): videos with this tag stay out of
+           the grid unless the user filters for the tag. Moved here from the
+           old Tag Actions dialog so the Edit Tag modal is the one place to
+           manage a tag. -->
+      <div class="flex items-start gap-2 mb-3">
+        <span class="label-text w-20 shrink-0 mt-1">Hidden</span>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" class="toggle toggle-sm toggle-primary" bind:checked={hiddenByDefault} />
+          <span class="text-xs text-base-content/60">Hide videos with this tag unless you filter for it.</span>
+        </label>
       </div>
 
       <p class="text-xs text-base-content/50 mb-2">Enter to save · Esc to cancel · Tab to edit aliases / favorite / notes</p>
