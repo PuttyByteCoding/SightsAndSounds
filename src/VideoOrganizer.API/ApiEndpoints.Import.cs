@@ -230,6 +230,9 @@ public static partial class ApiEndpoints
 
                 var rawDirs = Directory.GetDirectories(fullPath)
                     .Where(d => !PathFilters.IsExcludedFolderName(Path.GetFileName(d)))
+                    // Hide dot-prefixed directories (.git, .cache, …) from the
+                    // folder tree, same as files. (issue #62)
+                    .Where(d => !PathFilters.IsHiddenFile(d))
                     .OrderBy(d => Path.GetFileName(d))
                     .Select(d => (
                         name: Path.GetFileName(d),
@@ -347,6 +350,10 @@ public static partial class ApiEndpoints
                     ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
                 var allFiles = Directory.EnumerateFiles(targetPath, "*.*", searchOption)
                     .Where(f => !PathFilters.IsInExcludedFolder(f, targetPath))
+                    // Drop the contents of hidden directories (.git, .cache, …) —
+                    // a top-level dotfile still falls through to the Hidden tab via
+                    // IsHiddenFile below. (issue #62)
+                    .Where(f => !PathFilters.IsInHiddenFolder(f, targetPath))
                     .OrderBy(f => f)
                     .ToList();
 

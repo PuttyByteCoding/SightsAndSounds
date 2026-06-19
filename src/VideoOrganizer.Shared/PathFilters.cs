@@ -50,4 +50,28 @@ public static class PathFilters
         }
         return false;
     }
+
+    /// <summary>
+    /// True if <paramref name="fullPath"/> lives inside a hidden (dot-prefixed)
+    /// directory somewhere between <paramref name="baseDir"/> and the item — e.g.
+    /// ".git/config" or ".cache/x.mp4". Only ANCESTOR directory segments are
+    /// checked, NOT the leaf: a top-level dotfile is left to <see cref="IsHiddenFile"/>
+    /// so it can still be surfaced on the "Hidden files" tab, while the contents
+    /// of hidden directories (often huge, e.g. ".git") are dropped entirely from
+    /// browse trees and import scans (issue #62).
+    /// </summary>
+    public static bool IsInHiddenFolder(string fullPath, string baseDir)
+    {
+        string rel;
+        try { rel = Path.GetRelativePath(baseDir, fullPath); }
+        catch { return false; }
+        if (rel.StartsWith("..", StringComparison.Ordinal)) return false;
+        var segments = rel.Split(PathSeparators, StringSplitOptions.RemoveEmptyEntries);
+        // Exclude the final segment (the file/dir itself); check its ancestors.
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (segments[i].StartsWith('.')) return true;
+        }
+        return false;
+    }
 }
