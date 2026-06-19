@@ -43,6 +43,10 @@ public record BulkCreateTagsResponse(
 // tag's current group. Existing VideoTag rows reference the tag by id,
 // so every video keeps its tagging across the move. Null / omitted
 // (the pre-move wire shape) leaves the group unchanged.
+// HiddenByDefault is nullable so OMITTING it means "leave unchanged" (#194):
+// callers that only touch name/favorite (FilterDialog, the Tags page, video
+// tag pills) must not silently clear a tag's hidden-by-default flag. Send
+// true/false to set it explicitly.
 public record UpdateTagRequest(
     string Name,
     IReadOnlyList<string> Aliases,
@@ -50,7 +54,7 @@ public record UpdateTagRequest(
     int SortOrder,
     string Notes,
     Guid? TagGroupId = null,
-    bool HiddenByDefault = false);
+    bool? HiddenByDefault = null);
 
 // Merge sources into target. All Videos referencing any source tag are
 // re-pointed at target; sources are then deleted. Target must not appear

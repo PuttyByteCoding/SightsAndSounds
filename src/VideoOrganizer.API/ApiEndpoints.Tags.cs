@@ -189,7 +189,9 @@ public static partial class ApiEndpoints
             t.IsFavorite = req.IsFavorite;
             t.SortOrder = req.SortOrder;
             t.Notes = req.Notes;
-            t.HiddenByDefault = req.HiddenByDefault;
+            // Only change the hidden flag when the caller actually sent it;
+            // omitting it leaves the tag's current value intact (#194).
+            if (req.HiddenByDefault.HasValue) t.HiddenByDefault = req.HiddenByDefault.Value;
             t.TagGroupId = targetGroupId;
             await db.SaveChangesAsync(ct);
 
