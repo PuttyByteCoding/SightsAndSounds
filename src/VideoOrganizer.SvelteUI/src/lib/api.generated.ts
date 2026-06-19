@@ -2897,8 +2897,7 @@ export interface components {
             notes: string;
             /** Format: uuid */
             tagGroupId?: null | string;
-            /** @default false */
-            hiddenByDefault: boolean;
+            hiddenByDefault?: null | boolean;
         };
         UpdateVideoRequest: {
             fileName: string;

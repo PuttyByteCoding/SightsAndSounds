@@ -6797,8 +6797,10 @@
             "format": "uuid"
           },
           "hiddenByDefault": {
-            "type": "boolean",
-            "default": false
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },
