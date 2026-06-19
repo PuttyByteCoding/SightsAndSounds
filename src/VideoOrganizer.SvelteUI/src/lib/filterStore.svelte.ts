@@ -119,6 +119,18 @@ function _FilterStore() {
     else apply(tag, 'required');
   }
 
+  // Like cycle(), but with an "off" step: Required → Optional → Excluded → Off
+  // (removed) → Required. Backs the tag-tree name-click gesture (issue #192),
+  // where clicking the name walks the tag through every state including
+  // clearing it — no separate × needed. Off → first click lands in Required.
+  function cycleOrClear(tag: FilterTag) {
+    const k = keyOf(tag);
+    if (required.some((t) => keyOf(t) === k)) apply(tag, 'optional');
+    else if (optional.some((t) => keyOf(t) === k)) apply(tag, 'excluded');
+    else if (excluded.some((t) => keyOf(t) === k)) remove(tag);
+    else apply(tag, 'required');
+  }
+
   function applyPending(kind: 'required' | 'optional' | 'excluded') {
     if (!pending) return;
     const tag = pending;
@@ -155,6 +167,7 @@ function _FilterStore() {
     applyPending,
     apply,
     cycle,
+    cycleOrClear,
     cancelPending,
     remove,
     clear
