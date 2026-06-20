@@ -61,7 +61,8 @@ public static class AuthSetup
         // Runs after authentication so ctx.User (and its flattened roles) is set.
         app.Use(async (ctx, next) =>
         {
-            if (!ctx.Request.Path.StartsWithSegments("/api"))
+            if (!ctx.Request.Path.StartsWithSegments("/api")
+                || AuthRules.IsPublic(ctx.Request.Path.Value))
             {
                 await next();
                 return;
