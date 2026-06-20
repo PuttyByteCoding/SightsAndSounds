@@ -7,6 +7,7 @@
   import { runtimeStore } from '$lib/runtimeStore.svelte';
   import SearchPalette from '$lib/components/SearchPalette.svelte';
   import TourOverlay from '$lib/components/TourOverlay.svelte';
+  import ErrorBanner from '$lib/components/ErrorBanner.svelte';
 
   let { children } = $props();
 
@@ -164,6 +165,10 @@
 <!-- Guided tour overlay (issue #170). Mounted once here so it can spotlight
      elements on any route, including this nav. Inert until tour.start(). -->
 <TourOverlay />
+
+<!-- Global 4xx/5xx error banner (issue #201). Mounted once so any failed API
+     call surfaces a brief, auto-fading banner on whatever page is showing. -->
+<ErrorBanner />
 
 <div class="drawer lg:drawer-open min-h-screen">
   <input id="main-drawer" type="checkbox" class="drawer-toggle" />
