@@ -7,6 +7,7 @@
 // Bearer. The viewer role is read-only; admin is full control (the API enforces
 // it — see AuthRules — this just shapes the UI and carries the token).
 import { UserManager, WebStorageStateStore, type User } from 'oidc-client-ts';
+import { rolesFromAccessToken } from './jwt';
 
 type Status = 'loading' | 'disabled' | 'anonymous' | 'authenticated';
 
@@ -32,9 +33,7 @@ function _Auth() {
   const isReadOnly = $derived(status === 'authenticated' && !roles.includes('admin'));
 
   function rolesFromUser(u: User): string[] {
-    const realm = (u.profile as Record<string, unknown>)?.['realm_access'] as
-      | { roles?: string[] } | undefined;
-    return Array.isArray(realm?.roles) ? realm!.roles! : [];
+    return rolesFromAccessToken(u.access_token);
   }
 
   function applyUser(u: User | null) {
