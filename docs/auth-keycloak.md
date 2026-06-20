@@ -1,8 +1,12 @@
 # Authentication with Keycloak (research / options for #124)
 
-Status: **research — no decision made yet.** This documents industry standards,
-how Keycloak fits this app, and three concrete ways to run/configure the
-Keycloak server, so we can pick one before writing any code.
+Status: **decided — implementation underway.** Chosen: **Approach A** (SPA
+public client + Bearer, §3A), **Deployment Option 2** (Compose + Postgres,
+persistent, realm-imported, §4) reusing the app's Postgres with a dedicated
+`keycloak` DB, two users (`viewer` read-only / `owner` full control), localhost
++ LAN over HTTP with IP-allowlisting to follow. The how-to-run runbook lives in
+[`auth-keycloak-setup.md`](./auth-keycloak-setup.md). This file is kept as the
+research/rationale record.
 
 Current Keycloak release at time of writing: **26.5.2** (Quarkus-based, image
 `quay.io/keycloak/keycloak`).

@@ -8,6 +8,11 @@
   import SearchPalette from '$lib/components/SearchPalette.svelte';
   import TourOverlay from '$lib/components/TourOverlay.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
+  import { auth } from '$lib/auth.svelte';
+
+  // The /auth/* routes (the OIDC callback) handle their own flow — don't show
+  // the login wall over them. (#124, Phase 3)
+  const onAuthRoute = $derived(page.url.pathname.startsWith('/auth/'));
 
   let { children } = $props();
 
@@ -36,9 +41,21 @@
     const hasWork = (md5Pending ?? 0) > 0 || (thumbPending ?? 0) > 0;
     statusTimer = setTimeout(pollBackgroundStatus, hasWork ? 5000 : 30000);
   }
-  onMount(pollBackgroundStatus);
   onDestroy(() => {
     if (statusTimer) clearTimeout(statusTimer);
+  });
+
+  // Defer the eager background /api calls (runtime-info, worker-status poll)
+  // until auth is resolved (#124): firing them during the OIDC handshake would
+  // go out token-less and 401. Once signed in (or auth is off) they run once.
+  let bootstrapped = false;
+  $effect(() => {
+    if (bootstrapped) return;
+    if (auth.status === 'authenticated' || auth.status === 'disabled') {
+      bootstrapped = true;
+      void runtimeStore.load();
+      void pollBackgroundStatus();
+    }
   });
 
   // Renders a skip amount as "±Ns" or "±Nm" (or "±NmSs" mid-minute), signed
@@ -120,9 +137,12 @@
   let collapsed = $state(false);
   onMount(() => {
     collapsed = localStorage.getItem('sidebarCollapsed') === '1';
-    // Boot the runtime-info fetch — drives the host-machine banner
-    // below + gates the local-only diagnostic buttons elsewhere.
-    void runtimeStore.load();
+    // Resolve auth first (#124): asks the API if auth is on and, if so, loads
+    // any existing sign-in. No-op (status -> 'disabled') when auth is off.
+    void auth.init();
+    // runtimeStore.load() + the worker-status poll are kicked off by the
+    // auth-readiness $effect above (once signed in / when auth is off), so they
+    // never fire token-less during the OIDC handshake.
   });
   function toggleCollapsed() {
     collapsed = !collapsed;
@@ -170,6 +190,22 @@
      call surfaces a brief, auto-fading banner on whatever page is showing. -->
 <ErrorBanner />
 
+<!-- Auth gate (#124). When auth is off (status 'disabled') or on the callback
+     route, render the app straight away. When on and not signed in, show a
+     login wall instead of the app (every /api call would 401 anyway). -->
+{#if auth.status === 'loading' && !onAuthRoute}
+  <div class="min-h-screen flex items-center justify-center">
+    <span class="loading loading-spinner loading-lg"></span>
+  </div>
+{:else if auth.status === 'anonymous' && !onAuthRoute}
+  <div class="min-h-screen flex items-center justify-center p-6">
+    <div class="card bg-base-200 p-8 max-w-sm w-full text-center space-y-4">
+      <h1 class="text-2xl font-semibold">Sights &amp; Sounds</h1>
+      <p class="text-sm text-base-content/70">Please sign in to continue.</p>
+      <button class="btn btn-primary" onclick={() => auth.login()}>Sign in with Keycloak</button>
+    </div>
+  </div>
+{:else}
 <div class="drawer lg:drawer-open min-h-screen">
   <input id="main-drawer" type="checkbox" class="drawer-toggle" />
 
@@ -220,6 +256,20 @@
           </svg>
         </button>
       </div>
+
+      <!-- Signed-in user (#124). Shows who you are, your access level, and a
+           sign-out button. Only rendered when auth is on and you're signed in. -->
+      {#if auth.isAuthenticated && !collapsed}
+        <div class="px-4 py-2 border-b border-base-300/70 flex items-center gap-2 text-sm">
+          <div class="min-w-0 flex-1">
+            <div class="font-medium truncate">{auth.username}</div>
+            <div class="text-xs {auth.isReadOnly ? 'text-warning' : 'text-success'}">
+              {auth.isAdmin ? 'Full access' : 'Read-only'}
+            </div>
+          </div>
+          <button class="btn btn-ghost btn-xs" onclick={() => auth.logout()} title="Sign out">Sign out</button>
+        </div>
+      {/if}
 
       {#if !collapsed}
         <div class="px-4 py-2 text-xs uppercase tracking-wider text-base-content/60">Pages</div>
@@ -320,3 +370,4 @@
     </div>
   </aside>
 </div>
+{/if}

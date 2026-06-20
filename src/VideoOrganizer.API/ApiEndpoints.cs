@@ -3685,6 +3685,9 @@ public static partial class ApiEndpoints
         // === Playlists ======================================================
         MapPlaylistEndpoints(api);
 
+        // === Auth config (public) ===========================================
+        MapAuthEndpoints(api);
+
         // === Duplicates =====================================================
         // User-flagged "these two videos might be the same content" pairs.
         // Created from the browse page's duplicate-hunt flow, reviewed on

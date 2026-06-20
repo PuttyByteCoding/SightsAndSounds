@@ -33,5 +33,8 @@
   },
   "overrides": {
     "cookie": "^0.7.2"
+  },
+  "dependencies": {
+    "oidc-client-ts": "^3.5.0"
   }
 }
