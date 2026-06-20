@@ -9,6 +9,7 @@
   import TourOverlay from '$lib/components/TourOverlay.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import { auth } from '$lib/auth.svelte';
+  import { isAdminPath } from '$lib/navAccess';
 
   // The /auth/* routes (the OIDC callback) handle their own flow — don't show
   // the login wall over them. (#124, Phase 3)
@@ -129,6 +130,17 @@
     { keys: ['\\'],      label: 'Fit video to column' }
   ];
 
+  // Read-only sweep (#124). adminOnlyPaths / isAdminPath live in $lib/navAccess
+  // so the security-relevant page list is unit-tested. For a read-only user we
+  // both hide these nav links and guard the route — direct URL navigation shows
+  // a read-only notice instead of a page full of buttons that would all 403.
+  // isReadOnly is only true when auth is ON and the user lacks the admin role;
+  // with auth off (status 'disabled') it's false, so everything stays visible.
+  const visibleNav = $derived(
+    auth.isReadOnly ? nav.filter((item) => !isAdminPath(item.href)) : nav
+  );
+  const blockedByReadOnly = $derived(auth.isReadOnly && isAdminPath(page.url.pathname));
+
   const isActive = (href: string) => page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
 
   // Sidebar collapse — persisted to localStorage so the choice sticks across
@@ -229,7 +241,20 @@
          its top instead, so the warning is contextual rather than
          globally nagging. -->
     <main class="flex-1 p-4 lg:p-6">
-      {@render children()}
+      {#if blockedByReadOnly}
+        <div class="flex items-center justify-center min-h-[60vh]">
+          <div class="card bg-base-200 p-8 max-w-md w-full text-center space-y-3">
+            <h1 class="text-xl font-semibold">Read-only access</h1>
+            <p class="text-sm text-base-content/70">
+              This page manages or modifies the library, which your account
+              isn't permitted to do. You can browse, search, and play videos.
+            </p>
+            <a href="/browse" class="btn btn-primary btn-sm">Back to Videos</a>
+          </div>
+        </div>
+      {:else}
+        {@render children()}
+      {/if}
     </main>
   </div>
 
@@ -275,7 +300,7 @@
         <div class="px-4 py-2 text-xs uppercase tracking-wider text-base-content/60">Pages</div>
       {/if}
       <ul class="menu px-2" data-tour="tools-nav">
-        {#each nav as item (item.href)}
+        {#each visibleNav as item (item.href)}
           <li>
             <a
               href={item.href}
