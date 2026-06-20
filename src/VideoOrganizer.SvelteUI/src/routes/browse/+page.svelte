@@ -2297,7 +2297,7 @@
               <VideoCard
                 video={v}
                 onopen={open}
-                onmove={openMoveDialog}
+                onmove={canEdit ? openMoveDialog : undefined}
                 active={playingVideo?.id === v.id}
                 centerOnActive
               />
@@ -2331,7 +2331,7 @@
               <VideoCard
                 video={v}
                 onopen={open}
-                onmove={openMoveDialog}
+                onmove={canEdit ? openMoveDialog : undefined}
                 active={playingVideo?.id === v.id}
               />
             {/each}
