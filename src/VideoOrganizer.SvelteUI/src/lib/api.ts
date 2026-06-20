@@ -73,8 +73,16 @@ import type {
 } from './types';
 
 import { errorBanner, httpErrorMessage } from './errorBanner.svelte';
+import { auth } from './auth.svelte';
 
 const BASE = '';
+
+// Bearer header for the current sign-in (#124). Empty when auth is off or the
+// user isn't signed in — so requests are unchanged in the no-auth case.
+async function authHeader(): Promise<Record<string, string>> {
+  const token = await auth.getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly method: string, public readonly url: string, body?: string) {
@@ -99,6 +107,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.body !== undefined && headers['Content-Type'] === undefined) {
     headers['Content-Type'] = 'application/json';
   }
+  Object.assign(headers, await authHeader());
   const res = await fetch(url, { ...init, headers });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -200,7 +209,7 @@ export const api = {
     const url = `${BASE}/api/videos/filter`;
     const res = await fetch(url, {
       method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(await authHeader()) },
       body: JSON.stringify(filter),
       signal
     });
