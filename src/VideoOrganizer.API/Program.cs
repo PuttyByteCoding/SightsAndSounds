@@ -327,6 +327,10 @@ builder.Services.AddOpenApi(options =>
 
 var app = builder.Build();
 
+// IP allowlist (#124). No-op unless Network:RestrictByIp. Runs first so a
+// disallowed device can't reach anything (not even the SPA or error pages).
+VideoOrganizer.API.Access.IpAccessSetup.UseIpAllowlist(app);
+
 // Surface unhandled-exception detail in the response body during dev.
 // Without this, ASP.NET Core's default in dev is to return an empty
 // 500 for AJAX requests — the SvelteKit error toasts then show only
