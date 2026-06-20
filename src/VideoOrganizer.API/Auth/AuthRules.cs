@@ -17,6 +17,16 @@ public static class AuthRules
     public const string AdminRole = "admin";
 
     /// <summary>
+    /// /api paths reachable WITHOUT a token even when auth is on — the SPA needs
+    /// the auth config before it can log in (#124, Phase 3).
+    /// </summary>
+    public static readonly IReadOnlySet<string> PublicApiPaths =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "/api/auth/config" };
+
+    /// <summary>True if the path is public (no authentication required).</summary>
+    public static bool IsPublic(string? path) => PublicApiPaths.Contains(path ?? string.Empty);
+
+    /// <summary>
     /// POST endpoints that are reads (query bodies, no persistence): the browse
     /// filter queries and the ad-hoc playlist generators (which only build an
     /// in-memory ordering). Full request paths.
