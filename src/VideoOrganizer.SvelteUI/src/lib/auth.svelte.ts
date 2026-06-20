@@ -50,6 +50,31 @@ function _Auth() {
     }
   }
 
+  // Mirror the current access token into an HttpOnly cookie (#124). Browser
+  // media elements (<video>/<img>/<track>/CSS url()) can't send a Bearer
+  // header, so the API reads the token from this cookie for same-origin media
+  // GETs. Re-run whenever the user (re)loads — including silent renews — so the
+  // cookie tracks token refreshes. Non-fatal: media just 401s until next sync.
+  async function syncSession() {
+    if (!accessToken) return;
+    try {
+      await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+    } catch { /* non-fatal */ }
+  }
+
+  // Clear the media cookie on sign-out so a shared browser can't keep streaming.
+  async function clearSession() {
+    try {
+      await fetch('/api/auth/session', {
+        method: 'DELETE',
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      });
+    } catch { /* non-fatal */ }
+  }
+
   // Called once on app start (browser only). Idempotent — repeat calls return
   // the same in-flight promise so getAccessToken can await readiness.
   let initPromise: Promise<void> | null = null;
@@ -79,11 +104,16 @@ function _Auth() {
       response_type: 'code',
       scope: 'openid profile email',
       userStore: new WebStorageStateStore({ store: window.sessionStorage }),
+      // Renew the token in the background before it expires so long video
+      // playback (and the media cookie that rides on it) doesn't lapse (#124).
+      automaticSilentRenew: true,
     });
-    manager.events.addUserLoaded(applyUser);
+    // On (re)load and on each silent renew, refresh the media cookie too.
+    manager.events.addUserLoaded((u) => { applyUser(u); void syncSession(); });
     manager.events.addUserUnloaded(() => applyUser(null));
 
     applyUser(await manager.getUser());
+    if (status === 'authenticated') await syncSession();
   }
 
   async function login(returnTo?: string) {
@@ -98,6 +128,9 @@ function _Auth() {
     if (!manager) await init();
     const u = await manager!.signinRedirectCallback();
     applyUser(u);
+    // Set the media cookie before we navigate into the app so the first video
+    // the user opens can stream immediately (#124).
+    await syncSession();
     let returnTo = '/';
     try { returnTo = sessionStorage.getItem(RETURN_TO_KEY) || '/'; sessionStorage.removeItem(RETURN_TO_KEY); }
     catch { /* ignore */ }
@@ -106,6 +139,7 @@ function _Auth() {
 
   async function logout() {
     if (!manager) return;
+    await clearSession();
     try { await manager.signoutRedirect(); }
     catch { await manager.removeUser(); applyUser(null); }
   }
