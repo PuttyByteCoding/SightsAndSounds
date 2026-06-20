@@ -37,6 +37,12 @@
 
   interface Props {
     video: Video | null;
+    // Read-only sweep (#124). When false, every write affordance is hidden and
+    // the write action functions no-op — so a read-only ('viewer') user can
+    // still play, seek, zoom, read tags/OCR and navigate, but can't flag, tag,
+    // clip, bookmark, block, OCR-scan, or delete (all of which the API 403s).
+    // Defaults true so hosts that don't pass it behave exactly as before.
+    canEdit?: boolean;
     // Fired when the user presses ← (after save-if-dirty completes). Host
     // decides what "previous" means (playlist, grid order, etc.).
     onRequestPrev?: () => void | Promise<void>;
@@ -87,6 +93,7 @@
 
   let {
     video = $bindable(),
+    canEdit = true,
     onRequestPrev,
     onRequestNext,
     shortcutsEnabled = true,
@@ -167,7 +174,7 @@
   // Apply one suggested tag — same optimistic-add + rollback shape as
   // toggleBoundTag, and drops the chip from the suggestion row on success.
   async function addSuggestion(s: TagSuggestion) {
-    if (!video || video.tags.some(t => t.id === s.tagId)) return;
+    if (!video || !canEdit || video.tags.some(t => t.id === s.tagId)) return;
     const vid = video.id;
     const previousTags = video.tags;
     const previousNeedsReview = video.needsReview;
@@ -201,6 +208,7 @@
   }
 
   async function openEditTagModal(tagId: string) {
+    if (!canEdit) return;
     try {
       editingTag = await api.getTag(tagId);
       editTagModalShow = true;
@@ -238,7 +246,7 @@
   // (only if the user is still on the same video — they may have
   // navigated away during the round-trip).
   async function toggleFlagAt(oneBasedIdx: number) {
-    if (!video) return;
+    if (!video || !canEdit) return;
     if (flagTags.length === 0) {
       errorMessage = `Alt+${oneBasedIdx}: no checkbox-mode tag group is configured. ` +
         `Open Tag Management and turn on "Display as checkboxes" for one of your groups.`;
@@ -323,7 +331,7 @@
   // the API calls in the background, roll back on failure if the user
   // is still on the same video.
   async function toggleBoundTag(binding: TagKeyBinding) {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const videoId = video.id;
     const has = video.tags.some(t => t.id === binding.tagId);
     const previousTags = video.tags;
@@ -477,7 +485,7 @@
 
   // Start (or resume "scan more") a background scan.
   async function startOcrScan() {
-    if (!video || ocrScanBusy) return;
+    if (!video || !canEdit || ocrScanBusy) return;
     const vid = video.id;
     ocrScanBusy = true;
     try {
@@ -1058,7 +1066,7 @@
   // review/edit one, jump to its timestamp from the block list and
   // delete or trim it.
   function startBlock() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     pendingBlockStart = videoEl.currentTime;
   }
 
@@ -1071,7 +1079,7 @@
   // into one — saves the user the bookkeeping and matches how playback
   // already treats them (the auto-skip is range-based).
   function endBlock() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     if (pendingBlockStart === null) return;
     const t = videoEl.currentTime;
     const start = pendingBlockStart;
@@ -1152,7 +1160,7 @@
   // since clip-of-clip isn't allowed. Pressing again before endClip just
   // moves the start marker.
   function startClip() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     if (video.isClip) {
       clipError = 'Cannot create a clip of a clip.';
       return;
@@ -1183,7 +1191,7 @@
   // Close the clip (Ctrl+Shift+]) and POST it to the API. Inherits tags
   // from the parent. No-op if startClip wasn't pressed first.
   async function endClip() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     if (video.isClip) {
       clipError = 'Cannot create a clip of a clip.';
       return;
@@ -1398,7 +1406,7 @@
   }
 
   function removeBlock(index: number) {
-    if (!video) return;
+    if (!video || !canEdit) return;
     video.videoBlocks = video.videoBlocks.filter((_, i) => i !== index);
   }
 
@@ -1448,7 +1456,7 @@
   }
 
   function addBookmark() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     bookmarkModal = {
       offset: videoEl.currentTime,
       name: nextBookmarkDefaultName()
@@ -1484,7 +1492,7 @@
   }
 
   function removeBookmark(idx: number) {
-    if (!video) return;
+    if (!video || !canEdit) return;
     video.chapterMarkers = video.chapterMarkers.filter((_, i) => i !== idx);
   }
 
@@ -1563,7 +1571,7 @@
   // original video" guarantee — `markForDeletion` for a clip just
   // sets the flag (no file move, no parent-file delete).
   async function deleteClipFromList(clip: ClipSummary) {
-    if (clipDeleteBusy.has(clip.id)) return;
+    if (!canEdit || clipDeleteBusy.has(clip.id)) return;
     clipDeleteBusy.add(clip.id);
     clipDeleteBusy = new Set(clipDeleteBusy);
     try {
@@ -1691,7 +1699,9 @@
   }
 
   async function saveIfDirty(): Promise<boolean> {
-    if (!video) return true;
+    // Read-only users can't mutate, and all the edit paths are gated, so there's
+    // never anything to persist — bail before any updateVideo call.
+    if (!video || !canEdit) return true;
     const active = document.activeElement;
     if (active instanceof HTMLElement && active !== document.body) active.blur();
     await tick();
@@ -1744,7 +1754,7 @@
   }
 
   async function performMarkDelete() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const markId = video.id;
     markActionBusy = 'delete';
     errorMessage = null;
@@ -1771,7 +1781,7 @@
   }
 
   async function performUnmarkDelete() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const id = video.id;
     markActionBusy = 'delete';
     errorMessage = null;
@@ -1810,7 +1820,7 @@
   // deletion takes precedence when both are set. No-op when neither
   // flag is set so users can hold U safely.
   async function performUndo() {
-    if (!video || markActionBusy !== null) return;
+    if (!video || !canEdit || markActionBusy !== null) return;
     if (video.markedForDeletion) {
       await performUnmarkDelete();
     } else if (video.playbackIssue) {
@@ -1823,7 +1833,7 @@
   // next video so the user keeps moving through the playlist, then hit
   // the API and propagate the updated DTO back to the host's grid.
   async function performMarkPlaybackIssue() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const markId = video.id;
     markActionBusy = 'playbackissue';
     errorMessage = null;
@@ -1847,7 +1857,7 @@
   // unmark endpoint (server moves the file back out of _PlaybackIssue/),
   // then update local + host video state and resume playback.
   async function performUnmarkPlaybackIssue() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const id = video.id;
     markActionBusy = 'playbackissue';
     errorMessage = null;
@@ -1939,7 +1949,7 @@
   // needs-review keeps you on the current video so you can continue
   // working with it.
   async function toggleNeedsReview() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const wasNeedingReview = video.needsReview;
     try {
       if (wasNeedingReview) {
@@ -1962,7 +1972,7 @@
   // Toggle the structural IsFavorite flag. No file-system side effect; just
   // a star flip. Stays on the current video so the user can keep watching.
   async function toggleFavorite() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const next = !video.isFavorite;
     try {
       if (next) await api.markFavorite(video.id);
@@ -2727,12 +2737,14 @@
             <span class="text-base-content/50">→</span>
             <span>{formatClock(row.block.offsetInSeconds + row.block.lengthInSeconds)}</span>
             <span class="text-base-content/50">({formatClock(row.block.lengthInSeconds)})</span>
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs ml-auto"
-              onclick={() => removeBlock(row.idx)}
-              aria-label="Delete block"
-            >×</button>
+            {#if canEdit}
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs ml-auto"
+                onclick={() => removeBlock(row.idx)}
+                aria-label="Delete block"
+              >×</button>
+            {/if}
           </div>
         {/each}
       </div>
@@ -2817,10 +2829,11 @@
                 <div class="flex items-center gap-0.5 min-w-0">
                   <button
                     type="button"
-                    class="min-w-0 max-w-xs truncate text-left cursor-text {video.chapterMarkers[row.idx].comment ? '' : 'italic text-base-content/40'} {previewDelete ? 'text-error' : ''}"
-                    title="Click ✎ to rename"
-                    onclick={() => (editingBookmarkIdx = row.idx)}
+                    class="min-w-0 max-w-xs truncate text-left {canEdit ? 'cursor-text' : ''} {video.chapterMarkers[row.idx].comment ? '' : 'italic text-base-content/40'} {previewDelete ? 'text-error' : ''}"
+                    title={canEdit ? 'Click ✎ to rename' : undefined}
+                    onclick={() => { if (canEdit) editingBookmarkIdx = row.idx; }}
                   >{video.chapterMarkers[row.idx].comment || formatClock(row.bookmark.offset)}</button>
+                  {#if canEdit}
                   <button
                     type="button"
                     class="btn btn-ghost btn-xs shrink-0 px-1 {previewDelete ? 'text-error' : ''}"
@@ -2828,7 +2841,9 @@
                     aria-label="Edit bookmark name"
                     title="Edit name"
                   >✎</button>
+                  {/if}
                 </div>
+                {#if canEdit}
                 <button
                   type="button"
                   class="btn btn-ghost btn-xs shrink-0 {previewDelete ? 'text-error' : 'text-base-content/60 hover:text-error'}"
@@ -2844,6 +2859,7 @@
                     <path d="M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z" />
                   </svg>
                 </button>
+                {/if}
               {/if}
             </div>
           {/each}
@@ -2906,6 +2922,7 @@
                 class="min-w-0 max-w-xs truncate text-left {previewDelete ? 'text-error' : ''}"
                 title={c.fileName}
               >{c.fileName}</span>
+              {#if canEdit}
               <button
                 type="button"
                 class="btn btn-ghost btn-xs shrink-0 {previewDelete ? 'text-error' : 'text-base-content/60 hover:text-error'}"
@@ -2927,6 +2944,7 @@
                   </svg>
                 {/if}
               </button>
+              {/if}
             </div>
           {/each}
         </div>
@@ -2939,19 +2957,30 @@
          Inline SVG (not a Unicode glyph) so we control fill vs hairline
          outline and the size scales cleanly. -->
     <div class="mt-1 text-xs text-base-content/80 flex items-center gap-1">
-      <button
-        type="button"
-        class="leading-none cursor-pointer flex items-center"
-        onclick={toggleFavorite}
-        title={video.isFavorite ? 'Unfavorite (F)' : 'Favorite (F)'}
-        aria-label={video.isFavorite ? 'Unfavorite' : 'Favorite'}
-      >
-        <svg viewBox="0 0 24 24" class="h-5 w-5"
-          fill={video.isFavorite ? 'rgb(234 179 8)' : 'none'}
-          stroke="rgb(255 255 255 / 0.85)" stroke-width="1.25" stroke-linejoin="round">
-          <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
-        </svg>
-      </button>
+      {#if canEdit}
+        <button
+          type="button"
+          class="leading-none cursor-pointer flex items-center"
+          onclick={toggleFavorite}
+          title={video.isFavorite ? 'Unfavorite (F)' : 'Favorite (F)'}
+          aria-label={video.isFavorite ? 'Unfavorite' : 'Favorite'}
+        >
+          <svg viewBox="0 0 24 24" class="h-5 w-5"
+            fill={video.isFavorite ? 'rgb(234 179 8)' : 'none'}
+            stroke="rgb(255 255 255 / 0.85)" stroke-width="1.25" stroke-linejoin="round">
+            <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
+          </svg>
+        </button>
+      {:else if video.isFavorite}
+        <!-- Read-only: keep the favorite star visible (status), not clickable. -->
+        <span class="leading-none flex items-center" title="Favorite" aria-label="Favorite">
+          <svg viewBox="0 0 24 24" class="h-5 w-5"
+            fill="rgb(234 179 8)"
+            stroke="rgb(255 255 255 / 0.85)" stroke-width="1.25" stroke-linejoin="round">
+            <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
+          </svg>
+        </span>
+      {/if}
       {#if playlistIndex !== null && playlistTotal !== null && playlistTotal > 0}
         <!-- "x of y" playlist-position badge — answers "how far into
              this playlist am I?" at a glance while arrow-navigating. -->
@@ -3003,13 +3032,15 @@
               })}
               title="Filter by {t.tagGroupName}: {t.name}"
             >{t.name}</button>
-            <button
-              type="button"
-              class="opacity-70 hover:opacity-100 shrink-0"
-              onclick={(e) => { e.stopPropagation(); openEditTagModal(t.id); }}
-              title="Edit tag"
-              aria-label="Edit {t.name}"
-            >✎</button>
+            {#if canEdit}
+              <button
+                type="button"
+                class="opacity-70 hover:opacity-100 shrink-0"
+                onclick={(e) => { e.stopPropagation(); openEditTagModal(t.id); }}
+                title="Edit tag"
+                aria-label="Edit {t.name}"
+              >✎</button>
+            {/if}
           </span>
         {/each}
         {#if video.needsReview}
@@ -3026,7 +3057,9 @@
 
     <!-- Tag suggestions from the file name / folder path (issue #10).
          On-demand: the button asks the server which existing tags match,
-         and each result is an add-chip. -->
+         and each result is an add-chip. Hidden for read-only users — every
+         result is an add action they can't perform. -->
+    {#if canEdit}
     <div class="mt-1">
       <button
         type="button"
@@ -3074,6 +3107,7 @@
         </div>
       {/if}
     </div>
+    {/if}
 
     <!-- On-screen text OCR (issue #5). Reads the frame at the playhead. -->
     <div class="mt-1">
@@ -3117,6 +3151,7 @@
 
       <!-- Full-video OCR text scan (issue #5, ask 2): samples frames, OCRs
            them, and stores hits so they're searchable and seekable. -->
+      {#if canEdit}
       <button
         type="button"
         class="btn btn-xs btn-ghost gap-1 ml-1"
@@ -3191,6 +3226,7 @@
           </div>
         </div>
       {/if}
+      {/if}
     </div>
   </div>
 
@@ -3210,6 +3246,7 @@
         <div class="text-lg font-semibold uppercase tracking-wide text-error">
           Marked for Deletion
         </div>
+        {#if canEdit}
         <button
           type="button"
           class="btn btn-error btn-wide"
@@ -3222,6 +3259,7 @@
         <div class="text-xs text-base-content/60">
           or press <kbd class="kbd kbd-sm">U</kbd>
         </div>
+        {/if}
       </div>
     </div>
   {:else if isPlaybackIssue && !isNavigating}
@@ -3244,6 +3282,7 @@
         <div class="text-lg font-semibold uppercase tracking-wide text-warning">
           Playback Issue
         </div>
+        {#if canEdit}
         <button
           type="button"
           class="btn btn-warning btn-wide"
@@ -3256,6 +3295,7 @@
         <div class="text-xs text-base-content/60">
           or press <kbd class="kbd kbd-sm">U</kbd>
         </div>
+        {/if}
         {#if runtimeStore.isLocal}
           <div class="flex gap-2 pt-1 border-t border-base-300/60 mt-1 w-full justify-center">
             <button

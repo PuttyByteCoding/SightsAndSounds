@@ -6,11 +6,13 @@
   import { filterStore } from '$lib/filterStore.svelte';
   import { pillClass } from '$lib/tagColors';
   import TagEditModal from './TagEditModal.svelte';
+  import { auth } from '$lib/auth.svelte';
 
   let editTagModalShow = $state(false);
   let editingTag = $state<Tag | null>(null);
   async function openEditTag(tagId: string, e: Event) {
     e.stopPropagation();
+    if (auth.isReadOnly) return;
     try {
       editingTag = await api.getTag(tagId);
       editTagModalShow = true;
@@ -380,13 +382,15 @@
               }}
               title="Filter by {t.tagGroupName}: {t.name}"
             >{t.name}</button>
-            <button
-              type="button"
-              class="opacity-70 hover:opacity-100 shrink-0"
-              onclick={(e) => openEditTag(t.id, e)}
-              title="Edit tag"
-              aria-label="Edit {t.name}"
-            >✎</button>
+            {#if !auth.isReadOnly}
+              <button
+                type="button"
+                class="opacity-70 hover:opacity-100 shrink-0"
+                onclick={(e) => openEditTag(t.id, e)}
+                title="Edit tag"
+                aria-label="Edit {t.name}"
+              >✎</button>
+            {/if}
           </span>
         {/each}
       </div>

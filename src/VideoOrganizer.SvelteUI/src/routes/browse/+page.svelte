@@ -31,6 +31,13 @@
   import { filterStore } from '$lib/filterStore.svelte';
   import { planFilteredQueue } from '$lib/browseQueue';
   import { pillClass, filterSlot, filterSlotClass, filterSlotDot, filterSlotText } from '$lib/tagColors';
+  import { auth } from '$lib/auth.svelte';
+
+  // Read-only sweep (#124). Drives whether the browse page's own write
+  // affordances (folder remove, mark-duplicate, move/rename) and the embedded
+  // player's edit controls are shown. False only when auth is on and the user
+  // is a read-only 'viewer'; with auth off it's true so nothing changes.
+  const canEdit = $derived(!auth.isReadOnly);
 
   let videos = $state<Video[]>([]);
   // How many videos matched the current filter but were suppressed by a
@@ -743,6 +750,7 @@
   let removeFolderError = $state<string | null>(null);
 
   function askRemoveFolder(path: string, label: string, importedCount: number) {
+    if (!canEdit) return;
     removeFolderError = null;
     removeFolderTarget = { path, label, count: importedCount };
   }
@@ -1168,6 +1176,7 @@
   // row's new FilePath into the grid and the player.
   let moveDialogVideo = $state<Video | null>(null);
   function openMoveDialog(v: Video) {
+    if (!canEdit) return;
     moveDialogVideo = v;
   }
   function onFileMoved(updated: Video) {
@@ -1204,7 +1213,7 @@
   }
 
   function setDupAnchor() {
-    if (!playingVideo) return;
+    if (!playingVideo || !canEdit) return;
     dupAnchor = playingVideo;
     dupMessage = null;
     dupMessageIsError = false;
@@ -1217,7 +1226,7 @@
   }
 
   async function markCurrentAsDuplicate() {
-    if (!dupAnchor || !playingVideo || dupMarking) return;
+    if (!canEdit || !dupAnchor || !playingVideo || dupMarking) return;
     if (playingVideo.id === dupAnchor.id) {
       dupMessage = 'This IS the anchor video — navigate to a different video first.';
       dupMessageIsError = true;
@@ -1317,7 +1326,7 @@
   // Rename the currently-playing video's file (#172). Throws on failure so the
   // FileInfoPanel can surface the server's message inline.
   async function renameCurrentVideo(newName: string) {
-    if (!playingVideo) return;
+    if (!playingVideo || !canEdit) return;
     const updated = await api.renameVideo(playingVideo.id, newName);
     playingVideo = updated;
     patchVideoInGrid(updated);
@@ -1835,7 +1844,7 @@
                   enabled={matchingSet ? matchingSet.enabled : true}
                   onPickFolder={(path, label) =>
                     filterStore.requestAdd({ type: 'folder', value: path, label })}
-                  onRemoveFolder={askRemoveFolder}
+                  onRemoveFolder={canEdit ? askRemoveFolder : undefined}
                 />
               {/each}
             {/key}
@@ -2160,6 +2169,7 @@
             >
               <VideoPlayer
                 bind:video={playingVideo}
+                canEdit={canEdit}
                 shortcutsEnabled={true}
                 maxVideoHeightPx={videoHeightCap}
                 playlistIndex={playingIndex}
@@ -2206,7 +2216,7 @@
             <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current"><rect x="2" y="2" width="20" height="20" rx="2"/></svg>
           </label>
           {#if videosLoading}<span class="loading loading-dots loading-sm"></span>{/if}
-          {#if !dupAnchor}
+          {#if !dupAnchor && canEdit}
             <button
               type="button"
               class="btn btn-sm"
@@ -2217,6 +2227,7 @@
           {/if}
           <!-- Move the currently-playing video's file to another folder
                (issue #4). The grid cards carry their own Move… button. -->
+          {#if canEdit}
           <button
             type="button"
             class="btn btn-sm"
@@ -2224,6 +2235,7 @@
             onclick={() => playingVideo && openMoveDialog(playingVideo)}
             title="Move the current video's file to another folder"
           >↪ Move file</button>
+          {/if}
           <!-- Sort mode select + direction toggle. Shuffle is the default
                random-playlist behavior; explicit modes re-order the grid
                client-side. The ↑↓ button flips ascending/descending and
@@ -2358,11 +2370,11 @@
           <FileInfoPanel
             bind:show={showFileInfo}
             video={playingVideo}
-            onRename={renameCurrentVideo}
+            onRename={canEdit ? renameCurrentVideo : undefined}
           />
         </div>
       {/if}
-      {#if showEditTagsPanel && playingVideo && viewMode === 'player'}
+      {#if showEditTagsPanel && playingVideo && viewMode === 'player' && canEdit}
         <div
           class="sticky top-0 z-10 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
         >
