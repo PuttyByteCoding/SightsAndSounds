@@ -29,10 +29,21 @@ log compose "starting fresh postgres + seq"
 docker compose up -d postgres seq
 wait_postgres
 
+# Auth off by default → skip Keycloak. When on, the down -v above wiped the
+# keycloak DB too, so keycloak-db-init recreates it and the realm re-imports.
+if [ "${Auth__Enabled:-false}" = "true" ]; then
+  log compose "Auth__Enabled=true — starting keycloak (realm will re-import after wipe)"
+  docker compose up -d keycloak
+  wait_keycloak
+fi
+
 start_bg api dotnet run --project src/VideoOrganizer.API
 start_bg ui  bash -c 'cd src/VideoOrganizer.SvelteUI && npm run dev'
 
 log done "Database wiped. Migrations will run automatically on first API request."
 log done "API:  http://localhost:5098  (Swagger at /swagger)"
 log done "UI:   http://localhost:5173"
+if [ "${Auth__Enabled:-false}" = "true" ]; then
+  log done "Auth: http://localhost:8080  (Keycloak admin console; realm 'sightsandsounds')"
+fi
 log done "Stop: ./stop.sh"

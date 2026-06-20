@@ -79,3 +79,20 @@ wait_postgres() {
   warn postgres "did not become ready within 60s"
   return 1
 }
+
+# Wait for Keycloak to finish booting and importing the realm. Polls the
+# realm's OIDC discovery endpoint (a 200 means the server is up AND the
+# sightsandsounds realm imported). First boot pulls the image, so allow a
+# generous window.
+wait_keycloak() {
+  log keycloak "waiting for realm discovery (first boot pulls the image — be patient)"
+  for _ in $(seq 1 120); do
+    if curl -fsS http://localhost:8080/realms/sightsandsounds/.well-known/openid-configuration >/dev/null 2>&1; then
+      log keycloak "ready"
+      return 0
+    fi
+    sleep 2
+  done
+  warn keycloak "did not become ready within 240s (check: docker compose logs keycloak)"
+  return 1
+}
