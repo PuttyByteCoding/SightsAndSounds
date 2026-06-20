@@ -13,7 +13,17 @@
   import { fade } from 'svelte/transition';
   import { api } from '$lib/api';
   import { loadProgressFraction } from '$lib/videoLoadProgress';
-  import type { Tag, Video, FfprobeResult, ClipSummary } from '$lib/types';
+  import { parseScrubberFrames, type ScrubFrame } from '$lib/scrubber';
+  import {
+    numpadPlaybackAction,
+    shiftDigitSeek,
+    plainDigitPlaybackAction,
+    altFlagDigit,
+    isTypingTarget,
+    type PlaybackAction
+  } from '$lib/playerKeyboard';
+  import { handleVideoKey } from '$lib/videoKeyboard';
+  import type { Tag, Video, FfprobeResult, ClipSummary, TagSuggestion } from '$lib/types';
   import { playbackSettings } from '$lib/playbackSettings.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { tagFlash } from '$lib/tagFlash.svelte';
@@ -27,6 +37,12 @@
 
   interface Props {
     video: Video | null;
+    // Read-only sweep (#124). When false, every write affordance is hidden and
+    // the write action functions no-op — so a read-only ('viewer') user can
+    // still play, seek, zoom, read tags/OCR and navigate, but can't flag, tag,
+    // clip, bookmark, block, OCR-scan, or delete (all of which the API 403s).
+    // Defaults true so hosts that don't pass it behave exactly as before.
+    canEdit?: boolean;
     // Fired when the user presses ← (after save-if-dirty completes). Host
     // decides what "previous" means (playlist, grid order, etc.).
     onRequestPrev?: () => void | Promise<void>;
@@ -77,6 +93,7 @@
 
   let {
     video = $bindable(),
+    canEdit = true,
     onRequestPrev,
     onRequestNext,
     shortcutsEnabled = true,
@@ -111,7 +128,87 @@
   let editTagModalShow = $state(false);
   let editingTag = $state<Tag | null>(null);
 
+  // --- Tag suggestions (issue #10) ---------------------------------------
+  // On-demand: the "Suggest tags" button asks the server which existing tags
+  // match this video's file name / folder path, and offers them as add-chips.
+  let tagSuggestions = $state<TagSuggestion[]>([]);
+  let suggestOpen = $state(false);
+  let suggestLoading = $state(false);
+  let suggestError = $state<string | null>(null);
+  // The video the loaded suggestions belong to — used to close the panel on
+  // navigation without reacting to same-video reassignments (a tag add
+  // reassigns `video` but keeps the id).
+  let suggestPanelVideoId = $state<string | null>(null);
+
+  $effect(() => {
+    const vid = video?.id ?? null;
+    if (vid !== suggestPanelVideoId) {
+      suggestPanelVideoId = vid;
+      suggestOpen = false;
+      tagSuggestions = [];
+      suggestError = null;
+    }
+  });
+
+  async function toggleSuggestions() {
+    suggestOpen = !suggestOpen;
+    if (suggestOpen) await loadSuggestions();
+  }
+
+  async function loadSuggestions() {
+    if (!video) return;
+    const vid = video.id;
+    suggestLoading = true;
+    suggestError = null;
+    try {
+      const res = await api.getTagSuggestions(vid);
+      if (video?.id !== vid) return;
+      tagSuggestions = res;
+    } catch (e) {
+      suggestError = e instanceof Error ? e.message : String(e);
+    } finally {
+      suggestLoading = false;
+    }
+  }
+
+  // Apply one suggested tag — same optimistic-add + rollback shape as
+  // toggleBoundTag, and drops the chip from the suggestion row on success.
+  async function addSuggestion(s: TagSuggestion) {
+    if (!video || !canEdit || video.tags.some(t => t.id === s.tagId)) return;
+    const vid = video.id;
+    const previousTags = video.tags;
+    const previousNeedsReview = video.needsReview;
+    const optimisticTags = [
+      ...video.tags,
+      { id: s.tagId, tagGroupId: s.tagGroupId, tagGroupName: s.tagGroupName, name: s.name }
+    ];
+    const shouldClearReview = previousNeedsReview;
+    video = {
+      ...video,
+      tags: optimisticTags,
+      needsReview: shouldClearReview ? false : video.needsReview
+    };
+    tagSuggestions = tagSuggestions.filter(x => x.tagId !== s.tagId);
+    tagFlash.show(s.name);
+    try {
+      await api.setVideoTags(vid, { tagIds: optimisticTags.map(t => t.id) });
+      if (shouldClearReview) await api.markReviewed(vid);
+      const fresh = await api.getVideo(vid);
+      if (fresh && video?.id === vid) {
+        video = fresh;
+        loadedVideoSnapshot = JSON.stringify(fresh);
+        if (shouldClearReview) await onVideoChanged?.(fresh);
+      }
+    } catch (e) {
+      if (video?.id === vid) {
+        video = { ...video, tags: previousTags, needsReview: previousNeedsReview };
+      }
+      errorMessage = `Failed to add '${s.name}': ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
   async function openEditTagModal(tagId: string) {
+    if (!canEdit) return;
     try {
       editingTag = await api.getTag(tagId);
       editTagModalShow = true;
@@ -149,7 +246,7 @@
   // (only if the user is still on the same video — they may have
   // navigated away during the round-trip).
   async function toggleFlagAt(oneBasedIdx: number) {
-    if (!video) return;
+    if (!video || !canEdit) return;
     if (flagTags.length === 0) {
       errorMessage = `Alt+${oneBasedIdx}: no checkbox-mode tag group is configured. ` +
         `Open Tag Management and turn on "Display as checkboxes" for one of your groups.`;
@@ -234,7 +331,7 @@
   // the API calls in the background, roll back on failure if the user
   // is still on the same video.
   async function toggleBoundTag(binding: TagKeyBinding) {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const videoId = video.id;
     const has = video.tags.some(t => t.id === binding.tagId);
     const previousTags = video.tags;
@@ -278,8 +375,16 @@
     }
   }
 
-  // Scrubber
-  interface ScrubFrame { x: number; y: number; w: number; h: number; }
+  // Screen-reader announcement for the tag-flash overlay (#131). The visual
+  // overlay is conditionally mounted (unreliable for live regions), so a
+  // persistent sr-only region mirrors the latest entry and announces it politely.
+  const flashAnnouncement = $derived.by(() => {
+    const e = tagFlash.entries.at(-1);
+    if (!e) return '';
+    return e.kind === 'removed' ? `Removed tag ${e.text}` : `Tagged ${e.text}`;
+  });
+
+  // Scrubber (ScrubFrame + VTT parsing live in $lib/scrubber for unit testing)
   let scrubFrames = $state<ScrubFrame[]>([]);
   let scrubSpriteSize = $state<{ w: number; h: number }>({ w: 0, h: 0 });
   let scrubBarEl: HTMLDivElement | null = $state(null);
@@ -289,6 +394,133 @@
   let videoProgress = $state(0);
   let videoCurrentTime = $state(0);
   let videoDuration = $state(0);
+
+  // --- On-screen text OCR (issue #5) -------------------------------------
+  // "Read text" grabs the frame at the playhead and OCRs it server-side.
+  let ocrOpen = $state(false);
+  let ocrLoading = $state(false);
+  let ocrText = $state('');
+  let ocrAtSeconds = $state(0);
+  let ocrError = $state<string | null>(null);
+
+  async function readTextAtPlayhead() {
+    if (!video) return;
+    const vid = video.id;
+    const t = videoCurrentTime;
+    ocrOpen = true;
+    ocrLoading = true;
+    ocrError = null;
+    try {
+      const res = await api.ocrVideoFrame(vid, t);
+      if (video?.id !== vid) return;
+      ocrText = res.text;
+      ocrAtSeconds = res.timeSeconds;
+    } catch (e) {
+      ocrError = e instanceof Error ? e.message : String(e);
+      ocrText = '';
+    } finally {
+      ocrLoading = false;
+    }
+  }
+
+  // --- Full-video OCR text scan (issue #5, ask 2) ------------------------
+  // "Scan for text" runs a resumable background scan that samples frames,
+  // OCRs each, and stores the hits so they're searchable and seekable.
+  let ocrScanOpen = $state(false);
+  let ocrScan = $state<import('$lib/types').OcrScanProgress | null>(null);
+  let ocrHits = $state<import('$lib/types').OcrTextLine[]>([]);
+  let ocrScanBusy = $state(false);
+  let ocrScanPoll: ReturnType<typeof setInterval> | null = null;
+
+  // % of the video the scan has covered so far (0–100), for the progress bar.
+  const ocrScanPct = $derived(
+    ocrScan && ocrScan.durationSeconds > 0
+      ? Math.min(100, Math.round((ocrScan.scannedThroughSeconds / ocrScan.durationSeconds) * 100))
+      : 0
+  );
+  // True once the scan has covered the whole video (nothing left to "scan more").
+  const ocrScanComplete = $derived(
+    !!ocrScan && !ocrScan.active && ocrScan.durationSeconds > 0 &&
+    ocrScan.scannedThroughSeconds >= ocrScan.durationSeconds - 0.001
+  );
+
+  function stopOcrPolling() {
+    if (ocrScanPoll) { clearInterval(ocrScanPoll); ocrScanPoll = null; }
+  }
+
+  async function refreshOcrHits(vid: string) {
+    try {
+      const hits = await api.getVideoOcrText(vid);
+      if (video?.id === vid) ocrHits = hits;
+    } catch { /* leave the prior list */ }
+  }
+
+  // Open the scan panel and load any prior scan state + stored hits.
+  async function openOcrScan() {
+    if (!video) return;
+    const vid = video.id;
+    ocrScanOpen = true;
+    try {
+      const [prog] = await Promise.all([api.getOcrScanProgress(vid), refreshOcrHits(vid)]);
+      if (video?.id !== vid) return;
+      ocrScan = prog;
+      if (prog.active) startOcrPolling(vid);
+    } catch (e) {
+      if (video?.id === vid) ocrScan = null;
+    }
+  }
+
+  function startOcrPolling(vid: string) {
+    stopOcrPolling();
+    ocrScanPoll = setInterval(async () => {
+      if (video?.id !== vid) { stopOcrPolling(); return; }
+      try {
+        const prog = await api.getOcrScanProgress(vid);
+        if (video?.id !== vid) { stopOcrPolling(); return; }
+        ocrScan = prog;
+        if (!prog.active) { stopOcrPolling(); await refreshOcrHits(vid); }
+      } catch { stopOcrPolling(); }
+    }, 1000);
+  }
+
+  // Start (or resume "scan more") a background scan.
+  async function startOcrScan() {
+    if (!video || !canEdit || ocrScanBusy) return;
+    const vid = video.id;
+    ocrScanBusy = true;
+    try {
+      ocrScan = await api.startOcrScan(vid);
+      if (video?.id === vid) startOcrPolling(vid);
+    } catch (e) {
+      if (video?.id === vid && ocrScan) ocrScan = { ...ocrScan, phase: 'error', error: String(e) };
+    } finally {
+      ocrScanBusy = false;
+    }
+  }
+
+  async function stopOcrScan() {
+    if (!video) return;
+    const vid = video.id;
+    try {
+      ocrScan = await api.stopOcrScan(vid);
+    } catch { /* poll will reconcile */ }
+  }
+
+  // Seek the player to a stored hit's timestamp.
+  function seekToOcrHit(t: number) {
+    if (videoEl) { videoEl.currentTime = t; syncScrubberFromVideo(); }
+  }
+
+  // Reset scan state when the video changes (and stop polling on unmount), so
+  // one video's hits/progress never bleed into another's.
+  $effect(() => {
+    const _ = video?.id;
+    stopOcrPolling();
+    ocrScan = null;
+    ocrHits = [];
+    ocrScanOpen = false;
+    return () => stopOcrPolling();
+  });
   // Hover tracking for the in-video scrubber overlay. When false, the
   // scrubber fades out so it doesn't obscure the picture; when true (or
   // while actively scrubbing via scrubHoverX), it's fully visible.
@@ -299,6 +531,9 @@
   // scrubber can paint a green band per existing clip range. Empty
   // when the current video IS a clip (clips don't have children).
   let parentClips = $state<ClipSummary[]>([]);
+  // The under-player clips list shows only live clips; exported ones (#69) are
+  // gone from the library and appear only as a breadcrumb band on the scrubber.
+  const liveClips = $derived(parentClips.filter((c) => !c.exported));
 
   // Scrubber-scope helpers. Two modes:
   //   - parent video      → scrub spans the entire file [0, duration]
@@ -617,18 +852,9 @@
       const res = await fetch(api.thumbnailsVttUrl(videoId));
       if (!res.ok) return;
       const text = await res.text();
-      const re = /sprite\.jpg#xywh=(\d+),(\d+),(\d+),(\d+)/g;
-      const out: ScrubFrame[] = [];
-      let maxRight = 0, maxBottom = 0;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(text)) !== null) {
-        const x = +m[1], y = +m[2], w = +m[3], h = +m[4];
-        out.push({ x, y, w, h });
-        if (x + w > maxRight) maxRight = x + w;
-        if (y + h > maxBottom) maxBottom = y + h;
-      }
-      scrubFrames = out;
-      scrubSpriteSize = { w: maxRight, h: maxBottom };
+      const parsed = parseScrubberFrames(text);
+      scrubFrames = parsed.frames;
+      scrubSpriteSize = parsed.spriteSize;
     } catch { /* non-fatal */ }
   }
 
@@ -700,7 +926,11 @@
     }
   }
 
-  function onVideoTimeUpdate() {
+  // Sync the scrubber (current-time readout + progress fill) from the
+  // <video>'s currentTime. Called on `timeupdate` during playback AND on
+  // `seeking` so the scrubber jumps the instant the user skips ahead/back
+  // instead of waiting for the next timeupdate tick. (issue #35)
+  function syncScrubberFromVideo() {
     if (!videoEl) return;
     const d = Number.isFinite(videoEl.duration) && videoEl.duration > 0 ? videoEl.duration : 0;
     videoCurrentTime = videoEl.currentTime;
@@ -715,6 +945,12 @@
     } else {
       videoProgress = d === 0 ? 0 : videoEl.currentTime / d;
     }
+  }
+
+  function onVideoTimeUpdate() {
+    if (!videoEl) return;
+    syncScrubberFromVideo();
+    const d = Number.isFinite(videoEl.duration) && videoEl.duration > 0 ? videoEl.duration : 0;
 
     // Accumulate wall-clock playback time and fire the watch beacon once we
     // clear 10 seconds. We sample on ontimeupdate (~4Hz while playing), so a
@@ -830,7 +1066,7 @@
   // review/edit one, jump to its timestamp from the block list and
   // delete or trim it.
   function startBlock() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     pendingBlockStart = videoEl.currentTime;
   }
 
@@ -843,14 +1079,23 @@
   // into one — saves the user the bookkeeping and matches how playback
   // already treats them (the auto-skip is range-based).
   function endBlock() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     if (pendingBlockStart === null) return;
     const t = videoEl.currentTime;
-    const start = Math.min(pendingBlockStart, t);
-    const end = Math.max(pendingBlockStart, t);
-    const length = end - start;
+    const start = pendingBlockStart;
     pendingBlockStart = null;
-    if (length < 0.25) return;
+    addHideBlock(start, t);
+  }
+
+  // Add a Hide block covering [a,b] (seconds, either order). Drops accidental
+  // micro-blocks, rounds to the int seconds the server stores (floor/ceil so
+  // the block still fully covers the selection), and merges with overlapping
+  // or adjacent Hide blocks. Shared by endBlock and the ]]/[[ shortcuts.
+  function addHideBlock(a: number, b: number) {
+    if (!video) return;
+    const start = Math.max(0, Math.min(a, b));
+    const end = Math.max(a, b);
+    if (end - start < 0.25) return;
     const offsetInt = Math.floor(start);
     const lengthInt = Math.max(1, Math.ceil(end) - offsetInt);
     const next: Block = {
@@ -859,6 +1104,19 @@
       videoBlockType: 'hide'
     };
     video.videoBlocks = mergeHideBlocks([...video.videoBlocks, next]);
+  }
+
+  // ]] (double-tap ]) — Hide block from the start to the current position.
+  // [[ (double-tap [) — Hide block from the current position to the end.
+  // Quick "trim the head / tail" without the two-step {…} flow. (issue #44)
+  function blockFromStart() {
+    if (!video || !videoEl) return;
+    addHideBlock(0, videoEl.currentTime);
+  }
+  function blockToEnd() {
+    if (!video || !videoEl) return;
+    const end = Number.isFinite(videoEl.duration) ? videoEl.duration : videoDuration;
+    addHideBlock(videoEl.currentTime, end);
   }
 
   // Collapse overlapping or touching Hide blocks into the smallest set
@@ -902,7 +1160,7 @@
   // since clip-of-clip isn't allowed. Pressing again before endClip just
   // moves the start marker.
   function startClip() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     if (video.isClip) {
       clipError = 'Cannot create a clip of a clip.';
       return;
@@ -933,7 +1191,7 @@
   // Close the clip (Ctrl+Shift+]) and POST it to the API. Inherits tags
   // from the parent. No-op if startClip wasn't pressed first.
   async function endClip() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     if (video.isClip) {
       clipError = 'Cannot create a clip of a clip.';
       return;
@@ -1148,7 +1406,7 @@
   }
 
   function removeBlock(index: number) {
-    if (!video) return;
+    if (!video || !canEdit) return;
     video.videoBlocks = video.videoBlocks.filter((_, i) => i !== index);
   }
 
@@ -1198,7 +1456,7 @@
   }
 
   function addBookmark() {
-    if (!video || !videoEl) return;
+    if (!video || !videoEl || !canEdit) return;
     bookmarkModal = {
       offset: videoEl.currentTime,
       name: nextBookmarkDefaultName()
@@ -1234,7 +1492,7 @@
   }
 
   function removeBookmark(idx: number) {
-    if (!video) return;
+    if (!video || !canEdit) return;
     video.chapterMarkers = video.chapterMarkers.filter((_, i) => i !== idx);
   }
 
@@ -1313,7 +1571,7 @@
   // original video" guarantee — `markForDeletion` for a clip just
   // sets the flag (no file move, no parent-file delete).
   async function deleteClipFromList(clip: ClipSummary) {
-    if (clipDeleteBusy.has(clip.id)) return;
+    if (!canEdit || clipDeleteBusy.has(clip.id)) return;
     clipDeleteBusy.add(clip.id);
     clipDeleteBusy = new Set(clipDeleteBusy);
     try {
@@ -1441,7 +1699,9 @@
   }
 
   async function saveIfDirty(): Promise<boolean> {
-    if (!video) return true;
+    // Read-only users can't mutate, and all the edit paths are gated, so there's
+    // never anything to persist — bail before any updateVideo call.
+    if (!video || !canEdit) return true;
     const active = document.activeElement;
     if (active instanceof HTMLElement && active !== document.body) active.blur();
     await tick();
@@ -1494,7 +1754,7 @@
   }
 
   async function performMarkDelete() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const markId = video.id;
     markActionBusy = 'delete';
     errorMessage = null;
@@ -1521,7 +1781,7 @@
   }
 
   async function performUnmarkDelete() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const id = video.id;
     markActionBusy = 'delete';
     errorMessage = null;
@@ -1560,7 +1820,7 @@
   // deletion takes precedence when both are set. No-op when neither
   // flag is set so users can hold U safely.
   async function performUndo() {
-    if (!video || markActionBusy !== null) return;
+    if (!video || !canEdit || markActionBusy !== null) return;
     if (video.markedForDeletion) {
       await performUnmarkDelete();
     } else if (video.playbackIssue) {
@@ -1573,7 +1833,7 @@
   // next video so the user keeps moving through the playlist, then hit
   // the API and propagate the updated DTO back to the host's grid.
   async function performMarkPlaybackIssue() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const markId = video.id;
     markActionBusy = 'playbackissue';
     errorMessage = null;
@@ -1597,7 +1857,7 @@
   // unmark endpoint (server moves the file back out of _PlaybackIssue/),
   // then update local + host video state and resume playback.
   async function performUnmarkPlaybackIssue() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const id = video.id;
     markActionBusy = 'playbackissue';
     errorMessage = null;
@@ -1689,7 +1949,7 @@
   // needs-review keeps you on the current video so you can continue
   // working with it.
   async function toggleNeedsReview() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const wasNeedingReview = video.needsReview;
     try {
       if (wasNeedingReview) {
@@ -1712,12 +1972,16 @@
   // Toggle the structural IsFavorite flag. No file-system side effect; just
   // a star flip. Stays on the current video so the user can keep watching.
   async function toggleFavorite() {
-    if (!video) return;
+    if (!video || !canEdit) return;
     const next = !video.isFavorite;
     try {
       if (next) await api.markFavorite(video.id);
       else await api.unmarkFavorite(video.id);
-      if (video) video.isFavorite = next;
+      if (video) {
+        video.isFavorite = next;
+        // Flagging counts as reviewing it (#200) — matches the server.
+        if (next) video.needsReview = false;
+      }
       loadedVideoSnapshot = JSON.stringify(video);
       // Propagate the flag flip up so the host's grid + sidebar
       // counts stay in sync (e.g. the Flags-tree count badges).
@@ -1729,10 +1993,46 @@
 
   // --- Keyboard -------------------------------------------------------------
 
-  function isTypingTarget(t: EventTarget | null): boolean {
-    if (!(t instanceof HTMLElement)) return false;
-    const tag = t.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
+  // isTypingTarget + the playback-key resolvers live in $lib/playerKeyboard
+  // (unit-tested). This dispatches a resolved PlaybackAction to the component's
+  // playback methods.
+  function dispatchPlayback(a: PlaybackAction) {
+    switch (a.kind) {
+      case 'seek': seekBy(a.seconds); break;
+      case 'playPause': togglePlayPause(); break;
+      case 'seekToStart': seekToStart(); break;
+      case 'seekToNearEnd': seekToNearEnd(); break;
+    }
+  }
+
+  // `{` / `}` (Shift+[ / Shift+]) keep their single-press manual-block actions
+  // (arm a block start / close it), and a quick double-tap of either marks a
+  // whole block in one gesture (issue #44):
+  //   }}  → Hide block from the START to the current position
+  //   {{  → Hide block from the current position to the END
+  // The single action fires on every press, so the two-step {…} flow is
+  // unaffected (those are two different keys). A second tap of the SAME key
+  // within the window then lays down the head/tail block. Held keys
+  // (auto-repeat) never count as a double-tap. Zoom stays on plain [ / ].
+  let lastBlockTap: { key: '{' | '}'; at: number } | null = null;
+  const BLOCK_DBL_MS = 350;
+
+  function handleBlockTap(key: '{' | '}', repeat: boolean) {
+    if (!repeat && lastBlockTap?.key === key && Date.now() - lastBlockTap.at < BLOCK_DBL_MS) {
+      lastBlockTap = null;
+      if (key === '}') {
+        blockFromStart();
+      } else {
+        // The first `{` of the double already armed a pending start marker —
+        // clear it so the tail block doesn't leave a dangling start behind.
+        cancelPendingBlock();
+        blockToEnd();
+      }
+      return;
+    }
+    lastBlockTap = repeat ? null : { key, at: Date.now() };
+    if (key === '{') startBlock();
+    else endBlock();
   }
 
   async function onWindowKeyDown(e: KeyboardEvent) {
@@ -1776,6 +2076,13 @@
         e.preventDefault();
         e.stopPropagation();
         togglePreviewPlay();
+        return;
+      }
+      // Playback navigation (numpad / Shift+digit / plain-digit seeks) drives
+      // the PREVIEW video, not the hidden main player (#69 follow-up). Numpad
+      // fires even while naming the clip; plain digits still type into the name.
+      if (handleVideoKey(e, previewVideoEl, playbackSettings)) {
+        e.stopPropagation();
         return;
       }
       // Any other key while focus is in the name input: let it through
@@ -1823,14 +2130,7 @@
     // Alt+1..9 toggles the Nth tag (by SortOrder) of the first
     // displayAsCheckboxes group. Top-row digits and numpad both work.
     if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-      let digit: number | null = null;
-      if (e.code.startsWith('Digit')) {
-        const d = parseInt(e.code.substring(5), 10);
-        if (d >= 1 && d <= 9) digit = d;
-      } else if (e.code.startsWith('Numpad')) {
-        const d = parseInt(e.code.substring(6), 10);
-        if (d >= 1 && d <= 9) digit = d;
-      }
+      const digit = altFlagDigit(e.code);
       if (digit !== null) {
         e.preventDefault();
         e.stopPropagation();
@@ -1843,49 +2143,26 @@
     // digits type into the input (the typing-target check below handles
     // that path); use top row for numeric tag values like Year.
     //   Numpad 1/3/4/6/7/9  — relative seek (per playbackSettings)
+    //   Numpad 5            — play/pause (works while a tag input has focus;
+    //                         issue #57). Matched on e.code so it fires
+    //                         regardless of NumLock, unlike the top-row '5'.
     //   Numpad 0            — jump to start (00:00)
     //   Numpad -            — jump to 10s from the end
-    if (e.code === 'Numpad0') {
+    const numpadAction = numpadPlaybackAction(e.code, playbackSettings);
+    if (numpadAction) {
       e.preventDefault();
       e.stopPropagation();
-      seekToStart();
-      return;
-    }
-    if (e.code === 'NumpadSubtract') {
-      e.preventDefault();
-      e.stopPropagation();
-      seekToNearEnd();
-      return;
-    }
-    const numpadSeek =
-      e.code === 'Numpad1' ? -playbackSettings.key1Seconds :
-      e.code === 'Numpad3' ? playbackSettings.key3Seconds :
-      e.code === 'Numpad4' ? -playbackSettings.key4Seconds :
-      e.code === 'Numpad6' ? playbackSettings.key6Seconds :
-      e.code === 'Numpad7' ? -playbackSettings.key7Seconds :
-      e.code === 'Numpad9' ? playbackSettings.key9Seconds :
-      null;
-    if (numpadSeek !== null) {
-      e.preventDefault();
-      e.stopPropagation();
-      seekBy(numpadSeek);
+      dispatchPlayback(numpadAction);
       return;
     }
     // Shift+top-row digit is the keyboard-based equivalent for users without
     // a numpad. Match on e.code and the shifted character.
     if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      const shiftSeek =
-        e.code === 'Digit1' || e.key === '!' ? -playbackSettings.key1Seconds :
-        e.code === 'Digit3' || e.key === '#' ? playbackSettings.key3Seconds :
-        e.code === 'Digit4' || e.key === '$' ? -playbackSettings.key4Seconds :
-        e.code === 'Digit6' || e.key === '^' ? playbackSettings.key6Seconds :
-        e.code === 'Digit7' || e.key === '&' ? -playbackSettings.key7Seconds :
-        e.code === 'Digit9' || e.key === '(' ? playbackSettings.key9Seconds :
-        null;
-      if (shiftSeek !== null) {
+      const shiftAction = shiftDigitSeek(e.code, e.key, playbackSettings);
+      if (shiftAction) {
         e.preventDefault();
         e.stopPropagation();
-        seekBy(shiftSeek);
+        dispatchPlayback(shiftAction);
         return;
       }
     }
@@ -1985,18 +2262,16 @@
     //   \                            → fit-to-column
     if (e.key === '{' && e.ctrlKey) { e.preventDefault(); startClip(); return; }
     if (e.key === '}' && e.ctrlKey) { e.preventDefault(); await endClip(); return; }
-    if (e.key === '{') { e.preventDefault(); startBlock(); return; }
-    if (e.key === '}') { e.preventDefault(); endBlock(); return; }
+    if (e.key === '{') { e.preventDefault(); handleBlockTap('{', e.repeat); return; }
+    if (e.key === '}') { e.preventDefault(); handleBlockTap('}', e.repeat); return; }
     if (e.key === '[') { e.preventDefault(); zoomOut(); return; }
     if (e.key === ']') { e.preventDefault(); zoomIn(); return; }
     if (e.key === '\\') { e.preventDefault(); fitSize(); return; }
-    switch (e.key) {
-      case '1': e.preventDefault(); seekBy(-playbackSettings.key1Seconds); break;
-      case '3': e.preventDefault(); seekBy(playbackSettings.key3Seconds); break;
-      case '4': e.preventDefault(); seekBy(-playbackSettings.key4Seconds); break;
-      case '6': e.preventDefault(); seekBy(playbackSettings.key6Seconds); break;
-      case '7': e.preventDefault(); seekBy(-playbackSettings.key7Seconds); break;
-      case '9': e.preventDefault(); seekBy(playbackSettings.key9Seconds); break;
+    // Plain top-row digits: seek / play-pause / near-end (see playerKeyboard).
+    const digitAction = plainDigitPlaybackAction(e.key, playbackSettings);
+    if (digitAction) {
+      e.preventDefault();
+      dispatchPlayback(digitAction);
     }
   }
 </script>
@@ -2101,6 +2376,7 @@
         'object-position: left center;'
       ].join(' ')}
       ontimeupdate={onVideoTimeUpdate}
+      onseeking={syncScrubberFromVideo}
       onloadedmetadata={onVideoLoadedMetadata}
       onloadstart={onVideoLoadStart}
       onloadeddata={onVideoLoadedData}
@@ -2143,8 +2419,11 @@
          away from the video. Stacked vertically so rapid-fire applies
          (Alt+1, Alt+2, …) each stay readable. pointer-events:none so
          click-to-pause still goes through. -->
+    <!-- Persistent polite live region so screen readers hear tag changes; the
+         visual overlay below is aria-hidden to avoid a double read (#131). -->
+    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{flashAnnouncement}</div>
     {#if tagFlash.entries.length > 0}
-      <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 pointer-events-none overflow-hidden">
+      <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 pointer-events-none overflow-hidden" aria-hidden="true">
         {#each tagFlash.entries as entry (entry.id)}
           <span
             class="tag-flash px-4 py-1.5 rounded-full text-xl font-semibold shadow-lg
@@ -2201,10 +2480,15 @@
             {@const startFrac = scrubFrac(c.clipStartSeconds)}
             {@const endFrac = scrubFrac(c.clipEndSeconds)}
             {#if startFrac !== null && endFrac !== null}
+              <!-- Exported clips (#69) are drawn as a hatched amber breadcrumb
+                   ("a clip was exported from here") instead of the solid green
+                   of a live clip. -->
               <div
-                class="absolute inset-y-0 bg-success/30 pointer-events-none"
+                class="absolute inset-y-0 pointer-events-none {c.exported
+                  ? 'bg-warning/25 border-x border-warning/60'
+                  : 'bg-success/30'}"
                 style="left: {startFrac * 100}%; width: {(endFrac - startFrac) * 100}%"
-                title={`Clip: ${c.fileName}`}
+                title={c.exported ? `Clip exported: ${c.fileName}` : `Clip: ${c.fileName}`}
               ></div>
             {/if}
           {/each}
@@ -2453,12 +2737,14 @@
             <span class="text-base-content/50">→</span>
             <span>{formatClock(row.block.offsetInSeconds + row.block.lengthInSeconds)}</span>
             <span class="text-base-content/50">({formatClock(row.block.lengthInSeconds)})</span>
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs ml-auto"
-              onclick={() => removeBlock(row.idx)}
-              aria-label="Delete block"
-            >×</button>
+            {#if canEdit}
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs ml-auto"
+                onclick={() => removeBlock(row.idx)}
+                aria-label="Delete block"
+              >×</button>
+            {/if}
           </div>
         {/each}
       </div>
@@ -2471,7 +2757,7 @@
          flex-wrap lets the Clips card drop to a new line on a narrow
          player pane so the labels stay readable instead of being
          truncated into oblivion. -->
-    {#if video && (sortedBookmarks.length > 0 || parentClips.length > 0)}
+    {#if video && (sortedBookmarks.length > 0 || liveClips.length > 0)}
     <div class="mt-2 flex flex-row flex-wrap gap-2 items-start">
     {#if sortedBookmarks.length > 0}
       <div class="border border-base-300 rounded p-2 text-xs">
@@ -2543,10 +2829,11 @@
                 <div class="flex items-center gap-0.5 min-w-0">
                   <button
                     type="button"
-                    class="min-w-0 max-w-xs truncate text-left cursor-text {video.chapterMarkers[row.idx].comment ? '' : 'italic text-base-content/40'} {previewDelete ? 'text-error' : ''}"
-                    title="Click ✎ to rename"
-                    onclick={() => (editingBookmarkIdx = row.idx)}
+                    class="min-w-0 max-w-xs truncate text-left {canEdit ? 'cursor-text' : ''} {video.chapterMarkers[row.idx].comment ? '' : 'italic text-base-content/40'} {previewDelete ? 'text-error' : ''}"
+                    title={canEdit ? 'Click ✎ to rename' : undefined}
+                    onclick={() => { if (canEdit) editingBookmarkIdx = row.idx; }}
                   >{video.chapterMarkers[row.idx].comment || formatClock(row.bookmark.offset)}</button>
+                  {#if canEdit}
                   <button
                     type="button"
                     class="btn btn-ghost btn-xs shrink-0 px-1 {previewDelete ? 'text-error' : ''}"
@@ -2554,7 +2841,9 @@
                     aria-label="Edit bookmark name"
                     title="Edit name"
                   >✎</button>
+                  {/if}
                 </div>
+                {#if canEdit}
                 <button
                   type="button"
                   class="btn btn-ghost btn-xs shrink-0 {previewDelete ? 'text-error' : 'text-base-content/60 hover:text-error'}"
@@ -2570,6 +2859,7 @@
                     <path d="M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 2h1v9h-1v-9zm3 0h1v9h-1v-9z" />
                   </svg>
                 </button>
+                {/if}
               {/if}
             </div>
           {/each}
@@ -2587,16 +2877,16 @@
          `parentClips` is left at [] by loadParentClips() when the
          current video is itself a clip, so this block silently
          disappears in clip view. -->
-    {#if parentClips.length > 0}
+    {#if liveClips.length > 0}
       <div class="border border-base-300 rounded p-2 text-xs">
         <div class="flex items-center text-base-content/70 uppercase tracking-wide mb-1">
           <span>Clips</span>
           <span class="ml-2 text-[10px] normal-case tracking-normal text-base-content/50">
-            {parentClips.length}
+            {liveClips.length}
           </span>
         </div>
         <div class="inline-grid grid-cols-[auto_auto_auto_auto] gap-x-2 gap-y-1 items-center">
-          {#each parentClips as c (c.id)}
+          {#each liveClips as c (c.id)}
             {@const previewDelete = hoveringDeleteClipId === c.id}
             {@const busy = clipDeleteBusy.has(c.id)}
             <div class="contents">
@@ -2632,6 +2922,7 @@
                 class="min-w-0 max-w-xs truncate text-left {previewDelete ? 'text-error' : ''}"
                 title={c.fileName}
               >{c.fileName}</span>
+              {#if canEdit}
               <button
                 type="button"
                 class="btn btn-ghost btn-xs shrink-0 {previewDelete ? 'text-error' : 'text-base-content/60 hover:text-error'}"
@@ -2653,6 +2944,7 @@
                   </svg>
                 {/if}
               </button>
+              {/if}
             </div>
           {/each}
         </div>
@@ -2665,19 +2957,30 @@
          Inline SVG (not a Unicode glyph) so we control fill vs hairline
          outline and the size scales cleanly. -->
     <div class="mt-1 text-xs text-base-content/80 flex items-center gap-1">
-      <button
-        type="button"
-        class="leading-none cursor-pointer flex items-center"
-        onclick={toggleFavorite}
-        title={video.isFavorite ? 'Unfavorite (F)' : 'Favorite (F)'}
-        aria-label={video.isFavorite ? 'Unfavorite' : 'Favorite'}
-      >
-        <svg viewBox="0 0 24 24" class="h-5 w-5"
-          fill={video.isFavorite ? 'rgb(234 179 8)' : 'none'}
-          stroke="rgb(255 255 255 / 0.85)" stroke-width="1.25" stroke-linejoin="round">
-          <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
-        </svg>
-      </button>
+      {#if canEdit}
+        <button
+          type="button"
+          class="leading-none cursor-pointer flex items-center"
+          onclick={toggleFavorite}
+          title={video.isFavorite ? 'Unfavorite (F)' : 'Favorite (F)'}
+          aria-label={video.isFavorite ? 'Unfavorite' : 'Favorite'}
+        >
+          <svg viewBox="0 0 24 24" class="h-5 w-5"
+            fill={video.isFavorite ? 'rgb(234 179 8)' : 'none'}
+            stroke="rgb(255 255 255 / 0.85)" stroke-width="1.25" stroke-linejoin="round">
+            <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
+          </svg>
+        </button>
+      {:else if video.isFavorite}
+        <!-- Read-only: keep the favorite star visible (status), not clickable. -->
+        <span class="leading-none flex items-center" title="Favorite" aria-label="Favorite">
+          <svg viewBox="0 0 24 24" class="h-5 w-5"
+            fill="rgb(234 179 8)"
+            stroke="rgb(255 255 255 / 0.85)" stroke-width="1.25" stroke-linejoin="round">
+            <path d="M12 2.5 L14.6 8.9 L21.5 9.5 L16.2 14.1 L17.8 20.9 L12 17.3 L6.2 20.9 L7.8 14.1 L2.5 9.5 L9.4 8.9 Z" />
+          </svg>
+        </span>
+      {/if}
       {#if playlistIndex !== null && playlistTotal !== null && playlistTotal > 0}
         <!-- "x of y" playlist-position badge — answers "how far into
              this playlist am I?" at a glance while arrow-navigating. -->
@@ -2729,13 +3032,15 @@
               })}
               title="Filter by {t.tagGroupName}: {t.name}"
             >{t.name}</button>
-            <button
-              type="button"
-              class="opacity-70 hover:opacity-100 shrink-0"
-              onclick={(e) => { e.stopPropagation(); openEditTagModal(t.id); }}
-              title="Edit tag"
-              aria-label="Edit {t.name}"
-            >✎</button>
+            {#if canEdit}
+              <button
+                type="button"
+                class="opacity-70 hover:opacity-100 shrink-0"
+                onclick={(e) => { e.stopPropagation(); openEditTagModal(t.id); }}
+                title="Edit tag"
+                aria-label="Edit {t.name}"
+              >✎</button>
+            {/if}
           </span>
         {/each}
         {#if video.needsReview}
@@ -2749,6 +3054,180 @@
         {/if}
       </div>
     {/if}
+
+    <!-- Tag suggestions from the file name / folder path (issue #10).
+         On-demand: the button asks the server which existing tags match,
+         and each result is an add-chip. Hidden for read-only users — every
+         result is an add action they can't perform. -->
+    {#if canEdit}
+    <div class="mt-1">
+      <button
+        type="button"
+        class="btn btn-xs btn-ghost gap-1"
+        onclick={toggleSuggestions}
+        title="Suggest existing tags found in this video's file name and folder path"
+      >
+        <span aria-hidden="true">🏷</span>
+        {suggestOpen ? 'Hide suggestions' : 'Suggest tags'}
+        {#if suggestOpen && !suggestLoading && tagSuggestions.length > 0}
+          <span class="badge badge-xs badge-primary">{tagSuggestions.length}</span>
+        {/if}
+      </button>
+
+      {#if suggestOpen}
+        <div class="mt-1">
+          {#if suggestLoading}
+            <div class="text-xs text-base-content/60">
+              <span class="loading loading-spinner loading-xs"></span> Scanning name &amp; folders…
+            </div>
+          {:else if suggestError}
+            <div class="text-xs text-error">{suggestError}</div>
+          {:else if tagSuggestions.length === 0}
+            <div class="text-xs text-base-content/50 italic">
+              No tag matches found in the file name or folder path.
+            </div>
+          {:else}
+            <div class="flex flex-wrap gap-1">
+              {#each tagSuggestions as s (s.tagId)}
+                <button
+                  type="button"
+                  class="badge badge-outline gap-1 cursor-pointer hover:badge-primary"
+                  onclick={() => addSuggestion(s)}
+                  title={`Add ${s.tagGroupName}: ${s.name} — matched “${s.matchedText}” in ${s.source}`}
+                >
+                  <span aria-hidden="true">＋</span>
+                  <span class="truncate max-w-[12rem]">{s.name}</span>
+                  <span class="opacity-50 text-[0.65rem] uppercase">
+                    {s.source === 'File name' ? 'name' : 'folder'}
+                  </span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+    {/if}
+
+    <!-- On-screen text OCR (issue #5). Reads the frame at the playhead. -->
+    <div class="mt-1">
+      <button
+        type="button"
+        class="btn btn-xs btn-ghost gap-1"
+        onclick={readTextAtPlayhead}
+        disabled={ocrLoading}
+        title="Read the text on screen at the current frame (OCR)"
+      >
+        <span aria-hidden="true">🔤</span>
+        {ocrLoading ? 'Reading…' : 'Read text'}
+      </button>
+
+      {#if ocrOpen}
+        <div class="mt-1">
+          {#if ocrLoading}
+            <div class="text-xs text-base-content/60">
+              <span class="loading loading-spinner loading-xs"></span> Reading the frame…
+            </div>
+          {:else if ocrError}
+            <div class="text-xs text-error whitespace-pre-wrap">{ocrError}</div>
+          {:else if ocrText.trim().length === 0}
+            <div class="text-xs text-base-content/50 italic">
+              No text found at {formatClock(ocrAtSeconds)}.
+            </div>
+          {:else}
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-xs text-base-content/60">Text at {formatClock(ocrAtSeconds)}</span>
+              <button
+                type="button"
+                class="btn btn-xs btn-ghost"
+                onclick={() => navigator.clipboard?.writeText(ocrText)}
+                title="Copy text"
+              >Copy</button>
+            </div>
+            <pre class="text-xs whitespace-pre-wrap bg-base-200 rounded p-2 max-h-40 overflow-auto">{ocrText}</pre>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Full-video OCR text scan (issue #5, ask 2): samples frames, OCRs
+           them, and stores hits so they're searchable and seekable. -->
+      {#if canEdit}
+      <button
+        type="button"
+        class="btn btn-xs btn-ghost gap-1 ml-1"
+        onclick={openOcrScan}
+        title="Scan the whole video for on-screen text so it becomes searchable"
+      >
+        <span aria-hidden="true">🔎</span>
+        Scan for text
+      </button>
+
+      {#if ocrScanOpen}
+        <div class="mt-1 border border-base-300 rounded p-2">
+          <div class="flex items-center gap-2 flex-wrap">
+            {#if ocrScan?.active}
+              <button type="button" class="btn btn-xs btn-warning" onclick={stopOcrScan}>
+                Stop
+              </button>
+              <span class="text-xs text-base-content/70">
+                <span class="loading loading-spinner loading-xs"></span>
+                Scanning… {ocrScanPct}% (up to {formatClock(ocrScan.scannedThroughSeconds)})
+              </span>
+            {:else}
+              <button
+                type="button"
+                class="btn btn-xs btn-primary"
+                onclick={startOcrScan}
+                disabled={ocrScanBusy || ocrScanComplete}
+              >
+                {#if ocrScanBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
+                {ocrScanComplete
+                  ? 'Fully scanned'
+                  : (ocrScan && ocrScan.scannedThroughSeconds > 0 ? 'Scan more' : 'Start scan')}
+              </button>
+              {#if ocrScan && ocrScan.scannedThroughSeconds > 0}
+                <span class="text-xs text-base-content/60">
+                  Scanned to {formatClock(ocrScan.scannedThroughSeconds)} ({ocrScanPct}%)
+                </span>
+              {/if}
+            {/if}
+          </div>
+
+          {#if ocrScan?.durationSeconds}
+            <progress class="progress progress-primary w-full h-1.5 mt-1.5" value={ocrScanPct} max="100"></progress>
+          {/if}
+          {#if ocrScan?.phase === 'error' && ocrScan.error}
+            <div class="text-xs text-error mt-1 whitespace-pre-wrap">{ocrScan.error}</div>
+          {/if}
+
+          <div class="mt-2">
+            {#if ocrHits.length === 0}
+              <div class="text-xs text-base-content/50 italic">
+                {ocrScan?.active ? 'No text found yet…' : 'No on-screen text found.'}
+              </div>
+            {:else}
+              <div class="text-xs text-base-content/60 mb-1">{ocrHits.length} text hit{ocrHits.length === 1 ? '' : 's'} — click to jump</div>
+              <ul class="max-h-48 overflow-auto flex flex-col gap-0.5">
+                {#each ocrHits as hit (hit.timeSeconds)}
+                  <li>
+                    <button
+                      type="button"
+                      class="w-full text-left text-xs hover:bg-base-200 rounded px-1.5 py-1 flex gap-2"
+                      onclick={() => seekToOcrHit(hit.timeSeconds)}
+                      title="Jump to {formatClock(hit.timeSeconds)}"
+                    >
+                      <span class="font-mono text-base-content/50 shrink-0">{formatClock(hit.timeSeconds)}</span>
+                      <span class="truncate">{hit.text}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        </div>
+      {/if}
+      {/if}
+    </div>
   </div>
 
   <!-- Marked-for-deletion overlay. The faded content beneath stays
@@ -2767,6 +3246,7 @@
         <div class="text-lg font-semibold uppercase tracking-wide text-error">
           Marked for Deletion
         </div>
+        {#if canEdit}
         <button
           type="button"
           class="btn btn-error btn-wide"
@@ -2779,6 +3259,7 @@
         <div class="text-xs text-base-content/60">
           or press <kbd class="kbd kbd-sm">U</kbd>
         </div>
+        {/if}
       </div>
     </div>
   {:else if isPlaybackIssue && !isNavigating}
@@ -2801,6 +3282,7 @@
         <div class="text-lg font-semibold uppercase tracking-wide text-warning">
           Playback Issue
         </div>
+        {#if canEdit}
         <button
           type="button"
           class="btn btn-warning btn-wide"
@@ -2813,6 +3295,7 @@
         <div class="text-xs text-base-content/60">
           or press <kbd class="kbd kbd-sm">U</kbd>
         </div>
+        {/if}
         {#if runtimeStore.isLocal}
           <div class="flex gap-2 pt-1 border-t border-base-300/60 mt-1 w-full justify-center">
             <button

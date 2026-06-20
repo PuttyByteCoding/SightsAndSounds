@@ -1,38 +1,24 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { api, ApiError } from '$lib/api';
-
-  let count = $state<number | null>(null);
-  let error = $state<string | null>(null);
-
-  onMount(async () => {
-    try {
-      count = await api.getVideoCount();
-    } catch (e) {
-      error = e instanceof ApiError ? e.message : String(e);
-    }
-  });
+  // Temporary startup-status / diagnostics landing page (issue #71). First load
+  // is slow and some parts don't finish; the StartupStatus component runs the
+  // data fetches that drive first paint, times each, and flags anything over 2
+  // seconds — so it's clear what's hanging and where the time goes. The same
+  // component is reused as the slow-load dialog on the Videos page.
+  import StartupStatus from '$lib/components/StartupStatus.svelte';
 </script>
 
-<div class="prose max-w-none">
-  <h1>Video Organizer</h1>
-  <p>Welcome. Pick a destination from the sidebar.</p>
+<div class="p-6 max-w-3xl space-y-6">
+  <header>
+    <h1 class="text-2xl font-semibold">Startup status</h1>
+    <p class="text-sm text-base-content/70 mt-1">
+      Temporary diagnostic landing page (issue #71): times the data loads that make
+      first paint slow. Anything taking more than 2 seconds is highlighted.
+    </p>
+  </header>
 
-  <div class="stats shadow mt-6 not-prose">
-    <div class="stat">
-      <div class="stat-title">Total videos</div>
-      <div class="stat-value">
-        {#if error}
-          <span class="text-error text-base">API unreachable</span>
-        {:else if count === null}
-          <span class="loading loading-spinner"></span>
-        {:else}
-          {count}
-        {/if}
-      </div>
-      {#if error}
-        <div class="stat-desc text-error/80 text-xs">{error}</div>
-      {/if}
-    </div>
+  <div class="flex flex-wrap items-center gap-3">
+    <a class="btn btn-primary btn-sm" href="/browse">Continue to Videos →</a>
   </div>
+
+  <StartupStatus />
 </div>

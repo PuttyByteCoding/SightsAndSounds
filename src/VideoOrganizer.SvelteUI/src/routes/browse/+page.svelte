@@ -3,15 +3,17 @@
   // video filtered by tag + status + folder filters. Plays inline with
   // the existing VideoPlayer and offers the generic EditTagsPanel.
   import { onMount } from 'svelte';
-  import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
+  import { tour, type TourStep } from '$lib/tour.svelte';
+  import { playerBudget, videoHeightCap as videoHeightCap_ } from '$lib/playerSizing';
   import type {
     Video,
     VideoSet,
     Tag,
     TagGroup,
     FilterRef,
+    PlaylistFilterRequest,
     ImportBrowseDirectory,
     VideoTagSummary,
     FlagCounts
@@ -25,14 +27,43 @@
   import TagEditModal from '$lib/components/TagEditModal.svelte';
   import FolderTreeNode from '$lib/components/FolderTreeNode.svelte';
   import RemoteHostBanner from '$lib/components/RemoteHostBanner.svelte';
+  import StartupStatus from '$lib/components/StartupStatus.svelte';
   import { filterStore } from '$lib/filterStore.svelte';
   import { planFilteredQueue } from '$lib/browseQueue';
-  import { stripStickyLeft } from '$lib/browseStrip';
-  import { pillClass, filterSlot, filterSlotClass } from '$lib/tagColors';
+  import { pillClass, filterSlot, filterSlotClass, filterSlotDot, filterSlotText } from '$lib/tagColors';
+  import { auth } from '$lib/auth.svelte';
+
+  // Read-only sweep (#124). Drives whether the browse page's own write
+  // affordances (folder remove, mark-duplicate, move/rename) and the embedded
+  // player's edit controls are shown. False only when auth is on and the user
+  // is a read-only 'viewer'; with auth off it's true so nothing changes.
+  const canEdit = $derived(!auth.isReadOnly);
 
   let videos = $state<Video[]>([]);
+  // How many videos matched the current filter but were suppressed by a
+  // hidden-by-default tag (#84). Surfaced as a status in the filter bar so the
+  // count never silently mismatches what's shown.
+  let hiddenByTagCount = $state(0);
   let videosLoading = $state(false);
   let loadError = $state<string | null>(null);
+
+  // Slow-load diagnostics (issue #71). The page's two heavy first loads —
+  // the sidebar (tag groups / tags for the filter tree) and the first video
+  // queue — flip these flags when they finish. If both aren't done within
+  // SLOW_LOAD_MS of mount, we pop the StartupStatus dialog so the user can
+  // see exactly which component load is dragging instead of staring at a
+  // blank grid. Mirrors the temporary landing page at routes/+page.svelte.
+  const SLOW_LOAD_MS = 2000;
+  let sidebarReady = $state(false);
+  let firstVideosReady = $state(false);
+  const pageReady = $derived(sidebarReady && firstVideosReady);
+  let showLoadStatus = $state(false);
+  // Auto-close the slow-load dialog the moment both heavy loads finish, so a
+  // load that just barely crosses 2s flashes the dialog and dismisses itself
+  // rather than forcing the user to close it.
+  $effect(() => {
+    if (pageReady) showLoadStatus = false;
+  });
 
   let groups = $state<TagGroup[]>([]);
   let tagsByGroup = $state<Record<string, Tag[]>>({});
@@ -58,6 +89,14 @@
       ? folderRoots.filter(r => r.importedCount > 0)
       : folderRoots
   );
+  // Bumped to force the folder tree to remount. FolderTreeNode caches
+  // its children on first expand, so a stale subtree (e.g. after a
+  // move drops a file into a folder) only refreshes when the nodes
+  // are torn down and rebuilt — a {#key folderTreeSeed} block does
+  // exactly that. Also re-fetches the annotated roots so a folder
+  // that just became non-empty appears in the (imports-only) tree.
+  let folderTreeSeed = $state(0);
+  let folderTreeRefreshing = $state(false);
 
   let playingVideo = $state<Video | null>(null);
   let showEditTagsPanel = $state(false);
@@ -69,51 +108,118 @@
   // order in Shuffle mode (see browseQueue.ts / planFilteredQueue).
   let firstLoad = true;
 
-  // --- Infinite-scroll chunking -----------------------------------------
-  // We render the grid in pages of CHUNK_SIZE so a 1000-video filter
-  // doesn't try to mount 1000 VideoCards (each of which warms a VTT) at
-  // once. An IntersectionObserver on a sentinel at the bottom of the
-  // grid bumps the visible count as the user scrolls.
-  const CHUNK_SIZE = 24;
-  let visibleCount = $state(CHUNK_SIZE);
-  // Reset back to one chunk whenever the underlying list changes — the
-  // user just changed filter / reshuffled, so old scroll position is
-  // meaningless. Using a counter trips the $effect even when length
-  // stays the same (e.g. reshuffle of the same set).
-  let visibleResetSeed = $state(0);
-  $effect(() => {
-    void visibleResetSeed;
-    visibleCount = CHUNK_SIZE;
-  });
-  const visibleVideos = $derived(videos.slice(0, visibleCount));
+  // --- Server-side keyset pagination (#127) -----------------------------
+  // The grid pulls one page at a time from /videos/filter-page and appends as
+  // the user scrolls, instead of fetching the whole matched set and windowing
+  // it client-side. The server owns ordering (including seeded shuffle), so
+  // there's no client-side sort/shuffle anymore.
+  const PAGE_SIZE = 48;
+  let nextCursor = $state<string | null>(null);
+  // Full count of the current filter's matches (the server total, not just the
+  // pages loaded so far) — drives the "video N of M" badge.
+  let totalCount = $state(0);
+  let loadingMore = $state(false);
+  // Bumped on every page-1 refresh; a loadMore that started under an older
+  // generation discards its result so stale pages can't append to a new filter.
+  let loadGen = 0;
+  // Per-session shuffle seed so shuffle pages are stable across scrolls;
+  // reshuffle picks a new one.
+  let shuffleSeed = $state(newSeed());
+  function newSeed(): string {
+    return typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  }
+  // The filter used for the current result set — reused by loadMore so a
+  // mid-scroll filter change can't interleave pages from different filters.
+  let activeFilter: PlaylistFilterRequest | null = null;
   let scrollSentinelEl: HTMLDivElement | null = $state(null);
   $effect(() => {
-    if (!scrollSentinelEl) return;
+    // Re-create the observer whenever the loaded count changes so it re-checks
+    // the (now lower) sentinel and keeps loading while it stays in view —
+    // without this it fires only on the first intersection (issue #33).
+    void videos.length;
+    void nextCursor;
+    const el = scrollSentinelEl;
+    if (!el) return;
     const obs = new IntersectionObserver((entries) => {
       for (const e of entries) {
-        if (e.isIntersecting && visibleCount < videos.length) {
-          // Bump by a chunk; clamp at the total so we don't overshoot.
-          visibleCount = Math.min(videos.length, visibleCount + CHUNK_SIZE);
-        }
+        if (e.isIntersecting) void loadMore();
       }
     }, { rootMargin: '300px' });
-    obs.observe(scrollSentinelEl);
+    obs.observe(el);
     return () => obs.disconnect();
   });
 
-  // --- Player / grid drag-resize ---------------------------------------
-  // The right pane is a sticky-player-on-top + thumbnail-grid-below
-  // layout. The drag handle controls the player's min-height so the
-  // player still grows when the video naturally needs more space.
-  // Persisted so the layout survives navigation away and back.
+  // --- Player auto-sizing (#171) ---------------------------------------
+  // The player and the thumbnail strip share the viewport: the queue strip
+  // is ALWAYS fully visible, and the video fills the height left above it.
+  // We measure the player card's top plus the header-row/strip heights and
+  // size the card to "everything left after the strip", so the strip never
+  // gets pushed below the fold. The video itself is capped at 2× its native
+  // size inside VideoPlayer (fitMaxWidth), so a tall pane never upscales it
+  // past that ceiling — it just letterboxes.
   const PLAYER_HEIGHT_MIN = 220;
-  const PLAYER_HEIGHT_DEFAULT = 480;
-  let playerHeight = $state(PLAYER_HEIGHT_DEFAULT);
-  let dragging = $state(false);
-  // Snapshot of the values at the moment dragging starts so we don't
-  // re-read the DOM on every mousemove tick.
-  let dragStartY = 0;
-  let dragStartHeight = 0;
+  const VIDEO_HEIGHT_MIN = 120;
+  const CARD_PAD_Y = 24; // player card's vertical padding (p-3 top + bottom)
+  let playerHeight = $state(480);
+  // Height ceiling handed to VideoPlayer for the picture itself. It's the
+  // player card's budget MINUS the player's own chrome below the video
+  // (scrubber, controls, tag badges, bookmark/block lists, card padding) — so
+  // the VIDEO, not the tag area, absorbs the leftover space and the content
+  // never spills past the card onto the header buttons / queue strip (#171).
+  let videoHeightCap = $state(408);
+  let playerCardEl = $state<HTMLDivElement | null>(null);
+  let playerHeaderRowEl = $state<HTMLDivElement | null>(null);
+  let playerStripEl = $state<HTMLDivElement | null>(null);
+
+  function recomputePlayerHeight() {
+    if (typeof window === 'undefined' || !playerCardEl) return;
+    const top = playerCardEl.getBoundingClientRect().top;
+    // Strip + header-row heights are content-driven and don't change when the
+    // player grows, so reserving them keeps the strip fully on-screen.
+    const budget = playerBudget(
+      window.innerHeight, top,
+      playerHeaderRowEl?.offsetHeight ?? 0,
+      playerStripEl?.offsetHeight ?? 0,
+      28 /* inter-element gaps/margins */, PLAYER_HEIGHT_MIN);
+    playerHeight = budget;
+
+    // Cap the video to the budget minus the player's chrome below it (see
+    // videoHeightCap). Measure the chrome from the card's NATURAL content span
+    // (first child top → last child bottom) rather than scrollHeight: a
+    // fixed-height card reports scrollHeight >= its own height, so when the
+    // content underflows, scrollHeight would clamp to the card height and the
+    // cap would degenerate to "whatever the video currently is" (pinning it at
+    // the floor). The content span isn't clamped and includes inter-element
+    // margins. Before metadata loads there's no video box, so fall back to a
+    // conservative fixed reserve.
+    const videoEl = playerCardEl.querySelector('video');
+    const kids = playerCardEl.children;
+    if (videoEl && kids.length > 0) {
+      const top = kids[0].getBoundingClientRect().top;
+      const contentNatural = kids[kids.length - 1].getBoundingClientRect().bottom - top;
+      videoHeightCap = videoHeightCap_(budget, contentNatural + CARD_PAD_Y,
+        videoEl.getBoundingClientRect().height, VIDEO_HEIGHT_MIN);
+    } else {
+      videoHeightCap = Math.max(VIDEO_HEIGHT_MIN, budget - 72);
+    }
+  }
+
+  // Re-measure once the <video>'s intrinsic size settles (metadata load): the
+  // chrome can't be measured until the picture has a real height. These fire
+  // from the media element on intrinsic-size changes, not from our CSS sizing,
+  // so there's no resize feedback loop.
+  let observedVideoEl: HTMLVideoElement | null = null;
+  function bindVideoResize() {
+    const el = (playerCardEl?.querySelector('video') ?? null) as HTMLVideoElement | null;
+    if (el === observedVideoEl) return;
+    observedVideoEl?.removeEventListener('loadedmetadata', recomputePlayerHeight);
+    observedVideoEl?.removeEventListener('resize', recomputePlayerHeight);
+    observedVideoEl = el;
+    el?.addEventListener('loadedmetadata', recomputePlayerHeight);
+    el?.addEventListener('resize', recomputePlayerHeight);
+  }
 
   // --- Thumbnail size --------------------------------------------------
   // User-controlled minimum tile width; the grid uses auto-fill +
@@ -136,15 +242,28 @@
     viewMode = m;
     if (typeof localStorage !== 'undefined') localStorage.setItem('browseViewMode', m);
   }
-  // Gap between strip cells, in px — mirrors the `gap-3` (0.75rem) Tailwind
-  // class on the strip so the sticky-pin offset math lines up exactly.
-  const STRIP_GAP = 12;
-  // 0-based index of the playing video within the current queue (−1 when
-  // nothing is playing or it fell out of the list). Drives the strip's
-  // rolling "previous 2 pinned" window.
-  const playingIdx0 = $derived(
-    playingVideo ? videos.findIndex((v) => v.id === playingVideo!.id) : -1
-  );
+
+  // Page-level shortcuts (issue #41): 'G' toggles Grid view, 'M' opens the
+  // Move dialog for the current video. Handled here, not in VideoPlayer,
+  // because the player is unmounted in grid mode. Ignored while typing in a
+  // field, when a modifier is held, or when a dialog is capturing keys.
+  function onBrowseKey(e: KeyboardEvent) {
+    const isG = e.key === 'g' || e.key === 'G';
+    const isM = e.key === 'm' || e.key === 'M';
+    if (!isG && !isM) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (filterStore.pending || moveDialogVideo || flagModalItem) return;
+    if (isG) {
+      e.preventDefault();
+      setViewMode(viewMode === 'grid' ? 'player' : 'grid');
+    } else if (playingVideo && !playingVideo.isClip) {
+      // Clips share their parent's file and can't be moved on their own.
+      e.preventDefault();
+      openMoveDialog(playingVideo);
+    }
+  }
 
   // --- Section-level collapse ------------------------------------------
   // Each tree-style section in the sidebar (Flags, Favorite Tags,
@@ -154,13 +273,18 @@
   // to localStorage.
   type SectionKey = 'flags' | 'favorites' | 'related' | 'folders' | 'tagGroups';
   const SECTION_KEYS: readonly SectionKey[] = ['flags', 'favorites', 'related', 'folders', 'tagGroups'];
-  let sectionCollapsed = $state<Record<SectionKey, boolean>>({
+  // Default collapsed state per section, used when the user has no stored
+  // preference. Related Tags defaults collapsed — it's a long, noisy,
+  // grid-derived list that's mostly in the way during heavy tagging /
+  // dev (issue #80). The user's own toggle still persists and wins.
+  const SECTION_DEFAULTS: Record<SectionKey, boolean> = {
     flags: false,
     favorites: false,
-    related: false,
+    related: true,
     folders: false,
     tagGroups: false
-  });
+  };
+  let sectionCollapsed = $state<Record<SectionKey, boolean>>({ ...SECTION_DEFAULTS });
   function toggleSection(k: SectionKey) {
     sectionCollapsed[k] = !sectionCollapsed[k];
     if (typeof localStorage !== 'undefined') {
@@ -168,18 +292,58 @@
     }
   }
 
-  onMount(() => {
-    const stored = Number(localStorage.getItem('browsePlayerHeight'));
-    if (Number.isFinite(stored) && stored >= PLAYER_HEIGHT_MIN) {
-      playerHeight = stored;
+  // --- Guided tour (issue #170) ------------------------------------------
+  // The Browse page is where the tour's targets live, so the steps and the
+  // trigger are owned here. Launched on demand (the "Take a tour" button
+  // below, or the Help page's button via ?tour=1) and once on first run.
+  const BROWSE_TOUR: TourStep[] = [
+    {
+      selector: '[data-tour="filter-tree"]',
+      title: 'Filter your library',
+      body: 'Narrow what you see by tags, flags, and folders. Combine them as Required, Optional, or Excluded to build exactly the playlist you want.'
+    },
+    {
+      selector: '[data-tour="player"]',
+      title: 'Play inline',
+      body: 'Videos play right here. Space toggles play/pause, ← / → save and move to the previous/next video, and the number keys seek. Press I for file info, T to edit tags.'
+    },
+    {
+      selector: '[data-tour="flags"]',
+      title: 'Flags keep things tidy',
+      body: 'Mark videos as Clip, Edited, Favorite, Needs Review, or Playback Issue. Flags filter just like tags — organizing your library without moving any files.'
+    },
+    {
+      selector: '[data-tour="tools-nav"]',
+      title: 'Tools & exports',
+      body: 'Everything else lives in this menu: import media, export clips, join or re-encode videos, optimize for streaming, and review duplicates.'
     }
+  ];
+  function startTour() { tour.start(BROWSE_TOUR); }
+
+  // Auto-start once the empty/non-empty decision is in (never on an empty
+  // library — there'd be nothing to point at). Explicit ?tour=1 always
+  // starts; otherwise only on first run. `tourTriggered` guards re-fires.
+  let tourTriggered = false;
+  $effect(() => {
+    const wants = page.url.searchParams.get('tour') === '1';
+    if (tourTriggered || !sidebarReady || isEmptyInstall) return;
+    if (wants || !tour.hasSeen()) {
+      tourTriggered = true;
+      startTour();
+    }
+  });
+
+  onMount(() => {
     const storedThumb = Number(localStorage.getItem('browseThumbWidth'));
     if (Number.isFinite(storedThumb) && storedThumb >= THUMB_WIDTH_MIN && storedThumb <= THUMB_WIDTH_MAX) {
       thumbWidth = storedThumb;
     }
     sidebarCollapsed = localStorage.getItem('browseSidebarCollapsed') === '1';
     for (const k of SECTION_KEYS) {
-      sectionCollapsed[k] = localStorage.getItem(`browseSection_${k}_collapsed`) === '1';
+      // Honor a stored preference; otherwise fall back to the section's
+      // default collapsed state (Related Tags starts collapsed).
+      const stored = localStorage.getItem(`browseSection_${k}_collapsed`);
+      sectionCollapsed[k] = stored === null ? SECTION_DEFAULTS[k] : stored === '1';
     }
     const storedSort = localStorage.getItem('browseSortMode');
     if (storedSort && SORT_MODES.some(m => m.value === storedSort)) {
@@ -189,6 +353,36 @@
     if (storedView === 'player' || storedView === 'grid') {
       viewMode = storedView;
     }
+
+    // Slow-load watchdog (issue #71): if the page hasn't finished its two
+    // heavy first loads within SLOW_LOAD_MS, pop the diagnostics dialog.
+    // Suppressed for the empty-install redirect (pageReady is already set on
+    // that path before we navigate away).
+    const slowLoadTimer = setTimeout(() => {
+      if (!pageReady && !isEmptyInstall) showLoadStatus = true;
+    }, SLOW_LOAD_MS);
+
+    // Auto-size the player to fill the viewport above the strip (#171).
+    const onResize = () => recomputePlayerHeight();
+    window.addEventListener('resize', onResize);
+    requestAnimationFrame(recomputePlayerHeight);
+    return () => {
+      clearTimeout(slowLoadTimer);
+      window.removeEventListener('resize', onResize);
+      observedVideoEl?.removeEventListener('loadedmetadata', recomputePlayerHeight);
+      observedVideoEl?.removeEventListener('resize', recomputePlayerHeight);
+    };
+  });
+
+  // Re-measure when the playing video, view mode, or queue length changes —
+  // any of which can shift the strip/header heights or the player's top. Also
+  // (re)bind the intrinsic-size listener to the current <video> so the chrome
+  // gets re-measured once its metadata loads.
+  $effect(() => {
+    void playingVideo?.id;
+    void viewMode;
+    void totalCount;
+    if (viewMode === 'player') requestAnimationFrame(() => { bindVideoResize(); recomputePlayerHeight(); });
   });
 
   // Save on each change. Cheap (a few writes per drag) and keeps the
@@ -198,45 +392,7 @@
     localStorage.setItem('browseThumbWidth', String(thumbWidth));
   });
 
-  // Pointer-event-based drag (works for mouse, touch, pen). Using
-  // PointerEvent + setPointerCapture means even if the cursor sails off
-  // the handle mid-drag we keep getting move events from the same
-  // pointer — no need for window-level listeners or worrying about
-  // child-element pointer leakage.
-  function startDrag(e: PointerEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    dragging = true;
-    dragStartY = e.clientY;
-    dragStartHeight = playerHeight;
-    const target = e.currentTarget as Element;
-    target.setPointerCapture(e.pointerId);
-  }
-  function onDragMove(e: PointerEvent) {
-    if (!dragging) return;
-    const delta = e.clientY - dragStartY;
-    // Clamp so the player can't shrink below a usable size or grow
-    // past the viewport. The 300px floor reserves room for at least
-    // one row of thumbnails below.
-    const max = window.innerHeight - 300;
-    playerHeight = Math.max(PLAYER_HEIGHT_MIN, Math.min(max, dragStartHeight + delta));
-  }
-  function endDrag(e: PointerEvent) {
-    if (!dragging) return;
-    dragging = false;
-    const target = e.currentTarget as Element;
-    if (target.hasPointerCapture(e.pointerId)) target.releasePointerCapture(e.pointerId);
-    localStorage.setItem('browsePlayerHeight', String(playerHeight));
-  }
 
-  function shuffleInPlace<T>(arr: T[]): T[] {
-    const a = [...arr];
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-  }
 
   // User-triggered reshuffle of the current grid into a new random order
   // and jump to the new first video. Resets the infinite-scroll window
@@ -245,11 +401,9 @@
   // and leaving the select on e.g. "File size" while showing a random
   // grid would lie about the current order.
   function reshufflePlaylist() {
-    if (videos.length === 0) return;
+    shuffleSeed = newSeed();        // new random order
     setSortMode('shuffle');
-    videos = shuffleInPlace(videos);
-    playingVideo = videos[0];
-    visibleResetSeed++;
+    refreshVideos({ resetPlayback: true }); // jump to the new first video
   }
 
   // --- Sorting -----------------------------------------------------------
@@ -270,71 +424,28 @@
   // mode's natural default when the mode changes; the ↑↓ button flips it.
   let sortDescending = $state(false);
 
-  // ".NET TimeSpan: [d.]hh:mm:ss[.fffffff]" → total seconds. Returns 0
-  // for unparseable values so they sink to the short end of the sort.
-  function durationSeconds(ts: string | null | undefined): number {
-    if (!ts) return 0;
-    const m = ts.match(/^(?:(\d+)\.)?(\d+):(\d{2}):(\d{2})(?:\.(\d+))?$/);
-    if (!m) return 0;
-    const days = m[1] ? parseInt(m[1], 10) : 0;
-    return ((days * 24 + parseInt(m[2], 10)) * 60 + parseInt(m[3], 10)) * 60
-      + parseInt(m[4], 10);
-  }
-
-  // Directory part of the absolute file path — the "folder" key for the
-  // folder-then-file-name mode. Handles both separator styles.
-  function folderOf(path: string): string {
-    const i = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return i >= 0 ? path.slice(0, i) : '';
-  }
-
-  function compareVideos(a: Video, b: Video, mode: SortMode): number {
-    switch (mode) {
-      case 'fileName':
-        return a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base', numeric: true });
-      case 'fileSize':
-        return a.fileSize - b.fileSize;
-      case 'duration':
-        return durationSeconds(a.duration) - durationSeconds(b.duration);
-      case 'folderFile':
-        return folderOf(a.filePath).localeCompare(folderOf(b.filePath), undefined, { sensitivity: 'base', numeric: true })
-          || a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base', numeric: true });
-      default:
-        return 0;
-    }
-  }
-
-  // Order a result set according to the current mode. Shuffle mode
-  // randomizes; explicit modes sort (with direction applied).
-  function orderVideos(list: Video[]): Video[] {
-    if (sortMode === 'shuffle') return shuffleInPlace(list);
-    const sorted = [...list].sort((a, b) => compareVideos(a, b, sortMode));
-    if (sortDescending) sorted.reverse();
-    return sorted;
-  }
+  // Ordering is server-side now (#127): /videos/filter-page sorts + paginates
+  // per `sortMode`/`sortDescending`/`shuffleSeed`, so the old client-side
+  // compareVideos/orderVideos/shuffleInPlace are gone.
 
   function setSortMode(mode: SortMode) {
     sortMode = mode;
     if (typeof localStorage !== 'undefined') localStorage.setItem('browseSortMode', mode);
   }
 
-  // Select-change handler: re-order the current grid in place. Picking
-  // an explicit sort keeps the playing video as-is (its x-position just
-  // changes); picking Shuffle behaves like the Reshuffle button.
+  // Select-change handler: refetch page 1 in the new order (the server sorts +
+  // paginates now). Keeps the currently-playing video — its grid position just
+  // changes; the Reshuffle button is the explicit "jump to a new first" action.
   function onSortModeChange(mode: SortMode) {
     setSortMode(mode);
     sortDescending = false;
-    if (videos.length === 0) return;
-    videos = orderVideos(videos);
-    if (sortMode === 'shuffle' && videos.length > 0) playingVideo = videos[0];
-    visibleResetSeed++;
+    refreshVideos({ resetPlayback: false });
   }
 
   function toggleSortDirection() {
     if (sortMode === 'shuffle') return;
     sortDescending = !sortDescending;
-    videos = [...videos].reverse();
-    visibleResetSeed++;
+    refreshVideos({ resetPlayback: false });
   }
 
   // refreshVideos re-fetches the filtered list. `fromFilter` marks the
@@ -342,11 +453,21 @@
   // restart the queue from position 0 per issue #21. Other callers
   // (post-edit refreshPlaying, the "Show all" button) pass nothing and
   // leave playback untouched.
-  async function refreshVideos({ fromFilter = false }: { fromFilter?: boolean } = {}) {
-    // Empty-install case: loadSidebar has navigated to /import. Skip
-    // the filter call so we don't pop a transient error banner during
-    // the navigation.
-    if (isEmptyInstall) return;
+  // Cancels the previous filter fetch when a newer one starts, so rapid filter
+  // changes can't resolve out of order (last-issued wins, not last-to-return). (#131)
+  let inFlightFilter: AbortController | null = null;
+
+  async function refreshVideos(
+    { fromFilter = false, resetPlayback }: { fromFilter?: boolean; resetPlayback?: boolean } = {}
+  ) {
+    // Empty-library case: the welcome panel is showing instead of the
+    // grid, so skip the (pointless) filter fetch and just mark this half
+    // of the load gate done.
+    if (isEmptyInstall) { firstVideosReady = true; return; }
+    inFlightFilter?.abort();
+    const ac = new AbortController();
+    inFlightFilter = ac;
+    const gen = ++loadGen; // supersedes any in-flight loadMore too
     videosLoading = true;
     loadError = null;
     try {
@@ -354,38 +475,79 @@
       // filter. Drives the "Play all results" path from the Ctrl+K
       // search palette. Trimmed; empty string is treated as no search.
       const searchQuery = (page.url.searchParams.get('searchQuery') ?? '').trim();
-      const filter = {
+      const filter: PlaylistFilterRequest = {
         required: filterStore.required.map((t): FilterRef => ({ type: t.type, value: t.value })),
         optional: filterStore.optional.map((t): FilterRef => ({ type: t.type, value: t.value })),
         excluded: filterStore.excluded.map((t): FilterRef => ({ type: t.type, value: t.value })),
         searchQuery: searchQuery.length > 0 ? searchQuery : undefined
       };
-      const fetched = await api.filterVideos(filter);
-      // Decide the next queue + playing video. A filter/search change
-      // restarts the queue from position 0 (issue #21): the current
-      // video stops and the new queue's first entry plays. We suppress
-      // that reset while a ?id= deep-link is opening a specific video
-      // (deepLinkInFlight) so the deep-link's pick isn't clobbered by a
-      // concurrent filter refresh. See browseQueue.ts for ordering.
+      // Fetch the FIRST page; subsequent pages come from loadMore via the cursor.
+      const result = await api.filterVideosPage(
+        filter,
+        { sort: sortMode, dir: sortDescending ? 'desc' : 'asc', limit: PAGE_SIZE, seed: shuffleSeed },
+        ac.signal
+      );
+      if (ac.signal.aborted) return; // superseded mid-flight — a newer fetch owns the result
+      activeFilter = filter;
+      nextCursor = result.nextCursor;
+      totalCount = result.totalCount;
+      hiddenByTagCount = result.hiddenCount;
+      // Decide the playing video. A filter/search change restarts the queue
+      // from position 0 (issue #21): the current video stops and the new
+      // queue's first entry plays. We suppress that reset while a ?id=
+      // deep-link is opening a specific video (deepLinkInFlight). The server
+      // already ordered the page, so `order` is identity here.
       const plan = planFilteredQueue({
-        fetched,
+        fetched: result.videos,
         playing: playingVideo,
         firstLoad,
         isShuffle: sortMode === 'shuffle',
         hasSearchQuery: !!filter.searchQuery,
-        resetPlayback: fromFilter && !deepLinkInFlight,
-        order: orderVideos
+        resetPlayback: resetPlayback ?? (fromFilter && !deepLinkInFlight),
+        order: (l) => l
       });
       firstLoad = false;
       videos = plan.videos;
       playingVideo = plan.playing;
-      // Filter change → reset the infinite-scroll window so the new
-      // result set starts from the top.
-      visibleResetSeed++;
     } catch (e: any) {
+      if (ac.signal.aborted || e?.name === 'AbortError') return; // superseded — ignore
       loadError = e?.message ?? 'Failed to load videos';
     } finally {
-      videosLoading = false;
+      // Only the latest request owns the loading flags; a superseded one
+      // must not clear them out from under the newer fetch.
+      if (inFlightFilter === ac) {
+        inFlightFilter = null;
+        videosLoading = false;
+        // First video load is done (success or error) — the grid is no longer
+        // "still loading", so the slow-load dialog shouldn't fire for it.
+        firstVideosReady = true;
+      }
+    }
+  }
+
+  // Fetch + append the next keyset page when the scroll sentinel scrolls into
+  // view (#127). Guarded against concurrent runs and against appending a stale
+  // page after the filter/sort changed (loadGen).
+  async function loadMore() {
+    if (loadingMore || nextCursor === null || activeFilter === null) return;
+    const gen = loadGen;
+    const cursor = nextCursor;
+    loadingMore = true;
+    try {
+      const result = await api.filterVideosPage(activeFilter, {
+        sort: sortMode,
+        dir: sortDescending ? 'desc' : 'asc',
+        limit: PAGE_SIZE,
+        cursor,
+        seed: shuffleSeed
+      });
+      if (gen !== loadGen) return; // filter/sort changed mid-flight — discard
+      videos = [...videos, ...result.videos];
+      nextCursor = result.nextCursor;
+    } catch {
+      // Non-fatal: keep what's loaded; a later scroll retries.
+    } finally {
+      loadingMore = false;
     }
   }
 
@@ -459,12 +621,18 @@
     }
   }
 
-  // Once the initial sidebar load decides the DB is empty (no
-  // VideoSets configured) we skip the filterVideos call entirely and
-  // bounce to the import page. Tracked so the $effect that re-fetches
-  // on filter changes (below) doesn't kick off an /api/videos/filter
-  // request before the navigation completes.
+  // When the initial sidebar load finds nothing to browse (no VideoSets
+  // configured, OR sets exist but no videos imported yet) we show a
+  // welcome / empty-library panel in place of the filter UI rather than
+  // forcing the user to a setup page (issue #139 — the app no longer
+  // *requires* a video source on first run). The flag also lets the
+  // $effect that re-fetches on filter changes (below) skip the pointless
+  // /api/videos/filter call while the library is empty.
   let isEmptyInstall = $state(false);
+  // Distinguishes the two empty cases for the welcome copy: false = no
+  // source configured at all (offer "Add a source"); true = a source
+  // exists but it's empty (offer "Import videos").
+  let hasAnySource = $state(false);
 
   // Filter-tree collapse state. When collapsed the sidebar shrinks to
   // a thin column with just a re-open chevron, freeing the entire row
@@ -480,27 +648,26 @@
 
   async function loadSidebar() {
     try {
-      // VideoSets must load FIRST so the empty-install redirect fires
-      // before we try other sidebar fetches (tag-groups, tags). Those
-      // can also fail on a fresh DB if seeding hasn't completed, and
-      // there's no point loading them when we're about to navigate
-      // away anyway. Two redirect cases collapse into the same code
-      // path: no VideoSets configured, OR sets exist but no videos
-      // have been imported yet — in both, /browse has nothing to
-      // show, so send the user to /import.
+      // VideoSets must load FIRST so we can decide the empty-library
+      // case before the other sidebar fetches (tag-groups, tags), which
+      // have nothing to show on a fresh DB anyway. Two cases collapse
+      // into the welcome panel: no VideoSets configured, OR sets exist
+      // but no videos have been imported yet. In both, /browse shows the
+      // welcome/empty-library state instead of the filter UI (issue
+      // #139) — no redirect, so the user can still explore the app.
       sets = await api.listVideoSets();
       if (sets.length === 0) {
         isEmptyInstall = true;
-        goto('/import', { replaceState: true });
+        hasAnySource = false;
+        sidebarReady = true;
         return;
       }
       const totalVideos = await api.getVideoCount();
       if (totalVideos === 0) {
-        // Sets exist but the library is empty — same destination.
-        // replaceState keeps the back-button history clean so the
-        // user doesn't get bounced /browse → /import → /browse.
+        // A source exists but the library is empty — offer Import.
         isEmptyInstall = true;
-        goto('/import', { replaceState: true });
+        hasAnySource = true;
+        sidebarReady = true;
         return;
       }
       groups = await api.listTagGroups();
@@ -511,28 +678,96 @@
       // real `hasSubdirectories` flag rather than an always-on
       // chevron). Failures here are non-fatal — the user can still
       // browse the tree, just without count badges on the roots.
-      try {
-        const browse = await api.browseImport();
-        folderRoots = browse.directories;
-        folderRootsAnnotated = true;
-      } catch (e: any) {
-        // Stub out roots from `sets` so the tree still renders.
-        // videoCount=0 suppresses the badge; chevron defaults true
-        // to preserve the affordance — the per-folder browseImport
-        // call on expand will surface real children if any exist.
-        // folderRootsAnnotated stays false so the imports-only
-        // filter doesn't accidentally hide every root.
-        folderRoots = sets.map(s => ({
-          name: s.name,
-          fullPath: s.path,
-          hasSubdirectories: true,
-          videoCount: 0,
-          importedCount: 0
-        }));
-        folderRootsAnnotated = false;
-      }
+      await loadFolderRoots();
     } catch (e: any) {
       loadError = e?.message ?? 'Failed to load sidebar';
+    } finally {
+      // Sidebar load is done (success or error) — clears its half of the
+      // slow-load gate so the dialog only fires while work is genuinely
+      // still in flight.
+      sidebarReady = true;
+    }
+  }
+
+  // Fetch the annotated source roots that seed the Folders tree.
+  // Extracted from loadSidebar so the manual refresh button and the
+  // post-move refresh can re-pull root-level counts without redoing
+  // the whole sidebar load.
+  async function loadFolderRoots(refresh = false) {
+    try {
+      const browse = await api.browseImport(null, refresh);
+      folderRoots = browse.directories;
+      folderRootsAnnotated = true;
+    } catch (e: any) {
+      // Stub out roots from `sets` so the tree still renders.
+      // videoCount=0 suppresses the badge; chevron defaults true
+      // to preserve the affordance — the per-folder browseImport
+      // call on expand will surface real children if any exist.
+      // folderRootsAnnotated stays false so the imports-only
+      // filter doesn't accidentally hide every root.
+      folderRoots = sets.map(s => ({
+        name: s.name,
+        fullPath: s.path,
+        hasSubdirectories: true,
+        videoCount: 0,
+        importedCount: 0
+      }));
+      folderRootsAnnotated = false;
+    }
+  }
+
+  // Re-pull root counts and remount the tree so stale subtree caches
+  // (FolderTreeNode.children) are discarded. Backs both the Sources
+  // refresh button and the automatic refresh after a file move — the
+  // moved file's destination folder only becomes navigable once its
+  // ancestors' cached children are rebuilt. Remounting collapses the
+  // tree; that's the accepted cost of a guaranteed-fresh view.
+  // bypassCache=true (the manual refresh button) forces a full server
+  // re-walk to pick up changes made outside the app. The post-move call
+  // leaves it false: the move endpoint already evicted just the affected
+  // folders, so a normal browse re-counts those and serves the rest from
+  // cache — keeping "move then browse" fast. Remounting (folderTreeSeed)
+  // re-pulls subtrees either way. (issue #4)
+  async function refreshFolderTree(bypassCache = false) {
+    if (folderTreeRefreshing) return;
+    folderTreeRefreshing = true;
+    try {
+      await loadFolderRoots(bypassCache);
+      folderTreeSeed++;
+    } finally {
+      folderTreeRefreshing = false;
+    }
+  }
+
+  // --- Remove a folder from the library (issue #53) ----------------------
+  // The folder-tree trash button asks here; we confirm (it's destructive)
+  // then purge every imported video under the folder via the API. Files on
+  // disk are untouched. After removal we refresh the tree (bypassing the
+  // scan cache so counts are right) and the grid (the removed videos may be
+  // on screen).
+  let removeFolderTarget = $state<{ path: string; label: string; count: number } | null>(null);
+  let removingFolder = $state(false);
+  let removeFolderError = $state<string | null>(null);
+
+  function askRemoveFolder(path: string, label: string, importedCount: number) {
+    if (!canEdit) return;
+    removeFolderError = null;
+    removeFolderTarget = { path, label, count: importedCount };
+  }
+
+  async function confirmRemoveFolder() {
+    if (!removeFolderTarget || removingFolder) return;
+    removingFolder = true;
+    removeFolderError = null;
+    try {
+      await api.removeLibraryFolder(removeFolderTarget.path);
+      removeFolderTarget = null;
+      await refreshFolderTree(true);
+      await refreshVideos();
+    } catch (e: any) {
+      removeFolderError = e?.message ?? 'Failed to remove folder';
+    } finally {
+      removingFolder = false;
     }
   }
 
@@ -615,7 +850,7 @@
   let searchQuery = $state('');
   type SearchResult =
     | { kind: 'tag'; tag: Tag; matchedAlias?: string }
-    | { kind: 'status'; value: 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion' | 'isClip'; label: string }
+    | { kind: 'status'; value: FlagValue; label: string }
     | { kind: 'missing'; group: TagGroup };
 
   const searchResults = $derived.by<SearchResult[]>(() => {
@@ -635,7 +870,10 @@
       { value: 'needsReview', label: 'Needs Review' },
       { value: 'playbackIssue', label: "Playback Issue" },
       { value: 'markedForDeletion', label: 'To Delete' },
-      { value: 'isClip', label: 'Clip' }
+      { value: 'clip', label: 'Clip' },
+      { value: 'embedded', label: 'Embedded' },
+      { value: 'exported', label: 'Exported' },
+      { value: 'edited', label: 'Edited' }
     ] as const;
     for (const s of statuses) {
       if (s.label.toLowerCase().includes(q)) {
@@ -684,6 +922,14 @@
     });
   }
 
+  // Tag-tree name click (issue #192): walk the tag through the filter buckets
+  // in place — Required → Optional → Excluded → Off — instead of opening the
+  // old picker dialog. The ✎ pencil still opens the Edit Tag modal.
+  function cycleTag(id: string, name: string, tagGroupName?: string) {
+    filterStore.cycleOrClear({ type: 'tag', value: id, label: name, tagGroupName });
+  }
+  const CYCLE_HINT = 'click to cycle Required → Optional → Excluded → Off';
+
 
   // ✎ on tag-tree row.
   let editTagModalShow = $state(false);
@@ -704,7 +950,7 @@
     await refreshSidebarTagCounts();
   }
 
-  function pickStatus(status: 'needsReview' | 'playbackIssue' | 'markedForDeletion' | 'favorite' | 'isClip', label: string) {
+  function pickStatus(status: FlagValue, label: string) {
     // Status hits from the search box still go through the picker
     // dialog (Required / Optional / Excluded). The Flags tree skips
     // the dialog and uses applyFlag below; both call paths can
@@ -728,19 +974,22 @@
   // We skip the picker dialog entirely; filterStore.apply() routes
   // straight into the chosen bucket, idempotently replacing whatever
   // bucket the same item was in before.
-  type FlagValue = 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion' | 'isClip';
+  type FlagValue = 'favorite' | 'needsReview' | 'playbackIssue' | 'markedForDeletion'
+    | 'clip' | 'embedded' | 'exported' | 'edited';
   interface FlagDef { value: FlagValue; label: string; }
   const FLAG_DEFS: FlagDef[] = [
     { value: 'favorite',          label: 'Favorite' },
     { value: 'needsReview',       label: 'Needs Review' },
     { value: 'playbackIssue',          label: "Playback Issue" },
     { value: 'markedForDeletion', label: 'To Delete' },
-    // Clip is structural (the row has a parent) rather than a
-    // user-toggled flag, but it's exposed here so users can filter
-    // clips in / out alongside the other flags. The cycle button
-    // writes a `status:isClip` filter just like the others; the
-    // server-side MatchesFilter switch maps it to ParentVideoId.HasValue.
-    { value: 'isClip',            label: 'Clip' }
+    // Clip flags (#167). "Clip" is the umbrella (embedded child clip OR
+    // user-marked OR exported); the others narrow it. Each writes a
+    // `status:<value>` filter the server's MatchesFilter switch maps to the
+    // matching boolean/structural predicate.
+    { value: 'clip',              label: 'Clip' },
+    { value: 'embedded',          label: 'Embedded' },
+    { value: 'exported',          label: 'Exported' },
+    { value: 'edited',            label: 'Edited' }
   ];
 
   // Per-flag total counts, refreshed on initial sidebar load and
@@ -753,7 +1002,10 @@
     needsReview: 0,
     playbackIssue: 0,
     markedForDeletion: 0,
-    isClip: 0
+    clip: 0,
+    embedded: 0,
+    exported: 0,
+    edited: 0
   });
   async function refreshFlagCounts() {
     try {
@@ -924,11 +1176,16 @@
   // row's new FilePath into the grid and the player.
   let moveDialogVideo = $state<Video | null>(null);
   function openMoveDialog(v: Video) {
+    if (!canEdit) return;
     moveDialogVideo = v;
   }
   function onFileMoved(updated: Video) {
     patchVideoInGrid(updated);
     if (playingVideo?.id === updated.id) playingVideo = updated;
+    // Refresh the Folders tree so the destination folder shows up
+    // (and its counts update) — without this the moved file is in the
+    // DB but unreachable via the filter tree until a full reload.
+    void refreshFolderTree();
   }
 
   // --- Duplicate hunt ----------------------------------------------------
@@ -956,7 +1213,7 @@
   }
 
   function setDupAnchor() {
-    if (!playingVideo) return;
+    if (!playingVideo || !canEdit) return;
     dupAnchor = playingVideo;
     dupMessage = null;
     dupMessageIsError = false;
@@ -969,7 +1226,7 @@
   }
 
   async function markCurrentAsDuplicate() {
-    if (!dupAnchor || !playingVideo || dupMarking) return;
+    if (!canEdit || !dupAnchor || !playingVideo || dupMarking) return;
     if (playingVideo.id === dupAnchor.id) {
       dupMessage = 'This IS the anchor video — navigate to a different video first.';
       dupMessageIsError = true;
@@ -999,7 +1256,11 @@
     videos = videos.filter(v =>
       v.id === dupAnchor!.id
       || Math.abs(tsToSeconds(v.duration) - anchorSeconds) <= tol);
-    visibleResetSeed++;
+    // Client-side narrowing of the loaded set — stop paginating so a later
+    // scroll doesn't append unfiltered pages over the narrowed view, and the
+    // "N of M" badge reflects the narrowed count.
+    nextCursor = null;
+    totalCount = videos.length;
     dupMessage = `Narrowed to ${videos.length} video${videos.length === 1 ? '' : 's'} within ±${tol}s of the anchor.`;
     dupMessageIsError = false;
   }
@@ -1018,10 +1279,14 @@
   // VideoPlayer's arrow-key handlers; the player gates by `tagsPanelOpen`
   // so plain arrows nav when the panel is closed and Shift+arrows do when
   // it's open.
-  function goNext() {
+  async function goNext() {
     if (!playingVideo) return;
     const idx = videos.findIndex(v => v.id === playingVideo!.id);
-    if (idx >= 0 && idx + 1 < videos.length) playingVideo = videos[idx + 1];
+    if (idx < 0) return;
+    // At the end of the loaded pages but more exist → pull the next page first
+    // so autoplay/Next doesn't dead-end before the result set is exhausted (#127).
+    if (idx + 1 >= videos.length && nextCursor) await loadMore();
+    if (idx + 1 < videos.length) playingVideo = videos[idx + 1];
   }
   function goPrev() {
     if (!playingVideo) return;
@@ -1058,25 +1323,83 @@
     void refreshFlagCounts();
   }
 
+  // Rename the currently-playing video's file (#172). Throws on failure so the
+  // FileInfoPanel can surface the server's message inline.
+  async function renameCurrentVideo(newName: string) {
+    if (!playingVideo || !canEdit) return;
+    const updated = await api.renameVideo(playingVideo.id, newName);
+    playingVideo = updated;
+    patchVideoInGrid(updated);
+  }
+
   onMount(loadSidebar);
 </script>
 
 <svelte:head><title>Videos - Video Organizer</title></svelte:head>
+
+<!-- Page-level 'G' = toggle Grid view (issue #41); see onBrowseKey. -->
+<svelte:window onkeydown={onBrowseKey} />
 
 <div class="flex flex-col gap-4">
   <!-- Local-only diagnostic affordances live in the player's
        Playback Issue overlay — banner reminds remote users those
        buttons won't appear. -->
   <RemoteHostBanner />
-  <h1 class="text-2xl font-semibold">Videos</h1>
+  <div class="flex items-center justify-between gap-2">
+    <h1 class="text-2xl font-semibold">Videos</h1>
+    {#if !isEmptyInstall}
+      <button class="btn btn-ghost btn-sm gap-1" onclick={startTour} title="Take a quick guided tour">
+        <svg viewBox="0 0 24 24" class="w-4 h-4 fill-current" aria-hidden="true">
+          <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-5h2v2h-2v-2zm2.07-7.75c-.9.92-1.07 1.32-1.07 2.25h-2c0-1.13.34-1.87 1.29-2.83.5-.5.71-.95.71-1.42a1.5 1.5 0 00-3 0H7a3.5 3.5 0 117 0c0 .77-.31 1.47-.93 2z" />
+        </svg>
+        Take a tour
+      </button>
+    {/if}
+  </div>
 
   {#if loadError}
-    <div class="alert alert-error">
+    <div class="alert alert-error" role="alert" aria-live="assertive">
       <span>{loadError}</span>
       <button class="btn btn-sm" onclick={() => (loadError = null)}>Dismiss</button>
     </div>
   {/if}
 
+  {#if isEmptyInstall}
+    <!-- First-run / empty-library welcome (issue #139). The app no longer
+         requires a video source up front, so instead of bouncing to a
+         setup page we explain what's missing and offer the next step,
+         while leaving the rest of the app reachable via the nav. -->
+    <div class="hero bg-base-200 rounded-box py-16">
+      <div class="hero-content text-center max-w-xl">
+        <div class="flex flex-col items-center gap-4">
+          <svg class="w-16 h-16 text-base-content/40" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm6 4v8l6-4-6-4z" />
+          </svg>
+          <h2 class="text-2xl font-semibold">Your library is empty</h2>
+          {#if hasAnySource}
+            <p class="text-base-content/70">
+              You've added a source, but no videos have been imported yet.
+              Run an import to scan it and start browsing.
+            </p>
+            <div class="flex flex-wrap gap-2 justify-center mt-2">
+              <a href="/import" class="btn btn-primary">Import videos</a>
+              <a href="/sources" class="btn btn-ghost">Manage sources</a>
+            </div>
+          {:else}
+            <p class="text-base-content/70">
+              No video source is configured yet. Add a folder of videos as a
+              source, then import it — or explore the rest of the app from the
+              menu in the meantime.
+            </p>
+            <div class="flex flex-wrap gap-2 justify-center mt-2">
+              <a href="/sources" class="btn btn-primary">Add a source</a>
+              <a href="/import" class="btn btn-ghost">Import tool</a>
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {:else}
   <!-- Grid columns swap based on sidebar collapse state. Collapsed
        state shrinks the aside to a 48px chevron-only column so the
        player + thumbnails get the full width back. Both transitions
@@ -1094,6 +1417,7 @@
          sticky video player when the user has scrolled both into the
          same vertical band. -->
     <aside
+      data-tour="filter-tree"
       class="card bg-base-200 sticky top-0 z-20 max-h-screen overflow-y-auto {sidebarCollapsed ? 'p-1' : 'p-3 space-y-3'}"
     >
       <!-- Sidebar header. Expanded shows the "Filters" title on the
@@ -1167,7 +1491,7 @@
       </div>
 
 
-      <div>
+      <div data-tour="flags">
         <button
           type="button"
           class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
@@ -1232,8 +1556,9 @@
                       <path d="M9 3a1 1 0 00-1 1v1H5a1 1 0 100 2h14a1 1 0 100-2h-3V4a1 1 0 00-1-1H9zm-2 6v11a2 2 0 002 2h6a2 2 0 002-2V9H7zm2 2h2v8H9v-8zm4 0h2v8h-2v-8z" />
                     </svg>
                   {:else}
-                    <!-- isClip: scissor icon, yellow-400 to match the
-                         clip indicator on the VideoCard thumbnail. -->
+                    <!-- Clip/edit flags (clip, embedded, exported, edited):
+                         scissor icon, yellow-400 to match the clip indicator
+                         on the VideoCard thumbnail. -->
                     <svg viewBox="0 0 24 24" class="h-3 w-3 fill-current" style="color: rgb(250 204 21);">
                       <path d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm0 12c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3z" />
                     </svg>
@@ -1353,9 +1678,9 @@
                       <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
                       <button
                         type="button"
-                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
-                        onclick={() => pickTag(t)}
-                        title={slot ? `In filter: ${slot}` : `Filter by ${g.groupName}: ${t.name}`}
+                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline {filterSlotText(slot)}"
+                        onclick={() => cycleTag(t.id, t.name, t.tagGroupName)}
+                        title={`${t.name}${slot ? ` — ${slot}` : ''} · ${CYCLE_HINT}`}
                       >{t.name}</button>
                       <span class="shrink-0 text-xs tabular-nums opacity-50">{t.videoCount}</span>
                       <button
@@ -1437,22 +1762,16 @@
                       class="flex items-center gap-1 hover:bg-base-200 rounded"
                       style="padding-left: 0.75rem"
                     >
-                      <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+                      <!-- Filter-membership dot: a tag currently in the
+                           filter shows a slot-colored dot (issue #80). -->
+                      <span class="shrink-0 w-5 h-5 flex items-center justify-center" title={slot ? `In filter: ${slot}` : undefined}>
+                        {#if slot}<span class="w-2 h-2 rounded-full {filterSlotDot(slot)}"></span>{/if}
+                      </span>
                       <button
                         type="button"
-                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
-                        onclick={() => pickTag({
-                          id: rt.tag.id,
-                          tagGroupId: rt.tag.tagGroupId,
-                          tagGroupName: rt.tag.tagGroupName,
-                          name: rt.tag.name,
-                          aliases: [],
-                          isFavorite: false,
-                          sortOrder: 0,
-                          notes: '',
-                          videoCount: rt.count
-                        })}
-                        title={slot ? `In filter: ${slot}` : `Filter by ${g.groupName}: ${rt.tag.name}`}
+                        class="flex-1 min-w-0 text-left truncate py-1 hover:underline {filterSlotText(slot)}"
+                        onclick={() => cycleTag(rt.tag.id, rt.tag.name, rt.tag.tagGroupName)}
+                        title={`${rt.tag.name}${slot ? ` — ${slot}` : ''} · ${CYCLE_HINT}`}
                       >{rt.tag.name}</button>
                       <span class="shrink-0 text-xs tabular-nums opacity-50">{rt.count}</span>
                     </div>
@@ -1467,21 +1786,39 @@
 
       {#if visibleFolderRoots.length > 0}
         <div>
-          <button
-            type="button"
-            class="flex items-center gap-1 w-full text-left mb-1 hover:bg-base-200 rounded px-1 py-0.5"
-            onclick={() => toggleSection('folders')}
-            aria-expanded={!sectionCollapsed.folders}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              class="h-3 w-3 fill-current transition-transform {sectionCollapsed.folders ? '' : 'rotate-90'}"
+          <div class="flex items-center gap-1 mb-1">
+            <button
+              type="button"
+              class="flex items-center gap-1 flex-1 min-w-0 text-left hover:bg-base-200 rounded px-1 py-0.5"
+              onclick={() => toggleSection('folders')}
+              aria-expanded={!sectionCollapsed.folders}
             >
-              <path d="M9 6l6 6-6 6V6z" />
-            </svg>
-            <h3 class="font-semibold text-sm">Sources</h3>
-          </button>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                class="h-3 w-3 fill-current transition-transform {sectionCollapsed.folders ? '' : 'rotate-90'}"
+              >
+                <path d="M9 6l6 6-6 6V6z" />
+              </svg>
+              <h3 class="font-semibold text-sm">Sources</h3>
+            </button>
+            <button
+              type="button"
+              class="shrink-0 w-6 h-6 flex items-center justify-center rounded text-base-content/60 hover:text-base-content hover:bg-base-200 disabled:opacity-40"
+              onclick={() => refreshFolderTree(true)}
+              disabled={folderTreeRefreshing}
+              aria-label="Refresh folder tree"
+              title="Refresh folder tree"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                class="h-3.5 w-3.5 fill-current {folderTreeRefreshing ? 'animate-spin' : ''}"
+              >
+                <path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.74 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
+              </svg>
+            </button>
+          </div>
           {#if !sectionCollapsed.folders}
           <!-- Tree view that mirrors the on-disk layout under each
                configured source root. Chevron expands a node, lazy-
@@ -1494,20 +1831,23 @@
                folders containing at least one imported video appear
                — the rest (and their subtrees) are pruned out. -->
           <div class="bg-base-100 rounded-box p-1">
-            {#each visibleFolderRoots as root (root.fullPath)}
-              {@const matchingSet = sets.find(s => s.path === root.fullPath || s.name === root.name)}
-              <FolderTreeNode
-                name={root.name}
-                fullPath={root.fullPath}
-                hasSubdirectories={root.hasSubdirectories}
-                depth={0}
-                videoCount={root.videoCount}
-                importedCount={root.importedCount}
-                enabled={matchingSet ? matchingSet.enabled : true}
-                onPickFolder={(path, label) =>
-                  filterStore.requestAdd({ type: 'folder', value: path, label })}
-              />
-            {/each}
+            {#key folderTreeSeed}
+              {#each visibleFolderRoots as root (root.fullPath)}
+                {@const matchingSet = sets.find(s => s.path === root.fullPath || s.name === root.name)}
+                <FolderTreeNode
+                  name={root.name}
+                  fullPath={root.fullPath}
+                  hasSubdirectories={root.hasSubdirectories}
+                  depth={0}
+                  videoCount={root.videoCount}
+                  importedCount={root.importedCount}
+                  enabled={matchingSet ? matchingSet.enabled : true}
+                  onPickFolder={(path, label) =>
+                    filterStore.requestAdd({ type: 'folder', value: path, label })}
+                  onRemoveFolder={canEdit ? askRemoveFolder : undefined}
+                />
+              {/each}
+            {/key}
           </div>
           {/if}
         </div>
@@ -1599,13 +1939,21 @@
                     class="flex items-center gap-1 hover:bg-base-200 rounded"
                     style="padding-left: 0.75rem"
                   >
-                    <span class="shrink-0 w-5 h-5" aria-hidden="true"></span>
+                    <!-- Filter-membership dot: a tag currently in the
+                         filter shows a slot-colored dot (issue #80). -->
+                    <span class="shrink-0 w-5 h-5 flex items-center justify-center" title={slot ? `In filter: ${slot}` : undefined}>
+                      {#if slot}<span class="w-2 h-2 rounded-full {filterSlotDot(slot)}"></span>{/if}
+                    </span>
                     <button
                       type="button"
-                      class="flex-1 min-w-0 text-left truncate py-1 hover:underline"
-                      onclick={() => pickTag(t)}
-                      title={slot ? `In filter: ${slot}` : `Filter by ${g.name}: ${t.name}`}
+                      class="flex-1 min-w-0 text-left truncate py-1 hover:underline {filterSlotText(slot) || (t.hiddenByDefault ? 'text-base-content/45' : '')}"
+                      onclick={() => cycleTag(t.id, t.name, t.tagGroupName)}
+                      title={`${t.name}${slot ? ` — ${slot}` : ''} · ${CYCLE_HINT}${t.hiddenByDefault ? ' · hidden by default' : ''}`}
                     >{t.name}</button>
+                    {#if t.hiddenByDefault}
+                      <!-- Hidden-by-default marker (issue #84). -->
+                      <span class="shrink-0 text-[10px] italic text-base-content/40" title="Hidden by default">(default hidden)</span>
+                    {/if}
                     <span class="shrink-0 text-xs tabular-nums opacity-50">{t.videoCount}</span>
                     <button
                       type="button"
@@ -1661,8 +2009,21 @@
            Wrapper is rendered whenever either piece is present so the
            chips still appear if no video is selected (e.g. empty
            filter result). -->
-      {#if !filterStore.isEmpty() || playingVideo}
+      {#if !filterStore.isEmpty() || playingVideo || hiddenByTagCount > 0}
         <div class="sticky top-0 z-10 flex flex-col">
+          <!-- Auto-hide transparency (#84): videos matching the current view but
+               carrying a hidden-by-default tag are suppressed from the grid.
+               Surface the count so the result total never silently mismatches a
+               flag/tag badge — without revealing the hidden videos themselves. -->
+          {#if hiddenByTagCount > 0}
+            <div
+              class="bg-base-100 border border-base-300 rounded-box px-3 py-1.5 mb-2 flex items-center gap-2 text-xs text-base-content/60"
+              title="These match the current filter but carry a hidden-by-default tag. Filter for that tag to see them."
+            >
+              <span class="badge badge-ghost badge-sm shrink-0 tabular-nums">{hiddenByTagCount} hidden</span>
+              <span>{hiddenByTagCount === 1 ? '1 video is' : `${hiddenByTagCount} videos are`} hidden by a hidden-by-default tag.</span>
+            </div>
+          {/if}
           {#if !filterStore.isEmpty()}
             <!-- Chips bar. Horizontal flow with flex-wrap so longer
                  filter sets break onto multiple lines without pushing
@@ -1673,6 +2034,7 @@
                  ANDed vs ORed vs negated. -->
             <div class="bg-base-100 border border-base-300 rounded-box px-3 py-2 mb-2 flex items-center gap-3 flex-wrap">
               <h2 class="font-semibold text-sm shrink-0">Filter:</h2>
+              <button class="btn btn-xs shrink-0" onclick={() => filterStore.clear()}>Clear Filters</button>
               {#if filterStore.required.length > 0}
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Required</span>
@@ -1680,9 +2042,15 @@
                     <!-- Filter chip — max-w + truncate so long
                          labels ellipsize instead of pushing the
                          row to wrap or scroll. Same pattern reused
-                         by Optional / Excluded below. -->
-                    <span class="badge {filterSlotClass('required')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
-                      <span class="truncate min-w-0">{t.label}</span>
+                         by Optional / Excluded below. Clicking the
+                         label cycles the slot (issue #80); × removes. -->
+                    <span class="badge {filterSlotClass('required')} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
+                      <button
+                        type="button"
+                        class="truncate min-w-0 cursor-pointer"
+                        onclick={() => filterStore.cycle(t)}
+                        title={`${t.label} — Required. Click to cycle: Required → Optional → Excluded`}
+                      >{t.label}</button>
                       <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
@@ -1692,8 +2060,13 @@
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Optional</span>
                   {#each filterStore.optional as t (`opt-${t.type}-${t.value}`)}
-                    <span class="badge {filterSlotClass('optional')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
-                      <span class="truncate min-w-0">{t.label}</span>
+                    <span class="badge {filterSlotClass('optional')} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
+                      <button
+                        type="button"
+                        class="truncate min-w-0 cursor-pointer"
+                        onclick={() => filterStore.cycle(t)}
+                        title={`${t.label} — Optional. Click to cycle: Required → Optional → Excluded`}
+                      >{t.label}</button>
                       <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
@@ -1703,14 +2076,18 @@
                 <div class="flex items-center gap-1 flex-wrap">
                   <span class="text-xs text-base-content/60">Excluded</span>
                   {#each filterStore.excluded as t (`exc-${t.type}-${t.value}`)}
-                    <span class="badge {filterSlotClass('excluded')} gap-1 max-w-[min(14rem,100%)] flex-nowrap" title={t.label}>
-                      <span class="truncate min-w-0">{t.label}</span>
+                    <span class="badge {filterSlotClass('excluded')} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
+                      <button
+                        type="button"
+                        class="truncate min-w-0 cursor-pointer"
+                        onclick={() => filterStore.cycle(t)}
+                        title={`${t.label} — Excluded. Click to cycle: Required → Optional → Excluded`}
+                      >{t.label}</button>
                       <button class="shrink-0" onclick={() => filterStore.remove(t)} aria-label="Remove {t.label}">×</button>
                     </span>
                   {/each}
                 </div>
               {/if}
-              <button class="btn btn-xs ml-auto shrink-0" onclick={() => filterStore.clear()}>Clear</button>
             </div>
           {/if}
 
@@ -1785,21 +2162,24 @@
                  (p-3 + button row + gap) so the picture fits cleanly
                  inside the wrapper. Hidden in grid view (issue #23). -->
             <div
-              class="card bg-base-200 p-3"
-              style="min-height: {playerHeight}px;"
+              bind:this={playerCardEl}
+              data-tour="player"
+              class="card bg-base-200 p-3 overflow-hidden"
+              style="height: {playerHeight}px;"
             >
               <VideoPlayer
                 bind:video={playingVideo}
+                canEdit={canEdit}
                 shortcutsEnabled={true}
-                maxVideoHeightPx={Math.max(100, playerHeight - 72)}
+                maxVideoHeightPx={videoHeightCap}
                 playlistIndex={playingIndex}
-                playlistTotal={videos.length}
+                playlistTotal={totalCount}
                 tagsPanelOpen={showEditTagsPanel}
                 onToggleTags={() => (showEditTagsPanel = !showEditTagsPanel)}
                 onToggleFileInfo={() => (showFileInfo = !showFileInfo)}
                 onRequestNext={goNext}
                 onRequestPrev={goPrev}
-                onAfterSave={refreshSidebarTagCounts}
+                onAfterSave={() => { refreshSidebarTagCounts(); requestAnimationFrame(recomputePlayerHeight); }}
                 onVideoChanged={patchVideoInGrid}
               />
             </div>
@@ -1807,50 +2187,15 @@
         </div>
       {/if}
 
-      {#if playingVideo && viewMode === 'player'}
-        <!-- Drag handle: 12px hit area, visible 4px bar with three grip
-             dots. Pointer-event-based drag with setPointerCapture so the
-             cursor can leave the handle mid-drag. Double-click resets to
-             the default height. Stays in normal flow (not sticky) —
-             it's an occasional control. -->
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize player (double-click to reset)"
-          tabindex="0"
-          class="group relative h-3 shrink-0 cursor-ns-resize select-none w-full touch-none"
-          title="Drag to resize · double-click to reset"
-          onpointerdown={startDrag}
-          onpointermove={onDragMove}
-          onpointerup={endDrag}
-          onpointercancel={endDrag}
-          ondblclick={() => { playerHeight = PLAYER_HEIGHT_DEFAULT; localStorage.setItem('browsePlayerHeight', String(PLAYER_HEIGHT_DEFAULT)); }}
-        >
-          <span
-            class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1 rounded-full transition-colors pointer-events-none
-                   {dragging ? 'bg-primary' : 'bg-base-300 group-hover:bg-primary/60'}"
-          ></span>
-          <span
-            class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-1 pointer-events-none"
-            aria-hidden="true"
-          >
-            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
-            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
-            <span class="w-1 h-1 rounded-full bg-base-content/60"></span>
-          </span>
-        </div>
-      {/if}
-
       <!-- Header row — count, loading indicator, thumb-size slider,
            reshuffle. flex-wrap so the slider drops to its own row on
            narrow viewports instead of squeezing into nothing. -->
-      <div class="flex justify-between items-center shrink-0 mb-2 mt-2 gap-3 flex-wrap">
+      <div bind:this={playerHeaderRowEl} class="flex justify-between items-center shrink-0 mb-2 mt-2 gap-3 flex-wrap">
         <p class="text-sm text-base-content/70">
           {#if videosLoading}
             Loading…
           {:else}
-            {videos.length} videos{#if visibleCount < videos.length} · showing {visibleCount}{/if}
+            {videos.length} loaded{#if nextCursor} · more on scroll{/if}
           {/if}
         </p>
         <div class="flex items-center gap-3 ml-auto">
@@ -1871,7 +2216,7 @@
             <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current"><rect x="2" y="2" width="20" height="20" rx="2"/></svg>
           </label>
           {#if videosLoading}<span class="loading loading-dots loading-sm"></span>{/if}
-          {#if !dupAnchor}
+          {#if !dupAnchor && canEdit}
             <button
               type="button"
               class="btn btn-sm"
@@ -1882,6 +2227,7 @@
           {/if}
           <!-- Move the currently-playing video's file to another folder
                (issue #4). The grid cards carry their own Move… button. -->
+          {#if canEdit}
           <button
             type="button"
             class="btn btn-sm"
@@ -1889,6 +2235,7 @@
             onclick={() => playingVideo && openMoveDialog(playingVideo)}
             title="Move the current video's file to another folder"
           >↪ Move file</button>
+          {/if}
           <!-- Sort mode select + direction toggle. Shuffle is the default
                random-playlist behavior; explicit modes re-order the grid
                client-side. The ↑↓ button flips ascending/descending and
@@ -1938,36 +2285,32 @@
       </div>
 
       {#if viewMode === 'player'}
-        <!-- Single-row thumbnail strip (issue #23). One horizontal row
-             of the queue scrolling left↔right under the player. The two
-             videos immediately before the current one pin to the left
-             edge (position: sticky) so the user can always step back as
-             the strip scrolls forward — a rolling window via
-             stripStickyLeft. Each cell is a fixed thumbWidth so the
-             pin offsets line up; VideoCard's own active-card
-             scrollIntoView keeps the current thumbnail in view. -->
-        <div class="flex gap-3 overflow-x-auto pb-2 isolate">
-          {#each visibleVideos as v, i (v.id)}
-            {@const left = stripStickyLeft(playingIdx0, i, thumbWidth, STRIP_GAP)}
-            <div
-              class="shrink-0"
-              class:sticky={left !== null}
-              class:z-20={left !== null}
-              class:rounded={left !== null}
-              class:bg-base-100={left !== null}
-              style="width: {thumbWidth}px;{left !== null ? ` left: ${left}px;` : ''}"
-            >
-              <VideoCard video={v} onopen={open} onmove={openMoveDialog} active={playingVideo?.id === v.id} />
+        <!-- Player-mode thumbnail strip (issues #23, #37). One horizontal
+             row of the whole queue; the currently-playing thumbnail is
+             kept CENTERED, with the earlier videos to its left and the
+             upcoming ones to its right. VideoCard centers itself when
+             active (centerOnActive) — near the ends the browser clamps the
+             scroll so it sits as close to center as the queue allows. -->
+        <div bind:this={playerStripEl} class="flex gap-3 overflow-x-auto pb-2">
+          {#each videos as v (v.id)}
+            <div class="shrink-0" style="width: {thumbWidth}px;">
+              <VideoCard
+                video={v}
+                onopen={open}
+                onmove={canEdit ? openMoveDialog : undefined}
+                active={playingVideo?.id === v.id}
+                centerOnActive
+              />
             </div>
           {/each}
           <!-- Horizontal sentinel: the IntersectionObserver loads the
                next chunk as the user scrolls toward the right end. -->
-          {#if visibleCount < videos.length}
+          {#if nextCursor}
             <div
               bind:this={scrollSentinelEl}
               class="shrink-0 w-32 flex items-center justify-center text-xs text-base-content/50"
             >
-              Loading more… ({videos.length - visibleCount})
+              Loading more…
             </div>
           {/if}
         </div>
@@ -1984,11 +2327,11 @@
             class="grid gap-3"
             style="grid-template-columns: repeat(auto-fill, minmax({thumbWidth}px, 1fr));"
           >
-            {#each visibleVideos as v (v.id)}
+            {#each videos as v (v.id)}
               <VideoCard
                 video={v}
                 onopen={open}
-                onmove={openMoveDialog}
+                onmove={canEdit ? openMoveDialog : undefined}
                 active={playingVideo?.id === v.id}
               />
             {/each}
@@ -1997,9 +2340,9 @@
           <!-- Sentinel: empty div the IntersectionObserver watches for to
                load the next chunk. Lives inside the scroll region so its
                intersections fire against the right root. -->
-          {#if visibleCount < videos.length}
+          {#if nextCursor}
             <div bind:this={scrollSentinelEl} class="h-12 flex items-center justify-center text-xs text-base-content/50">
-              Loading more… ({videos.length - visibleCount} remaining)
+              Loading more…
             </div>
           {/if}
 
@@ -2027,10 +2370,11 @@
           <FileInfoPanel
             bind:show={showFileInfo}
             video={playingVideo}
+            onRename={canEdit ? renameCurrentVideo : undefined}
           />
         </div>
       {/if}
-      {#if showEditTagsPanel && playingVideo && viewMode === 'player'}
+      {#if showEditTagsPanel && playingVideo && viewMode === 'player' && canEdit}
         <div
           class="sticky top-0 z-10 self-start max-h-screen w-[360px] shrink-0 overflow-y-auto bg-base-200 border-l border-base-300 shadow-xl"
         >
@@ -2044,6 +2388,7 @@
       {/if}
     </section>
   </div>
+  {/if}
 </div>
 
 <MoveFileDialog
@@ -2052,6 +2397,43 @@
   onClose={() => (moveDialogVideo = null)}
   onMoved={onFileMoved}
 />
+
+<!-- Remove-folder confirmation (issue #53). Destructive: purges the folder's
+     imported videos from the library (files on disk are kept). -->
+{#if removeFolderTarget}
+  {@const t = removeFolderTarget}
+  <div class="modal modal-open" role="dialog" aria-modal="true">
+    <div class="modal-box max-w-md">
+      <h3 class="font-bold text-lg">Remove folder from library</h3>
+      <p class="text-sm mt-2">
+        Remove <span class="font-medium break-all">{t.label}</span> from the library?
+      </p>
+      <p class="text-sm mt-2">
+        This deletes <span class="font-medium">{t.count}</span>
+        imported video{t.count === 1 ? '' : 's'} (and their tags, notes, and properties)
+        from the library. <span class="font-medium">Files on disk are not deleted.</span>
+      </p>
+      {#if removeFolderError}
+        <div class="alert alert-error text-sm mt-3">{removeFolderError}</div>
+      {/if}
+      <div class="modal-action">
+        <button class="btn btn-sm btn-cancel" onclick={() => (removeFolderTarget = null)} disabled={removingFolder}>
+          Cancel
+        </button>
+        <button class="btn btn-sm btn-error" onclick={confirmRemoveFolder} disabled={removingFolder}>
+          {#if removingFolder}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Remove {t.count} from library
+        </button>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Cancel"
+      onclick={() => { if (!removingFolder) removeFolderTarget = null; }}
+    ></button>
+  </div>
+{/if}
 
 <!-- Flag filter modal (issue #2). Clicking a flag in the Flags tree
      opens this to pick Required / Excluded (or Clear when one is set),
@@ -2121,4 +2503,36 @@
   }}
 />
 <TagEditModal bind:show={editTagModalShow} tag={editingTag} onSaved={onTagSavedFromSidebar} />
+
+<!-- Slow-load diagnostics dialog (issue #71). Pops when the Videos page
+     hasn't finished its sidebar + first-queue loads within SLOW_LOAD_MS, so
+     a refresh/reload that stalls shows exactly which component is dragging
+     instead of a blank grid. Same probe table as the startup landing page. -->
+{#if showLoadStatus}
+  <div class="modal modal-open" role="dialog" aria-modal="true">
+    <div class="modal-box max-w-3xl">
+      <header class="mb-3">
+        <h3 class="text-lg font-semibold">Still loading…</h3>
+        <p class="text-sm text-base-content/70 mt-1">
+          The Videos page is taking more than {(SLOW_LOAD_MS / 1000).toFixed(0)} seconds
+          to load. These checks time the data fetches that drive first paint —
+          anything over 2 seconds is highlighted. The page keeps loading behind
+          this dialog.
+        </p>
+      </header>
+
+      <StartupStatus />
+
+      <div class="modal-action">
+        <button class="btn" onclick={() => (showLoadStatus = false)}>Close</button>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Close"
+      onclick={() => (showLoadStatus = false)}
+    ></button>
+  </div>
+{/if}
 

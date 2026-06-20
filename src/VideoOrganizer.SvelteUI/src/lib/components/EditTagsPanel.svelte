@@ -5,7 +5,7 @@
 
   import { onMount, tick } from 'svelte';
   import { api } from '$lib/api';
-  import type { Tag, TagGroup, Video, VideoTagSummary } from '$lib/types';
+  import type { Tag, TagGroup, TagSuggestion, Video, VideoTagSummary } from '$lib/types';
   import { pillClass } from '$lib/tagColors';
   import { tagFlash } from '$lib/tagFlash.svelte';
   import TagEditModal from './TagEditModal.svelte';
@@ -42,6 +42,19 @@
 
   // Per-group composer (autocomplete input + filtered list + keyboard hi)
   let composer = $state<Record<string, { input: string; open: boolean; highlighted: number }>>({});
+  // File-name analysis for the Potential Tags row (issue #10), refreshed when
+  // the panel opens / the video changes:
+  //   · tagMatches    — EXISTING tags whose name/alias appears in the file name
+  //                     or folder (server does whole-word + collapsed/no-space
+  //                     + alias matching, so "DaveMatthewsBand" hits the tag
+  //                     "Dave Matthews Band"). Picking one ADDS it.
+  //   · tagCandidates — raw names parsed from the file name that aren't an
+  //                     existing tag. Picking one creates a NEW tag.
+  let tagMatches = $state<TagSuggestion[]>([]);
+  let tagCandidates = $state<string[]>([]);
+  // Separator-free lowercase form, mirroring the server's collapsed match, used
+  // to drop raw candidates that are really an existing tag spelled differently.
+  const collapse = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
   // DOM refs for each group's composer input, indexed by render order. We
   // focus [0] on Shift+arrow nav so the user can start typing into the
   // first tag group immediately.
@@ -92,7 +105,13 @@
     const videoChanged = prevVideoId !== null && prevVideoId !== video.id;
     prevShow = show;
     prevVideoId = video.id;
-    if (opened || videoChanged) pendingFocus = true;
+    if (opened || videoChanged) {
+      pendingFocus = true;
+      // Analyze the (new) file name for potential tags as soon as the panel is
+      // shown or we navigate to another video, so the candidates are always
+      // present in the dropdowns without any manual trigger.
+      void loadCandidates();
+    }
   });
   $effect(() => {
     if (!pendingFocus) return;
@@ -232,7 +251,10 @@
     tagsByGroup[groupId] = await api.listTags({ groupId });
   }
 
-  function addTag(group: TagGroup, tag: Tag) {
+  function addTag(
+    group: TagGroup,
+    tag: { id: string; tagGroupId: string; tagGroupName: string; name: string }
+  ) {
     if (!video) return;
     if (video.tags.some(t => t.id === tag.id)) return;
     const summary: VideoTagSummary = {
@@ -409,10 +431,122 @@
       t.name.toLowerCase() === q || t.aliases.some(a => a.toLowerCase() === q));
   }
 
+  // Analyze the current video's file name + path into potential tag names
+  // (issue #10). One fetch for the whole panel; each group's dropdown filters
+  // the shared list against its own existing tags.
+  async function loadCandidates() {
+    if (!video) {
+      tagMatches = [];
+      tagCandidates = [];
+      return;
+    }
+    const vid = video.id;
+    try {
+      const [matches, candidates] = await Promise.all([
+        api.getTagSuggestions(vid),
+        api.getTagCandidates(vid)
+      ]);
+      if (video?.id !== vid) return; // navigated away mid-fetch
+      tagMatches = matches;
+      tagCandidates = candidates;
+    } catch {
+      tagMatches = [];
+      tagCandidates = []; // non-fatal — the panel still works without candidates
+    }
+  }
+
+  // The dropdown is built from three sources, in order:
+  //   1. existing tags MATCHED from the file name/folder for THIS group → add
+  //   2. raw file-name candidates that aren't an existing tag        → create
+  //   3. the normal type-to-search over this group's tags            → add
+  // 1 + 2 are the pinned "Potential Tags" section; 3 is "Existing <group>".
+  type AddItem = {
+    section: 'potential' | 'existing';
+    kind: 'add';
+    id: string;
+    tagGroupId: string;
+    tagGroupName: string;
+    name: string;
+    hint?: string;
+  };
+  type NewItem = { section: 'potential'; kind: 'new'; name: string };
+  type DropItem = AddItem | NewItem;
+
+  function dropItemsFor(group: TagGroup): DropItem[] {
+    const q = (composer[group.id]?.input ?? '').toLowerCase().trim();
+    const appliedIds = new Set((video?.tags ?? []).map(t => t.id));
+    const appliedNames = new Set((video?.tags ?? []).map(t => t.name.toLowerCase()));
+
+    // 1. Existing tags found in the file name/folder, scoped to this group.
+    const matches: AddItem[] = tagMatches
+      .filter(m => m.tagGroupId === group.id && !appliedIds.has(m.tagId))
+      .filter(m => !q || m.name.toLowerCase().includes(q) || m.matchedText.toLowerCase().includes(q))
+      .map(m => ({
+        section: 'potential',
+        kind: 'add',
+        id: m.tagId,
+        tagGroupId: m.tagGroupId,
+        tagGroupName: m.tagGroupName,
+        name: m.name,
+        hint: m.matchedText && collapse(m.matchedText) !== collapse(m.name) ? m.matchedText : undefined
+      }));
+
+    // Collapsed forms of everything already "known" (matched existing tags +
+    // this group's tags/aliases) so a raw candidate that's really one of them
+    // — e.g. "DaveMatthewsBand" for "Dave Matthews Band" — isn't offered as new.
+    const known = new Set<string>();
+    for (const m of tagMatches) known.add(collapse(m.name));
+    for (const t of tagsByGroup[group.id] ?? []) {
+      known.add(collapse(t.name));
+      for (const a of t.aliases) known.add(collapse(a));
+    }
+    const matchNames = new Set(matches.map(m => m.name.toLowerCase()));
+
+    // 2. Raw candidates that aren't an existing/known tag → create-new items.
+    const news: NewItem[] = tagCandidates
+      .filter(name => !appliedNames.has(name.toLowerCase()))
+      .filter(name => !matchNames.has(name.toLowerCase()))
+      .filter(name => !known.has(collapse(name)))
+      .filter(name => !q || name.toLowerCase().includes(q))
+      .map(name => ({ section: 'potential', kind: 'new', name }));
+
+    // 3. Normal type-to-search over existing tags, minus any already pinned.
+    const pinnedIds = new Set(matches.map(m => m.id));
+    const typed: AddItem[] = suggestionsFor(group)
+      .filter(t => !pinnedIds.has(t.id))
+      .map(t => ({
+        section: 'existing',
+        kind: 'add',
+        id: t.id,
+        tagGroupId: t.tagGroupId,
+        tagGroupName: t.tagGroupName,
+        name: t.name,
+        hint: q && !t.name.toLowerCase().includes(q)
+          ? t.aliases.find(a => a.toLowerCase().includes(q))
+          : undefined
+      }));
+
+    return [...matches, ...news, ...typed];
+  }
+
+  function selectDropItem(group: TagGroup, item: DropItem) {
+    if (item.kind === 'add') {
+      addTag(group, item);
+      return;
+    }
+    // New candidate → create a new tag. Safety net: if it turns out to exist in
+    // this group already, just apply it instead of a conflicting create.
+    const existing = (tagsByGroup[group.id] ?? []).find(
+      t => t.name.toLowerCase() === item.name.toLowerCase()
+    );
+    if (existing) addTag(group, existing);
+    else openCreateModal(group, item.name, true);
+  }
+
   function onComposerKeyDown(group: TagGroup, e: KeyboardEvent) {
     const c = composer[group.id];
     if (!c) return;
-    const sugs = suggestionsFor(group);
+    const sugs = dropItemsFor(group);
     switch (e.key) {
       case 'ArrowDown':
         if (sugs.length === 0) return;
@@ -428,7 +562,7 @@
         e.preventDefault();
         e.stopPropagation();
         if (c.highlighted >= 0 && c.highlighted < sugs.length) {
-          addTag(group, sugs[c.highlighted]);
+          selectDropItem(group, sugs[c.highlighted]);
         } else if (c.input.trim().length > 0 && isNovel(group)) {
           openCreateModal(group, c.input.trim(), true);
         }
@@ -499,7 +633,12 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="card bg-base-200 p-4 space-y-4" onkeydown={onPanelKeyDown}>
     <header class="flex items-center justify-between">
-      <h2 class="text-lg font-semibold">Tags</h2>
+      <h2 class="text-lg font-semibold">
+        Tags
+        <span class="ml-2 text-xs font-normal text-base-content/50 align-middle">
+          Potential Tags from the file name appear at the top of each box
+        </span>
+      </h2>
       <div class="flex gap-2">
         {#if !editingPanel}
           <button class="btn btn-sm" onclick={startPanelEdit}>Edit Tags Panel</button>
@@ -638,63 +777,39 @@
                 <span class="badge badge-accent badge-sm absolute right-2 top-1/2 -translate-y-1/2">NEW</span>
               {/if}
 
-              {#if composer[group.id]?.open && suggestionsFor(group).length > 0}
-                <!-- Heavy-handed lift so the popover unmistakably
-                     reads as "above the page":
-                       bg-base-300        — a full step away from the
-                                            panel's bg-base-200, so the
-                                            shade contrast is one step
-                                            in the opposite direction
-                                            from the input field
-                                            (input sits on bg-base-100
-                                            inside this panel)
-                       border-2 +         — solid primary border at
-                       border-primary       full opacity (was /50)
-                       ring-4 +           — wide primary halo around
-                       ring-primary/30      the border so the popover
-                                            visibly glows away from
-                                            its surroundings
-                       shadow-2xl         — heavy drop shadow so the
-                                            popover lifts out of the
-                                            panel surface
-                     Together these produce a floating-card look
-                     close to a command-palette popover. -->
+              {#if composer[group.id]?.open && dropItemsFor(group).length > 0}
+                {@const items = dropItemsFor(group)}
+                <!-- Floating command-palette-style popover. Pinned "Potential
+                     Tags" come first: existing tags MATCHED from the file name
+                     (picking adds them) and new-name candidates badged NEW
+                     (picking opens the create modal). The "Existing <group>"
+                     type-to-search list follows. One highlight index walks the
+                     whole list. -->
                 <div class="absolute z-20 mt-1 w-full bg-base-300 border-2 border-primary rounded-md shadow-2xl ring-4 ring-primary/30 max-h-64 overflow-auto">
-                  <div class="px-3 py-1 text-xs uppercase tracking-wider text-primary-content bg-primary border-b border-primary sticky top-0">
-                    Existing {group.name}
-                  </div>
-                  {#each suggestionsFor(group) as t, i (t.id)}
-                    {@const q = (composer[group.id]?.input ?? '').toLowerCase().trim()}
-                    {@const matchedAlias = q && !t.name.toLowerCase().includes(q)
-                      ? t.aliases.find(a => a.toLowerCase().includes(q))
-                      : undefined}
+                  {#each items as item, i (item.kind === 'new' ? `new:${item.name}` : `${item.section}:${item.id}`)}
                     {@const isActive = composer[group.id]?.highlighted === i}
-                    <!-- Mouse hover writes `highlighted = i` (see
-                         onmouseenter), so hover and keyboard-arrow
-                         selection share the same active style — there's
-                         no separate "hovered but not highlighted"
-                         state. Active row uses bg-primary +
-                         text-primary-content for unmistakable contrast
-                         (the previous bg-base-200 was identical to the
-                         old hover color and easy to miss while arrowing
-                         through a long list). -->
+                    {#if i === 0 || items[i - 1].section !== item.section}
+                      {#if item.section === 'potential'}
+                        <div class="px-3 py-1 text-xs uppercase tracking-wider text-accent-content bg-accent border-b border-accent">
+                          Potential Tags
+                        </div>
+                      {:else}
+                        <div class="px-3 py-1 text-xs uppercase tracking-wider text-primary-content bg-primary border-y border-primary">
+                          Existing {group.name}
+                        </div>
+                      {/if}
+                    {/if}
                     <button
                       type="button"
                       class="w-full text-left px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
-                      onmousedown={() => addTag(group, t)}
+                      onmousedown={() => selectDropItem(group, item)}
                       onmouseenter={() => composer[group.id] = { ...composer[group.id], highlighted: i }}
                     >
-                      {t.name}
-                      {#if matchedAlias}
-                        <!-- Use opacity-70 instead of an explicit
-                             muted color so the alias text inherits
-                             whichever foreground (default vs
-                             primary-content) the parent button is
-                             using. text-base-content/50 against
-                             bg-primary was nearly invisible. -->
-                        <span class="text-xs opacity-70 ml-2">matched: {matchedAlias}</span>
-                      {:else if t.aliases.length > 0}
-                        <span class="text-xs opacity-70 ml-2">({t.aliases.join(', ')})</span>
+                      {item.name}
+                      {#if item.kind === 'new'}
+                        <span class="badge badge-accent badge-xs ml-2 align-middle">NEW</span>
+                      {:else if item.hint}
+                        <span class="text-xs opacity-70 ml-2">matched: {item.hint}</span>
                       {/if}
                     </button>
                   {/each}

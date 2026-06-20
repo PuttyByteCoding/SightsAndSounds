@@ -35,6 +35,35 @@ public class PathFiltersTests
         Assert.False(PathFilters.IsExcludedFolderName(name));
     }
 
+    // --- IsHiddenFile -------------------------------------------------------
+
+    [Theory]
+    [InlineData(".DS_Store")]
+    [InlineData("._clip.mp4")]
+    [InlineData(".hidden")]
+    public void IsHiddenFile_DotPrefixedNames_ReturnsTrue(string name)
+    {
+        Assert.True(PathFilters.IsHiddenFile(Join("C:", "videos", name)));
+        Assert.True(PathFilters.IsHiddenFile(name)); // bare name too
+    }
+
+    [Theory]
+    [InlineData("clip.mp4")]
+    [InlineData("my.movie.mkv")]   // dots inside, not a leading dot
+    [InlineData("trailer")]
+    public void IsHiddenFile_NormalNames_ReturnsFalse(string name)
+    {
+        Assert.False(PathFilters.IsHiddenFile(Join("C:", "videos", name)));
+    }
+
+    [Fact]
+    public void IsHiddenFile_DotInParentFolderOnly_ReturnsFalse()
+    {
+        // Only the file name matters — a dot-prefixed *folder* in the path
+        // doesn't make a normal file hidden.
+        Assert.False(PathFilters.IsHiddenFile(Join("C:", ".cache", "clip.mp4")));
+    }
+
     // --- IsInExcludedFolder -------------------------------------------------
     //
     // Use OS-correct separators so Path.GetRelativePath produces the right
@@ -106,5 +135,47 @@ public class PathFiltersTests
         var baseDir = Join("C:", "videos");
         var fullPath = Join("C:", "videos", "_TODELETE", "old.mp4");
         Assert.True(PathFilters.IsInExcludedFolder(fullPath, baseDir));
+    }
+
+    // --- IsInHiddenFolder (issue #62) --------------------------------------
+
+    [Fact]
+    public void IsInHiddenFolder_FileInsideDotDir_ReturnsTrue()
+    {
+        var baseDir = Join("C:", "videos");
+        Assert.True(PathFilters.IsInHiddenFolder(Join("C:", "videos", ".cache", "clip.mp4"), baseDir));
+        Assert.True(PathFilters.IsInHiddenFolder(Join("C:", "videos", ".git", "config"), baseDir));
+    }
+
+    [Fact]
+    public void IsInHiddenFolder_DeepDescendantOfDotDir_ReturnsTrue()
+    {
+        var baseDir = Join("C:", "videos");
+        var fullPath = Join("C:", "videos", ".git", "objects", "ab", "cdef");
+        Assert.True(PathFilters.IsInHiddenFolder(fullPath, baseDir));
+    }
+
+    [Fact]
+    public void IsInHiddenFolder_TopLevelDotfile_ReturnsFalse()
+    {
+        // A leaf dotfile is NOT "in a hidden folder" — it's left to IsHiddenFile
+        // so it can still be surfaced on the Hidden tab.
+        var baseDir = Join("C:", "videos");
+        Assert.False(PathFilters.IsInHiddenFolder(Join("C:", "videos", ".DS_Store"), baseDir));
+    }
+
+    [Fact]
+    public void IsInHiddenFolder_NormalNestedFile_ReturnsFalse()
+    {
+        var baseDir = Join("C:", "videos");
+        Assert.False(PathFilters.IsInHiddenFolder(Join("C:", "videos", "sub", "clip.mp4"), baseDir));
+    }
+
+    [Fact]
+    public void IsInHiddenFolder_PathAboveBase_ReturnsFalse()
+    {
+        var baseDir = Path.Combine(Path.GetTempPath(), "videos");
+        var fullPath = Path.Combine(Path.GetTempPath(), "elsewhere", ".cache", "file.mp4");
+        Assert.False(PathFilters.IsInHiddenFolder(fullPath, baseDir));
     }
 }

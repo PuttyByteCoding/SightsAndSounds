@@ -63,6 +63,9 @@
   // discarded; otherwise it would append wrong-query results to the
   // new query's list.
   let queryToken = 0;
+  // Cancels the in-flight search when a new query starts. The queryToken above
+  // already discards stale *results*; this also drops the wasted request. (#131)
+  let searchAbort: AbortController | null = null;
 
   // Autofocus + reset on open. Async because the input might not
   // exist on the very first $effect tick.
@@ -102,10 +105,12 @@
   // is invalidated.
   async function runInitialSearch(q: string) {
     const token = ++queryToken;
+    searchAbort?.abort();
+    searchAbort = new AbortController();
     loading = true;
     errorMsg = null;
     try {
-      const response = await api.search({ q, limit: PAGE_SIZE, offset: 0 });
+      const response = await api.search({ q, limit: PAGE_SIZE, offset: 0 }, searchAbort.signal);
       if (token !== queryToken) return;
       results = response.results;
       totalCount = response.totalCount;
@@ -136,7 +141,7 @@
         q,
         limit: PAGE_SIZE,
         offset: results.length,
-      });
+      }, searchAbort?.signal);
       if (token !== queryToken) return;
       results = [...results, ...response.results];
       // totalCount can technically shift between pages if the
@@ -253,6 +258,7 @@
       case 'filePath': return 'path';
       case 'notes':    return 'notes';
       case 'md5':      return 'md5';
+      case 'ocrText':  return 'on-screen text';
       default:         return field;
     }
   }
@@ -366,7 +372,7 @@
            effect scroll the active row into view. -->
       <div bind:this={listEl} class="overflow-y-auto flex-1 min-h-0">
         {#if errorMsg}
-          <div class="alert alert-error text-sm m-3">{errorMsg}</div>
+          <div class="alert alert-error text-sm m-3" role="alert" aria-live="assertive">{errorMsg}</div>
         {:else if !query.trim()}
           <div class="p-8 text-center text-sm text-base-content/50">
             <div class="mb-2">Type to search every video field.</div>

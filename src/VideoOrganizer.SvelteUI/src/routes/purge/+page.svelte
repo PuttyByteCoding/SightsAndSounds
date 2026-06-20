@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
-  import type { Video } from '$lib/types';
+  import type { Video, PurgeClipWarning } from '$lib/types';
   import {
     applySortClick,
     ariaSort,
@@ -17,6 +17,9 @@
   let videos = $state<Video[]>([]);
   let loading = $state(false);
   let errorMessage = $state<string | null>(null);
+  // Parents marked for deletion that still have embedded, un-exported clips (#174).
+  let clipWarnings = $state<PurgeClipWarning[]>([]);
+  const clipWarningById = $derived(new Map(clipWarnings.map(w => [w.videoId, w])));
 
   // Sort + column-width state shared across this table.
   type PurgeCol = 'file' | 'size';
@@ -195,7 +198,10 @@
     loading = true;
     errorMessage = null;
     try {
-      videos = await api.getMarkedForDeletion();
+      [videos, clipWarnings] = await Promise.all([
+        api.getMarkedForDeletion(),
+        api.getPurgeClipWarnings()
+      ]);
     } catch (e) {
       errorMessage = e instanceof Error ? e.message : String(e);
     } finally {
@@ -510,6 +516,12 @@
             <td class="align-top">
               <div class="font-medium break-all">{v.fileName}</div>
               <div class="text-xs text-base-content/60 break-all">{v.filePath}</div>
+              {#if clipWarningById.has(v.id)}
+                <!-- This parent still has un-exported embedded clips (#174). -->
+                <div class="badge badge-warning badge-sm gap-1 mt-1">
+                  ⚠️ {clipWarningById.get(v.id)!.embeddedClipCount} clip{clipWarningById.get(v.id)!.embeddedClipCount === 1 ? '' : 's'} not exported
+                </div>
+              {/if}
               {#if isClipsSection && v.clipStartSeconds !== null && v.clipEndSeconds !== null}
                 <!-- Surface the clip's range so the user can identify
                      which slice of the parent it represents without
@@ -591,6 +603,27 @@
 
   {#if errorMessage}
     <div class="alert alert-error mb-4 text-sm">{errorMessage}</div>
+  {/if}
+
+  <!-- Embedded-clip warning (#174): some videos queued for deletion still have
+       clips defined inside them that were never exported. Purging deletes the
+       file and loses those clip ranges, so warn and offer to export first. -->
+  {#if clipWarnings.length > 0}
+    <div class="alert alert-warning mb-4 text-sm flex-col items-start gap-2">
+      <div class="font-medium">
+        ⚠️ {clipWarnings.length} video{clipWarnings.length === 1 ? '' : 's'} queued for deletion still
+        {clipWarnings.length === 1 ? 'has' : 'have'} embedded clips that haven't been exported.
+        Purging will delete the file and lose those clip ranges.
+      </div>
+      <ul class="list-disc ml-5 space-y-0.5">
+        {#each clipWarnings as w (w.videoId)}
+          <li class="break-all">
+            <strong>{w.fileName}</strong> — {w.embeddedClipCount} clip{w.embeddedClipCount === 1 ? '' : 's'} not exported
+          </li>
+        {/each}
+      </ul>
+      <a class="btn btn-sm btn-primary" href="/clips-export">Export clips first</a>
+    </div>
   {/if}
 
   {#if lastResult}

@@ -1,145 +1,79 @@
-// Mirrors VideoOrganizer.Shared.Dto over the wire.
-// The API's LenientEnumConverterFactory.ToWireCamelCase produces these string values
-// from the PascalCase enum names. See src/VideoOrganizer.API/LenientEnumConverter.cs.
+// Frontend DTO types — DERIVED from the OpenAPI document (#125).
+//
+// These used to be a hand-maintained mirror of VideoOrganizer.Shared.Dto, which
+// silently drifted from the backend. They now alias the generated schemas in
+// `api.generated.ts` (regenerated from `ci/openapi.json`; see ci/README.md), so
+// the API contract is the single source of truth and a rename/retype on the
+// server surfaces here as a compile error.
+//
+// A few types are intentionally kept local — they have no 1:1 server schema
+// (UI-only shapes, the polymorphic search results) or need a tighter shape than
+// the generated one. Each is called out below.
+
+import type { components } from './api.generated';
+
+type S = components['schemas'];
 
 // --- Enums -----------------------------------------------------------------
 
-export type CameraTypes =
-  | 'unknown'
-  | 'cellPhone'
-  | 'hiddenCamera'
-  | 'camcorder'
-  | 'professionalCamera'
-  | 'notChecked';
-
-export type VideoQuality =
-  | 'singleCamera'
-  | 'multipleCameras'
-  | 'lowQuality'
-  | 'notChecked';
-
-export type VideoDimensionFormat =
-  | 'uhd8k'
-  | 'uhd4K'
-  | 'hd1080p'
-  | 'hd720p'
-  | 'sd576p4x3'
-  | 'sd576p16x9'
-  | 'sd480p4x3'
-  | 'sd480p16x9'
-  | 'verticalUHD4k'
-  | 'vertical1080p'
-  | 'vertical720p'
-  | 'nonStandard';
-
-export type VideoCodec = 'h264' | 'h265' | 'hevc' | 'notChecked' | 'other';
-
-export type VideoBlockTypes = 'clip' | 'hide' | 'other';
-
-export type ImportFileStatus = 'pending' | 'importing' | 'completed' | 'failed' | 'skipped';
-
-export type PropertyDataType = 'text' | 'longText' | 'number' | 'date' | 'boolean' | 'url';
-export type PropertyScope = 'tag' | 'video';
+export type CameraTypes = S['CameraTypes'];
+export type VideoQuality = S['VideoQuality'];
+export type VideoDimensionFormat = S['VideoDimensionFormat'];
+export type VideoCodec = S['VideoCodec'];
+export type VideoBlockTypes = S['VideoBlockTypes'];
+export type ImportFileStatus = S['ImportFileStatus'];
+export type PropertyDataType = S['PropertyDataTypeDto'];
+export type PropertyScope = S['PropertyScopeDto'];
 
 // --- Tag groups + tags + properties ----------------------------------------
 
-export interface TagGroup {
-  id: string;
-  name: string;
-  allowMultiple: boolean;
-  displayAsCheckboxes: boolean;
-  sortOrder: number;
-  notes: string;
-  tagCount: number;
-  // Number of videos with no tag from this group. Used for the
-  // "Missing / None" badge under each group in the browse sidebar.
-  videosMissingCount: number;
-}
+export type TagGroup = S['TagGroupDto'];
+export type Tag = S['TagDto'];
+export type UpdateTagGroupRequest = S['UpdateTagGroupRequest'];
 
-export interface Tag {
-  id: string;
-  tagGroupId: string;
-  tagGroupName: string;
-  name: string;
-  aliases: string[];
-  isFavorite: boolean;
-  sortOrder: number;
-  notes: string;
-  videoCount: number;
-}
+// Request-DTO optionality (see note below): these params have C# defaults, so
+// the API accepts them omitted — but .NET's OpenAPI generator marks every
+// non-nullable param `required` regardless of its default. We restore the true
+// contract here (required keys explicit, the defaulted ones optional) while
+// still deriving field names/types from the generated schema.
+export type CreateTagGroupRequest = { name: string } & Partial<S['CreateTagGroupRequest']>;
+export type CreateTagRequest =
+  { tagGroupId: string; name: string } & Partial<S['CreateTagRequest']>;
+export type UpdateTagRequest =
+  Omit<S['UpdateTagRequest'], 'hiddenByDefault'> & { hiddenByDefault?: boolean };
+export type MergeTagsRequest = S['MergeTagsRequest'];
+export type BulkCreateTagsRequest = S['BulkCreateTagsRequest'];
+export type BulkCreateTagsResponse = S['BulkCreateTagsResponse'];
+export type TagSearchHit = S['TagSearchHit'];
 
-export interface CreateTagGroupRequest {
-  name: string;
-  allowMultiple?: boolean;
-  displayAsCheckboxes?: boolean;
-  sortOrder?: number;
-  notes?: string;
-}
-
-export interface UpdateTagGroupRequest {
-  name: string;
-  allowMultiple: boolean;
-  displayAsCheckboxes: boolean;
-  sortOrder: number;
-  notes: string;
-}
-
-export interface CreateTagRequest {
-  tagGroupId: string;
-  name: string;
-  aliases?: string[];
-  isFavorite?: boolean;
-  sortOrder?: number;
-  notes?: string;
-}
-
-export interface UpdateTagRequest {
-  name: string;
-  aliases: string[];
-  isFavorite: boolean;
-  sortOrder: number;
-  notes: string;
-  // When set to a different group, the server moves the tag there —
-  // existing video taggings ride along (VideoTag references the tag
-  // by id). Omitted = group unchanged.
-  tagGroupId?: string;
-}
-
-export interface MergeTagsRequest {
-  sourceIds: string[];
-  targetId: string;
-}
-
-export interface TagSearchHit {
+// UI-derived (issue #10): tags suggested from a video's file name / folder.
+// No server DTO — built client-side, so it stays hand-written.
+export interface TagSuggestion {
   tagId: string;
   tagGroupId: string;
   tagGroupName: string;
   name: string;
-  aliases: string[];
+  source: string;
+  matchedText: string;
 }
 
 // --- Global search (Ctrl+K palette) ----------------------------------------
 //
-// Mirrors src/VideoOrganizer.Shared/Dto/SearchDto.cs. The server uses
-// [JsonPolymorphic] with discriminator "kind", so every result carries a
-// `kind` field that lets the client pattern-match on result type without
-// runtime type sniffing.
-//
-// v1 only emits VideoSearchResult; v2 will add `kind: 'tag' | 'source' | …`.
-// New shapes layer in as additional union members below — no change needed
-// to the API call site.
+// Deliberately polymorphic UI shape (discriminated on `kind`). The generated
+// schema models the same data but with an optional discriminator, which is
+// awkward for exhaustive narrowing — so the client keeps its own tighter
+// definitions here. v1 only emits VideoSearchResult.
 
 export interface VideoSearchResult {
   kind: 'video';
   id: string;
-  title: string;             // file name
-  subtitle: string;          // file path
+  title: string;
+  subtitle: string;
   fileSize: number;
-  duration: string;          // TimeSpan, ISO 8601 string (e.g. "00:03:42.1230000")
+  duration: string;
   isClip: boolean;
-  tags: string[];            // ordered tag names (group-sort, then name-sort)
-  matchedFields: string[];   // which fields the query matched, e.g.
-                             //   ["fileName"], ["filePath", "tag:Performer/Bob Marley"]
+  tags: string[];
+  matchedFields: string[];
 }
 
 export type SearchResult = VideoSearchResult;
@@ -148,513 +82,174 @@ export type SearchResult = VideoSearchResult;
 export interface SearchResponse {
   query: string;
   totalCount: number;
-  truncated: boolean;        // true when totalCount > limit + offset
+  truncated: boolean;
   results: SearchResult[];
 }
 
+// Client-side request options for the search call (maps to query-string
+// params, not a request body) — no server schema.
 export interface SearchRequestOpts {
-  /** The query string. Treated as a single case-insensitive substring in v1. */
   q: string;
-  /** Page size, clamped server-side to [1, 200]. Defaults to 50. */
   limit?: number;
-  /** Page offset, defaults to 0. */
   offset?: number;
-  /** CSV allow-list of result kinds to include. v1 only honors "video". */
   kinds?: string;
 }
 
-export interface PropertyDefinition {
-  id: string;
-  name: string;
-  dataType: PropertyDataType;
-  scope: PropertyScope;
-  tagGroupId: string | null;
-  required: boolean;
-  sortOrder: number;
-  notes: string;
-}
+export type PropertyDefinition = S['PropertyDefinitionDto'];
+export type CreatePropertyDefinitionRequest = S['CreatePropertyDefinitionRequest'];
+export type UpdatePropertyDefinitionRequest = S['UpdatePropertyDefinitionRequest'];
+export type PropertyValue = S['PropertyValueDto'];
+export type PropertyValueWrite = S['PropertyValueWrite'];
+export type SetPropertyValuesRequest = S['SetPropertyValuesRequest'];
 
-export interface CreatePropertyDefinitionRequest {
-  name: string;
-  dataType: PropertyDataType;
-  scope: PropertyScope;
-  tagGroupId: string | null;
-  required?: boolean;
-  sortOrder?: number;
-  notes?: string;
-}
-
-export interface UpdatePropertyDefinitionRequest {
-  name: string;
-  dataType: PropertyDataType;
-  required: boolean;
-  sortOrder: number;
-  notes: string;
-}
-
-export interface PropertyValue {
-  propertyDefinitionId: string;
-  propertyName: string;
-  dataType: PropertyDataType;
-  value: string;
-}
-
-export interface PropertyValueWrite {
-  propertyDefinitionId: string;
-  value: string;
-}
-
-export interface SetPropertyValuesRequest {
-  values: PropertyValueWrite[];
-}
+export type BackupInfo = S['BackupInfo'];
+export type BackupSettings = S['BackupSettings'];
 
 // --- Video DTOs ------------------------------------------------------------
 
-export interface ChapterMarker {
-  offset: number;
-  comment: string | null;
-}
-
-export interface VideoBlock {
-  offsetInSeconds: number;
-  lengthInSeconds: number;
-  videoBlockType: VideoBlockTypes;
-}
+export type ChapterMarker = S['ChapterMarkerDto'];
+export type VideoBlock = S['VideoBlockDto'];
 
 // TimeSpan is serialized as "hh:mm:ss" / "d.hh:mm:ss" by System.Text.Json.
+// The generated type is just `string`; this alias documents the intent.
 export type TimeSpanString = string;
 
-// Slim per-tag projection embedded in Video.tags.
-export interface VideoTagSummary {
-  id: string;
-  tagGroupId: string;
-  tagGroupName: string;
-  name: string;
-}
+export type VideoTagSummary = S['VideoTagSummaryDto'];
+export type Video = S['VideoDto'];
 
-export interface Video {
-  id: string;
-  fileName: string;
-  filePath: string;
-  md5: string | null;
-  md5Failed: boolean;
-  md5FailedError: string | null;
-  thumbnailsFailed: boolean;
-  thumbnailsFailedError: string | null;
-  thumbnailsGenerated: boolean;
-  importJobId: string | null;
-  fileSize: number;
-  duration: TimeSpanString;
-  height: number;
-  width: number;
-  videoDimensionFormat: VideoDimensionFormat;
-  videoCodec: VideoCodec;
-  bitrate: number;
-  frameRate: number;
-  pixelFormat: string | null;
-  ratio: string | null;
-  creationTime: string | null;
-  videoStreamCount: number;
-  audioStreamCount: number;
-  ingestDate: string;
-  cameraType: CameraTypes;
-  videoQuality: VideoQuality;
-  watchCount: number;
-  notes: string;
-  needsReview: boolean;
-  playbackIssue: boolean;
-  markedForDeletion: boolean;
-  isFavorite: boolean;
-  parentVideoId: string | null;
-  clipStartSeconds: number | null;
-  clipEndSeconds: number | null;
-  isClip: boolean;
-  chapterMarkers: ChapterMarker[];
-  videoBlocks: VideoBlock[];
-  tags: VideoTagSummary[];
-  properties: PropertyValue[];
-}
+// chapterMarkers/videoBlocks/tagIds/properties are nullable on the server and
+// omittable by callers (treated as "unchanged"); the spec marks them required
+// keys. Make them optional to match how the client builds the request.
+export type UpdateVideoRequest =
+  Omit<S['UpdateVideoRequest'], 'chapterMarkers' | 'videoBlocks' | 'tagIds' | 'properties'>
+  & Partial<Pick<S['UpdateVideoRequest'], 'chapterMarkers' | 'videoBlocks' | 'tagIds' | 'properties'>>;
+export type SetVideoTagsRequest = S['SetVideoTagsRequest'];
+export type CreateClipRequest = S['CreateClipRequest'];
+export type ClipSummary = S['ClipSummaryDto'];
 
-// PUT body for /api/videos/{id}.
-export interface UpdateVideoRequest {
-  fileName: string;
-  ingestDate: string;
-  cameraType: CameraTypes;
-  videoQuality: VideoQuality;
-  watchCount: number;
-  notes: string;
-  needsReview: boolean;
-  isFavorite: boolean;
-  clipStartSeconds: number | null;
-  clipEndSeconds: number | null;
-  chapterMarkers?: ChapterMarker[];
-  videoBlocks?: VideoBlock[];
-  tagIds?: string[];
-  properties?: PropertyValueWrite[];
-}
+// Clip export (issue #69).
+export type ClipExportQueueItem = S['ClipExportQueueItemDto'];
+export type ClipExportProgress = S['ClipExportProgressDto'];
+export type KeyframeCut = S['KeyframeCutDto'];
 
-export interface SetVideoTagsRequest {
-  tagIds: string[];
-}
-
-// POST body for /api/videos/{parentId}/clips. Name is optional — the API
-// auto-generates "{parent filename} [start-end]" when omitted.
-export interface CreateClipRequest {
-  startSeconds: number;
-  endSeconds: number;
-  name?: string;
-}
-
-// GET /api/videos/{parentId}/clips. Minimal projection used by the
-// VideoPlayer scrubber to paint green-tinted bands at each clip range
-// so the viewer can see at a glance which slices of the parent file
-// have been clipped out.
-export interface ClipSummary {
-  id: string;
-  fileName: string;
-  clipStartSeconds: number;
-  clipEndSeconds: number;
-}
+// Block removal (issue #70).
+export type BlockRemovalQueueItem = S['BlockRemovalQueueItemDto'];
+export type BlockRemovalProgress = S['BlockRemovalProgressDto'];
 
 // --- Filtering -------------------------------------------------------------
 
-// Wire enum from VideoOrganizer.Shared.Dto.FilterRefType.
-export type FilterRefType = 'tag' | 'folder' | 'missing' | 'status';
+export type FilterRefType = S['FilterRefType'];
 
-// Opaque filter reference. `value` is:
-//   tag       -> Tag.id
-//   folder    -> absolute folder path
-//   missing   -> "tagGroup:<groupId>"
-//   status    -> "needsReview" | "playbackIssue" | "markedForDeletion"
-export interface FilterRef {
-  type: FilterRefType;
-  value: string;
-}
+// Both fields are always populated by the client; the generated schema marks
+// them optional (the server class has property initializers).
+export type FilterRef = Required<S['FilterRef']>;
 
-// UI-side: carries a display label so chips can render without re-resolving.
+// UI-side: carries a display label so chips render without re-resolving.
 export interface FilterTag extends FilterRef {
   label: string;
-  // Optional display hint — what kind of filter slot this came from. Only
-  // populated for tag-type refs that came from a TagSearchHit.
   tagGroupName?: string;
 }
 
-// POST body for /api/videos/filter and /api/playlists/random.
-//
-// searchQuery is a free-text substring (case-insensitive). When set,
-// it ANDs with the tag filter — only videos whose fileName, filePath,
-// notes, md5, or any tag name contains the substring are returned.
-// Backed by Postgres trigram indexes so it stays subsecond at 100k+
-// rows. Used by /browse's ?searchQuery= deep-link to turn search-
-// palette results into a playable playlist.
-export interface PlaylistFilterRequest {
-  required: FilterRef[];
-  optional: FilterRef[];
-  excluded: FilterRef[];
-  searchQuery?: string;
-}
+export type PlaylistFilterRequest = S['PlaylistFilterRequest'];
+
+// One keyset-paginated page of filtered videos (#127).
+export type FilteredVideosPage = S['FilteredVideosPage'];
+
+// Sort modes for the paginated browse query — match the server's `sort` param.
+export type BrowseSort = 'shuffle' | 'fileName' | 'fileSize' | 'duration' | 'folderFile';
+
+// --- On-screen text OCR (issue #5) -----------------------------------------
+
+// Text read off a single video frame (the "Read text" button at the playhead).
+export type OcrResult = S['OcrResultDto'];
+
+// One stored OCR hit from a full-video scan: the text and where it appears.
+export type OcrTextLine = S['OcrTextLineDto'];
+
+// Live state of a background OCR scan (start → poll → stop / resume).
+export type OcrScanProgress = S['OcrScanProgressDto'];
 
 // --- Duplicates -------------------------------------------------------------
 
-export type DuplicateStatus = 'pending' | 'confirmed' | 'rejected';
-
-// One flagged "these two might be the same content" pair, with both
-// sides fully projected so the review page can compare properties
-// without extra fetches. Mirrors Shared.Dto.DuplicateCandidateDto.
-export interface DuplicateCandidate {
-  id: string;
-  status: DuplicateStatus;
-  createdAt: string;
-  videoA: Video;
-  videoB: Video;
-}
-
-export interface CreateDuplicateCandidateRequest {
-  videoAId: string;
-  videoBId: string;
-}
+export type DuplicateStatus = S['DuplicateStatusDto'];
+export type DuplicateCandidate = S['DuplicateCandidateDto'];
+export type CreateDuplicateCandidateRequest = S['CreateDuplicateCandidateRequest'];
 
 // --- Logs / workers / imports ---------------------------------------------
 
-export interface LogEvent {
-  timestamp: string;
-  level: string;
-  category: string;
-  message: string;
-  exception: string | null;
-}
-
-export interface PlaylistDto {
-  id: string;
-  videoIds: string[];
-  createdAt: string;
-}
-
-export interface PlaylistNavigationDto {
-  currentVideoId: string;
-  nextVideoId: string | null;
-  previousVideoId: string | null;
-  currentIndex: number;
-  totalCount: number;
-}
-
-export interface DirectoryImportRequest {
-  directoryPath: string;
-  includeSubdirectories: boolean;
-  name?: string | null;
-  notes?: string | null;
-  initialTagIds?: string[] | null;
-}
-
-export interface ImportBrowseDirectory {
-  name: string;
-  fullPath: string;
-  hasSubdirectories: boolean;
-  videoCount: number;
-  importedCount: number;
-}
-
-export interface ImportBrowseResponse {
-  currentPath: string;
-  parentPath: string | null;
-  directories: ImportBrowseDirectory[];
-}
-
-// GET /api/import/scan-progress — live count of video files discovered by
-// an in-flight /import/browse scan, polled while a source loads. (issue #27)
-export interface ImportScanProgress {
-  scanning: boolean;
-  discovered: number;
-}
-
-// --- File move (issue #4) --------------------------------------------------
-
-// POST /api/videos/{id}/move
-export interface MoveVideoRequest {
-  targetDirectory: string;
-}
-
-// GET /api/videos/{id}/move-progress — live byte progress of an in-flight
-// move/undo. phase: 'idle' | 'copying' | 'finalizing' | 'done'. Same-volume
-// moves are instant so the bar may never appear; cross-volume copies report
-// real bytes.
-export interface MoveProgress {
-  active: boolean;
-  bytesCopied: number;
-  totalBytes: number;
-  phase: string;
-}
-
-// GET /api/file-moves — a logged move, for the Moves list + Undo.
-// revertedAt is null while the move can still be undone.
-export interface FileMoveLog {
-  id: string;
-  videoId: string;
-  fileName: string;
-  fromPath: string;
-  toPath: string;
-  movedAt: string;
-  revertedAt: string | null;
-}
-
-export interface ImportFileListResponse {
-  directoryPath: string;
-  files: string[];
-  nonImportableFiles: string[];
-  importedFiles: string[];
-}
-
-export interface ImportFileProgressDto {
-  filePath: string;
-  fileSizeBytes: number;
-  md5BytesProcessed: number;
-  md5TotalBytes: number;
-  status: ImportFileStatus;
-  error: string | null;
-}
-
-export interface WorkerFailedRow {
-  videoId: string;
-  fileName: string;
-  filePath: string;
-  fileSizeBytes: number;
-  error: string | null;
-}
-
-export interface WorkerQueueRow {
-  videoId: string | null;
-  fileName: string;
-  filePath: string;
-  fileSizeBytes: number;
-}
-
-export interface Md5DuplicateRow {
-  videoId: string;
-  fileName: string;
-  filePath: string;
-  fileSizeBytes: number;
-  md5: string;
-  groupSize: number;
-}
-
-export interface ImportFailedFileRow {
-  jobId: string;
-  jobDirectoryPath: string;
-  filePath: string;
-  fileName: string;
-  fileSizeBytes: number;
-  error: string | null;
-}
-
-export interface ImportQueueFileRow {
-  jobId: string;
-  jobDirectoryPath: string;
-  filePath: string;
-  fileName: string;
-  fileSizeBytes: number;
-  status: ImportFileStatus;
-}
-
-export interface ImportProgressResponse {
-  messages: string[];
-  isCompleted: boolean;
-  error: string | null;
-  fileStatuses: ImportFileProgressDto[];
-}
-
-export interface ImportTaskProgress {
-  total: number;
-  done: number;
-  pending: number;
-  failed: number;
-}
-
-export interface ImportJobSummary {
-  jobId: string;
-  name: string;
-  directoryPath: string;
-  enqueuedAt: string;
-  startedAt: string | null;
-  completedAt: string | null;
-  isCompleted: boolean;
-  error: string | null;
-  totalFiles: number;
-  completedCount: number;
-  failedCount: number;
-  skippedCount: number;
-  importingCount: number;
-  currentFilePath: string | null;
-  thumbnails: ImportTaskProgress;
-  md5: ImportTaskProgress;
-}
+export type LogEvent = S['LogEvent'];
+export type PlaylistDto = S['PlaylistDto'];
+export type PlaylistNavigationDto = S['PlaylistNavigationDto'];
+export type DirectoryImportRequest = S['DirectoryImportRequest'];
+export type ImportBrowseDirectory = S['ImportBrowseDirectory'];
+export type ImportFolderCount = S['ImportFolderCount'];
+export type ImportBrowseResponse = S['ImportBrowseResponse'];
+export type ImportedFolder = S['ImportedFolder'];
+export type ImportScanProgress = S['ImportScanProgressDto'];
+export type MoveVideoRequest = S['MoveVideoRequest'];
+export type MoveProgress = S['MoveProgressDto'];
+export type FileMoveLog = S['FileMoveLogDto'];
+export type ImportFileListResponse = S['ImportFileListResponse'];
+export type ImportFileProgressDto = S['ImportFileProgressDto'];
+export type WorkerFailedRow = S['WorkerFailedRowDto'];
+export type WorkerQueueRow = S['WorkerQueueRowDto'];
+export type Md5DuplicateRow = S['Md5DuplicateRowDto'];
+export type ImportFailedFileRow = S['ImportFailedFileDto'];
+export type ImportQueueFileRow = S['ImportQueueFileDto'];
+export type ImportProgressResponse = S['ImportProgressResponse'];
+export type ImportTaskProgress = S['ImportTaskProgressDto'];
+export type ImportJobSummary = S['ImportJobSummaryDto'];
 
 // --- Runtime / Diagnostics -------------------------------------------------
 
-// GET /api/runtime-info. `isLocal` is true when the inbound request
-// is loopback (i.e. the browser is on the same machine as the API);
-// the layout uses this to decide whether to show the "must be on
-// host" banner and whether to render local-only diagnostic buttons.
-export interface RuntimeInfo {
-  isLocal: boolean;
+// Generated `os` is a bare string; keep the tighter union for the UI's
+// platform checks.
+export type RuntimeInfo = Omit<S['RuntimeInfoDto'], 'os'> & {
   os: 'windows' | 'macos' | 'linux' | 'other';
-}
+};
 
-// GET /api/videos/{id}/ffprobe.
-export interface FfprobeResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-  filePath: string;
-}
-
-// GET /api/videos/flag-counts. Drives the per-flag count badges on
-// the Flags tree in the browse sidebar — number of videos whose
-// boolean flag is set, scoped to enabled VideoSets. `isClip` is
-// structural (true iff ParentVideoId is non-null) but exposed
-// through the same Flags-tree UI as the toggleable flags.
-export interface FlagCounts {
-  favorite: number;
-  needsReview: number;
-  playbackIssue: number;
-  markedForDeletion: number;
-  isClip: number;
-}
+export type FfprobeResult = S['FfprobeResultDto'];
+export type FlagCounts = S['FlagCountsDto'];
 
 // --- VideoSet --------------------------------------------------------------
 
-export interface VideoSet {
+// The server reuses the EF VideoSet entity for both request and response, so
+// the generated schema has id/enabled/sortOrder optional and lacks the
+// response-only computed `pathExists`. Responses always populate the former;
+// tighten them here and add `pathExists`.
+export type VideoSet = S['VideoSet'] & {
   id: string;
-  name: string;
-  path: string;
   enabled: boolean;
   sortOrder: number;
   pathExists?: boolean;
-}
+};
 
 export type VideoSetInput = Omit<VideoSet, 'pathExists'>;
 
+// --- Re-root ----------------------------------------------------------------
+
+export type ReRootPreviewItem = S['ReRootPreviewItem'];
+export type ReRootPreview = S['ReRootPreview'];
+
 // --- Data validation -------------------------------------------------------
 
-// GET /api/validation/missing-files. A Video row whose FilePath no
-// longer exists on disk. SourceId/Name come from the longest-prefix
-// match against configured VideoSets; null when no source covers
-// the path (an orphan path or a deleted source).
-export interface MissingVideoFile {
-  videoId: string;
-  fileName: string;
-  filePath: string;
-  fileSize: number;
-  ingestDate: string;
-  sourceId: string | null;
-  sourceName: string | null;
-  sourceEnabled: boolean;
-}
+export type MissingVideoFile = S['MissingVideoFileDto'];
+export type PurgeMissingFilesResult = S['PurgeMissingFilesResultDto'];
 
-// POST /api/validation/missing-files/purge. DB-only removal of rows
-// surfaced by the missing-files scan. The server re-probes each file
-// before deleting — skippedPresentIds are rows whose file reappeared
-// since the scan and were kept; notFound counts ids whose row was
-// already deleted elsewhere.
-export interface PurgeMissingFilesResult {
-  deleted: number;
-  skippedPresent: number;
-  notFound: number;
-  skippedPresentIds: string[];
-}
+// Parent marked for deletion that still holds embedded (un-exported) clips (#174).
+export type PurgeClipWarning = S['PurgeClipWarningDto'];
 
-// GET /api/validation/extra-files. A video file on disk under a
-// configured source that has no matching Video row in the DB.
-export interface ExtraDiskFile {
-  filePath: string;
-  fileName: string;
-  fileSize: number;
-  sourceId: string;
-  sourceName: string;
-}
+// Live state of an optimize-for-streaming (faststart) run (issue #166).
+export type StreamingOptimizeProgress = S['StreamingOptimizeProgressDto'];
 
-// GET /api/validation/md5-candidates. Eligibility list the client
-// walks through one-by-one, POSTing each id to /md5-check.
-export interface Md5Candidate {
-  videoId: string;
-  fileName: string;
-  filePath: string;
-  fileSize: number;
-  sourceId: string | null;
-  sourceName: string | null;
-  sourceEnabled: boolean;
-  storedMd5: string;
-}
+// Live state of a video-repair run (issue #165).
+export type RepairProgress = S['RepairProgressDto'];
 
-// POST /api/validation/md5-check/{id}. Per-file result.
-// match=false with error=null means the content drifted; with a
-// non-null error means the hash couldn't be computed (file vanished
-// mid-scan, IO error, etc.).
-export interface Md5CheckResult {
-  videoId: string;
-  computedMd5: string;
-  storedMd5: string;
-  match: boolean;
-  fileSize: number;
-  fileExists: boolean;
-  error: string | null;
-}
+// Live state of a join (concatenate) run (issue #163).
+export type JoinProgress = S['JoinProgressDto'];
+
+// Live state of an encode/convert run (issue #164).
+export type EncodeProgress = S['EncodeProgressDto'];
+export type ExtraDiskFile = S['ExtraDiskFileDto'];
+export type Md5Candidate = S['Md5CandidateDto'];
+export type Md5CheckResult = S['Md5CheckResultDto'];

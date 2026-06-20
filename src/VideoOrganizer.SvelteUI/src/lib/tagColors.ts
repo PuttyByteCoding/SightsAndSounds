@@ -44,6 +44,30 @@ export function filterSlotClass(slot: FilterSlot): string {
   }
 }
 
+// Solid dot color for the "this tag is in a filter" indicator shown next to
+// tag rows in the browse sidebar trees (issue #80). Same green/blue/red
+// semantics as the filter-bar chips, just at full saturation for a small dot.
+export function filterSlotDot(slot: FilterSlot): string {
+  switch (slot) {
+    case 'required': return 'bg-success';
+    case 'optional': return 'bg-info';
+    case 'excluded': return 'bg-error';
+  }
+}
+
+// Text color for a tag NAME in the sidebar trees, reflecting its current
+// filter slot (issue #192): green/blue/red to match the filter buckets, with
+// a strike-through for Excluded. Returns '' when the tag isn't in any slot, so
+// the name keeps its default color.
+export function filterSlotText(slot: FilterSlot | null): string {
+  switch (slot) {
+    case 'required': return 'text-success';
+    case 'optional': return 'text-info';
+    case 'excluded': return 'text-error line-through';
+    default: return '';
+  }
+}
+
 // Single source of truth for "what color is this tag pill?". If the tag is
 // in any filter slot, the slot tint wins (group color is ignored). Else,
 // the group's hashed palette color.

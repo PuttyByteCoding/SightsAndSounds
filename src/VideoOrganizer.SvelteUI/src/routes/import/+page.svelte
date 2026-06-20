@@ -9,6 +9,7 @@
     VideoSet
   } from '$lib/types';
   import { breadcrumbs } from '$lib/pathHelpers';
+  import { pillClass } from '$lib/tagColors';
   import TagEditModal from '$lib/components/TagEditModal.svelte';
 
   // --- State ----------------------------------------------------------------
@@ -65,29 +66,108 @@
   let importName = $state('');
   // Generic tag picker — IDs of tags to apply to every newly-imported video.
   let initialTagIds = $state<string[]>([]);
+  // Flags to pre-stage on every imported video (#168).
+  let flagFavorite = $state(false);
+  let flagClip = $state(false);
   let initialTagPickerInput = $state('');
   let initialTagSuggestions = $state<{ tagId: string; name: string; tagGroupName: string }[]>([]);
   let initialTagLabels = $state<Record<string, string>>({});
+  // id → tag-group name, so applied-tag pills can be colored by group via
+  // pillClass() exactly like the EditTagsPanel composer (issue #65).
+  let initialTagGroups = $state<Record<string, string>>({});
   let importNotes = $state('');
 
-  // Create-tag modal (TagEditModal in create mode, with its Group select)
-  // launched from the picker's "+ New Tag" button or the dropdown's
-  // "+ Create" row. On save the new tag is auto-applied to the import.
-  let showCreateTagModal = $state(false);
+  // Tag create/edit modal. Mirrors the EditTagsPanel composer: launched in
+  // CREATE mode (editingTag = null) from the picker's "+ New Tag" button or
+  // the dropdown's "+ Create" row, and in EDIT mode (editingTag set) from a
+  // pill's name / pencil ✎. On save the tag is applied (create) or its pill
+  // is refreshed in place (edit). Unlike the composer there's no default Tag
+  // Group — create opens straight onto a blank Group field (focusGroup).
+  let showTagModal = $state(false);
+  let editingTag = $state<Tag | null>(null);
   let createTagInitialName = $state('');
 
   function openCreateTag(prefill: string) {
+    editingTag = null;
     createTagInitialName = prefill;
     initialTagSuggestions = [];
-    showCreateTagModal = true;
+    initialTagPickerOpen = false;
+    showTagModal = true;
   }
 
-  function onTagCreated(saved: Tag) {
+  // Pencil / pill click → edit the tag itself (name, aliases, group, …) via
+  // the same TagEditModal in edit mode. VideoTagSummary-style search hits lack
+  // aliases/notes, so fetch the full Tag first.
+  async function openEditTag(tid: string) {
+    try {
+      editingTag = await api.getTag(tid);
+      createTagInitialName = '';
+      showTagModal = true;
+    } catch (e) {
+      formError = toMessage('Failed to load tag', e);
+    }
+  }
+
+  // Single onSaved for both modes. Create: add the new tag to the import.
+  // Edit: the id is already applied, so this just refreshes the pill's label
+  // and group color (name and/or group may have changed).
+  function onTagSaved(saved: Tag) {
     if (!initialTagIds.includes(saved.id)) {
       initialTagIds = [...initialTagIds, saved.id];
     }
     initialTagLabels = { ...initialTagLabels, [saved.id]: saved.name };
+    initialTagGroups = { ...initialTagGroups, [saved.id]: saved.tagGroupName };
     initialTagPickerInput = '';
+    editingTag = null;
+  }
+
+  // Keyboard nav for the "Tags to apply" dropdown — mirrors the EditTagsPanel
+  // composer so the picker feels the same (issue #65): arrow keys move a
+  // highlight, Enter selects, Escape closes; the create-new row is badged NEW.
+  let initialTagHighlight = $state(-1);
+  // Dropdown open flag so the suggestion list closes on blur (matching the
+  // composer's onblur-close) instead of lingering after the field loses focus.
+  let initialTagPickerOpen = $state(false);
+  const initialTagDropCount = $derived(
+    initialTagSuggestions.length + (initialTagPickerInput.trim().length > 0 ? 1 : 0)
+  );
+  function addInitialTag(h: { tagId: string; name: string; tagGroupName: string }) {
+    if (!initialTagIds.includes(h.tagId)) initialTagIds = [...initialTagIds, h.tagId];
+    initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
+    initialTagGroups = { ...initialTagGroups, [h.tagId]: h.tagGroupName };
+    initialTagPickerInput = '';
+    initialTagSuggestions = [];
+    initialTagHighlight = -1;
+  }
+  function selectInitialTagAt(i: number) {
+    if (i >= 0 && i < initialTagSuggestions.length) addInitialTag(initialTagSuggestions[i]);
+    else if (initialTagPickerInput.trim().length > 0) openCreateTag(initialTagPickerInput.trim());
+  }
+  function onInitialTagKeydown(e: KeyboardEvent) {
+    const total = initialTagDropCount;
+    if (total === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      initialTagHighlight = (initialTagHighlight + 1) % total;
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      initialTagHighlight = initialTagHighlight <= 0 ? total - 1 : initialTagHighlight - 1;
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (initialTagHighlight >= 0) {
+        selectInitialTagAt(initialTagHighlight);
+        return;
+      }
+      // No highlight: add an exact existing match if there is one, else create.
+      const q = initialTagPickerInput.trim().toLowerCase();
+      const exact = initialTagSuggestions.findIndex(h => h.name.toLowerCase() === q);
+      if (exact >= 0) addInitialTag(initialTagSuggestions[exact]);
+      else if (initialTagPickerInput.trim().length > 0) openCreateTag(initialTagPickerInput.trim());
+    } else if (e.key === 'Escape') {
+      initialTagSuggestions = [];
+      initialTagHighlight = -1;
+      initialTagPickerOpen = false;
+    }
   }
 
   // File list — keyed by folder path so the right pane can aggregate
@@ -96,7 +176,7 @@
   // (Will Import / Already Imported / Other) by walking the map. A
   // single-folder selection collapses to one entry, behaving exactly
   // like the pre-multi-select implementation did.
-  type FolderFiles = { files: string[]; nonImportable: string[]; imported: string[] };
+  type FolderFiles = { files: string[]; nonImportable: string[]; imported: string[]; hidden: string[] };
   let filesByFolder = $state<Map<string, FolderFiles>>(new Map());
   // Aggregated views — what the existing template binds against.
   // Replaced direct assignments with deriveds so any flip in
@@ -109,6 +189,11 @@
   const nonImportableFileList = $derived.by<string[]>(() => {
     const out: string[] = [];
     for (const v of filesByFolder.values()) out.push(...v.nonImportable);
+    return out;
+  });
+  const hiddenFileList = $derived.by<string[]>(() => {
+    const out: string[] = [];
+    for (const v of filesByFolder.values()) out.push(...v.hidden);
     return out;
   });
   const importedFilesSet = $derived.by<Set<string>>(() => {
@@ -128,7 +213,7 @@
   // 'pending' = video files not yet in the DB (the actionable bucket).
   // 'imported' = videos already imported (won't be re-imported).
   // 'other'    = non-video files (images, .nfo, etc.).
-  let activeFileTab = $state<'pending' | 'imported' | 'other'>('pending');
+  let activeFileTab = $state<'pending' | 'imported' | 'other' | 'hidden'>('pending');
 
   // Collapsibles
   let showTagsSection = $state(true);
@@ -197,7 +282,9 @@
       ? pendingFiles
       : activeFileTab === 'imported'
         ? alreadyImportedFiles
-        : nonImportableFileList;
+        : activeFileTab === 'hidden'
+          ? hiddenFileList
+          : nonImportableFileList;
     if (q.length === 0) return source;
     return source.filter((f) => f.toLowerCase().includes(q));
   });
@@ -387,10 +474,47 @@
     try {
       const res = await api.browseImport(null);
       treeRoots = res.directories;
+      void loadCounts(res.directories);
     } catch (e) {
       formError = toMessage('Failed to load sets', e);
     } finally {
       treeInitialLoading = false;
+    }
+  }
+
+  // Lazy video counts (issue #197): /import/browse returns folders instantly
+  // without the slow recursive count, so once a level is on screen we fetch
+  // each folder's count in the background and patch its badge in. Counts that
+  // fail are left null (the badge just stays "…"); they're non-fatal.
+  async function loadCounts(dirs: ImportBrowseDirectory[]) {
+    await Promise.all(
+      dirs
+        .filter(d => d.videoCount === null || d.videoCount === undefined)
+        .map(async d => {
+          try {
+            const res = await api.getImportFolderCount(d.fullPath);
+            patchVideoCount(d.fullPath, res.videoCount);
+          } catch {
+            /* leave the badge as "…" — counting failed, non-fatal */
+          }
+        })
+    );
+  }
+
+  // Patch a folder's videoCount into whichever tree container holds it (roots
+  // or a children list), reassigning that container so the row re-renders.
+  function patchVideoCount(path: string, count: number) {
+    if (treeRoots.some(d => d.fullPath === path)) {
+      treeRoots = treeRoots.map(d => d.fullPath === path ? { ...d, videoCount: count } : d);
+      return;
+    }
+    for (const [key, arr] of treeChildrenByPath) {
+      if (arr.some(d => d.fullPath === path)) {
+        const next = new Map(treeChildrenByPath);
+        next.set(key, arr.map(d => d.fullPath === path ? { ...d, videoCount: count } : d));
+        treeChildrenByPath = next;
+        return;
+      }
     }
   }
 
@@ -436,6 +560,7 @@
       const next = new Map(treeChildrenByPath);
       next.set(path, res.directories);
       treeChildrenByPath = next;
+      void loadCounts(res.directories);
     } catch (e) {
       formError = toMessage('Failed to browse', e);
     } finally {
@@ -596,7 +721,8 @@
           next.set(p, {
             files: res.files,
             nonImportable: res.nonImportableFiles,
-            imported: res.importedFiles
+            imported: res.importedFiles,
+            hidden: res.hiddenFiles
           });
         } catch (e) {
           formError = toMessage(`Failed to list files for ${p}`, e);
@@ -677,7 +803,8 @@
           includeSubdirectories,
           name,
           initialTagIds: initialTagIds.length > 0 ? initialTagIds : null,
-          notes: importNotes.trim().length > 0 ? importNotes.trim() : null
+          notes: importNotes.trim().length > 0 ? importNotes.trim() : null,
+          initialFlags: [...(flagFavorite ? ['favorite'] : []), ...(flagClip ? ['clip'] : [])]
         };
         try {
           await api.startImport(request);
@@ -776,7 +903,7 @@
       {:else}
         <ul class="space-y-0.5 text-sm">
           {#each treeRows as row (row.dir.fullPath)}
-            {@const isFullyImported = row.dir.videoCount > 0 && row.dir.importedCount >= row.dir.videoCount}
+            {@const isFullyImported = (row.dir.videoCount ?? 0) > 0 && row.dir.importedCount >= (row.dir.videoCount ?? 0)}
             {@const rowSet = row.depth === 0
               ? sets.find(s => s.path === row.dir.fullPath || s.name === row.dir.name)
               : undefined}
@@ -855,6 +982,10 @@
                     <span class="loading loading-spinner loading-xs"></span>
                     Importing
                   </span>
+                {:else if row.dir.videoCount == null}
+                  <!-- Count not loaded yet — browse returns folders instantly
+                       and the recursive count streams in afterward (#197). -->
+                  <span class="text-xs shrink-0 text-base-content/30" title="Counting videos…">…</span>
                 {:else if row.dir.videoCount > 0}
                   <!-- "5 / 10 imported" — compact slash form (eye
                        lands on the imported count first, then the
@@ -976,16 +1107,16 @@
            handleImport surfaces a transient formSuccess toast and the
            Background Tasks page owns live progress for every job. -->
 
-      <!-- File list — three buckets surfaced as tabs so the user can see at
-           a glance what's actionable (Will Import) vs noise (Already Imported,
-           Not a Video). Search filters the active tab. -->
+      <!-- File list — buckets surfaced as tabs so the user can see at a glance
+           what's actionable (Will Import) vs noise (Already Imported, Not a
+           Video, Hidden Files). Search filters the active tab. -->
       {#if folderSelected}
         <section class="card bg-base-200 p-4 space-y-3">
           {#if filesLoading}
             <div class="flex items-center gap-2 text-base-content/70">
               <span class="loading loading-spinner loading-sm"></span> Loading files...
             </div>
-          {:else if fileList.length === 0 && nonImportableFileList.length === 0}
+          {:else if fileList.length === 0 && nonImportableFileList.length === 0 && hiddenFileList.length === 0}
             <div class="flex items-center justify-between gap-2">
               <span class="text-base-content/60 text-sm italic">Folder is empty.</span>
               <!-- Still expose the refresh affordance in the empty
@@ -1038,6 +1169,18 @@
                   {nonImportableFileList.length}
                 </span>
               </button>
+              <button
+                type="button"
+                role="tab"
+                class="tab gap-2 {activeFileTab === 'hidden' ? 'tab-active' : ''}"
+                onclick={() => (activeFileTab = 'hidden')}
+                title="Dot-prefixed files — ignored by the import"
+              >
+                Hidden Files
+                <span class="badge badge-sm font-bold tabular-nums badge-ghost">
+                  {hiddenFileList.length}
+                </span>
+              </button>
             </div>
 
             <div class="flex flex-wrap items-center gap-2">
@@ -1047,7 +1190,7 @@
                 placeholder="Filter files by name..."
                 bind:value={fileSearch}
               />
-              {#if activeFileTab !== 'other'}
+              {#if activeFileTab === 'pending' || activeFileTab === 'imported'}
                 <label class="label cursor-pointer gap-2">
                   <input type="checkbox" class="checkbox checkbox-sm" bind:checked={showThumbnails} />
                   <span class="label-text text-sm">Thumbnails</span>
@@ -1057,6 +1200,7 @@
                 Showing {visibleFiles.length} of
                 {activeFileTab === 'pending' ? pendingFiles.length
                  : activeFileTab === 'imported' ? alreadyImportedFiles.length
+                 : activeFileTab === 'hidden' ? hiddenFileList.length
                  : nonImportableFileList.length}
               </span>
               <!-- Manual refresh — invalidates the per-folder cache
@@ -1146,49 +1290,54 @@
                    imported video. Uses /api/tags/search for autocomplete. -->
               <div class="form-control">
                 <span class="label-text font-medium">Tags to apply</span>
-                <div class="mt-1 flex gap-2">
+                <div class="mt-1 flex gap-2 w-1/4">
                   <div class="relative flex-1">
                     <input
                       class="input input-bordered input-sm w-full"
                       placeholder="Type to search tags…"
                       value={initialTagPickerInput}
+                      autocomplete="off"
+                      onkeydown={onInitialTagKeydown}
+                      onfocus={() => (initialTagPickerOpen = true)}
+                      onblur={() => setTimeout(() => (initialTagPickerOpen = false), 200)}
                       oninput={async (e) => {
                         initialTagPickerInput = (e.target as HTMLInputElement).value;
+                        initialTagHighlight = -1;
+                        initialTagPickerOpen = true;
                         const q = initialTagPickerInput.trim();
                         initialTagSuggestions = q
                           ? (await api.searchTags(q)).filter(h => !initialTagIds.includes(h.tagId))
                           : [];
                       }}
                     />
-                    {#if initialTagSuggestions.length > 0 || initialTagPickerInput.trim().length > 0}
+                    {#if initialTagPickerOpen && (initialTagSuggestions.length > 0 || initialTagPickerInput.trim().length > 0)}
                       <div class="absolute z-10 mt-1 w-full bg-base-100 border border-base-300 rounded shadow max-h-60 overflow-y-auto">
-                        {#each initialTagSuggestions as h (h.tagId)}
+                        {#each initialTagSuggestions as h, i (h.tagId)}
                           <button
                             type="button"
-                            class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm flex justify-between"
-                            onmousedown={() => {
-                              initialTagIds = [...initialTagIds, h.tagId];
-                              initialTagLabels = { ...initialTagLabels, [h.tagId]: h.name };
-                              initialTagPickerInput = '';
-                              initialTagSuggestions = [];
-                            }}
+                            class="w-full text-left px-2 py-1 text-sm flex justify-between {initialTagHighlight === i ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
+                            onmousedown={() => addInitialTag(h)}
+                            onmouseenter={() => (initialTagHighlight = i)}
                           >
                             <span>{h.name}</span>
-                            <span class="text-xs text-base-content/50">{h.tagGroupName}</span>
+                            <span class="text-xs opacity-60">{h.tagGroupName}</span>
                           </button>
                         {/each}
                         {#if initialTagPickerInput.trim().length > 0}
-                          <!-- Create-from-search escape hatch: typed text
-                               that doesn't exist yet (or that the user
-                               wants in a different group) becomes a new
-                               tag via TagEditModal, where the Group
-                               select offers every tag group. -->
+                          {@const createIdx = initialTagSuggestions.length}
+                          <!-- Create-from-search escape hatch: typed text that
+                               doesn't exist yet (or that the user wants in a
+                               different group) becomes a new tag via
+                               TagEditModal. Badged NEW + arrow-navigable like
+                               the EditTagsPanel composer (issue #65). -->
                           <button
                             type="button"
-                            class="w-full text-left px-2 py-1 hover:bg-base-200 text-sm text-primary {initialTagSuggestions.length > 0 ? 'border-t border-base-300' : ''}"
+                            class="w-full text-left px-2 py-1 text-sm flex items-center gap-2 {initialTagSuggestions.length > 0 ? 'border-t border-base-300' : ''} {initialTagHighlight === createIdx ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
                             onmousedown={() => openCreateTag(initialTagPickerInput.trim())}
+                            onmouseenter={() => (initialTagHighlight = createIdx)}
                           >
-                            + Create new tag “{initialTagPickerInput.trim()}”…
+                            <span class="badge badge-accent badge-xs">NEW</span>
+                            <span>Create tag “{initialTagPickerInput.trim()}”…</span>
                           </button>
                         {/if}
                       </div>
@@ -1204,29 +1353,67 @@
                 {#if initialTagIds.length > 0}
                   <div class="flex flex-wrap gap-1 mt-2">
                     {#each initialTagIds as tid (tid)}
-                      <span class="badge badge-primary gap-1">
-                        {initialTagLabels[tid] ?? tid}
-                        <button onclick={() => {
-                          initialTagIds = initialTagIds.filter(x => x !== tid);
-                        }}>×</button>
+                      <!-- Group-colored pill with pencil-edit + remove, a
+                           faithful copy of the EditTagsPanel composer pill
+                           (issue #65). pillClass hashes the group name to the
+                           same palette used everywhere else. -->
+                      <span class="badge {pillClass(tid, initialTagGroups[tid])} gap-1 max-w-[min(14rem,100%)] flex-nowrap">
+                        <button
+                          type="button"
+                          class="cursor-pointer truncate min-w-0"
+                          onclick={() => openEditTag(tid)}
+                          title="Edit tag"
+                        >{initialTagLabels[tid] ?? tid}</button>
+                        <button
+                          type="button"
+                          class="opacity-70 hover:opacity-100 shrink-0"
+                          onclick={() => openEditTag(tid)}
+                          title="Edit tag"
+                          aria-label="Edit {initialTagLabels[tid] ?? tid}"
+                        >✎</button>
+                        <button
+                          type="button"
+                          class="shrink-0"
+                          onclick={() => {
+                            initialTagIds = initialTagIds.filter(x => x !== tid);
+                          }}
+                          title="Remove from import"
+                          aria-label="Remove {initialTagLabels[tid] ?? tid}"
+                        >×</button>
                       </span>
                     {/each}
                   </div>
                 {/if}
               </div>
 
-              <label class="form-control">
+              <!-- flex flex-col so the label sits ABOVE the textarea like
+                   "Tags to apply" above. `form-control` no longer forces a
+                   column on its own (daisyUI change), which left the inline
+                   span + inline-block textarea on the same row (issue #86). -->
+              <label class="form-control mt-4 flex flex-col items-start">
                 <span class="label-text font-medium">Notes</span>
-                <!-- Single-line input (was a 2-row textarea). Multi-line
-                     notes via paste still flow through; the field just
-                     scrolls horizontally to match the height of every
-                     other one-line input in this form. -->
-                <input
-                  type="text"
-                  class="input input-bordered input-sm w-full"
+                <!-- Multi-line textarea so longer notes are visible without
+                     horizontal scrolling. mt-2 puts a clear gap under the label. -->
+                <textarea
+                  class="textarea textarea-bordered textarea-sm w-1/4 mt-2"
+                  rows="3"
                   bind:value={importNotes}
-                />
+                ></textarea>
               </label>
+
+              <!-- Flags to set on every imported video (#168). Only the
+                   no-side-effect, user-settable flags are offered here. -->
+              <div class="mt-4 flex flex-col items-start gap-1">
+                <span class="label-text font-medium">Flags to apply</span>
+                <label class="label cursor-pointer gap-2 p-0 justify-start">
+                  <input type="checkbox" class="checkbox checkbox-sm" bind:checked={flagFavorite} />
+                  <span class="text-sm">Favorite</span>
+                </label>
+                <label class="label cursor-pointer gap-2 p-0 justify-start">
+                  <input type="checkbox" class="checkbox checkbox-sm" bind:checked={flagClip} />
+                  <span class="text-sm">Clip</span>
+                </label>
+              </div>
             </div>
           {/if}
         </section>
@@ -1292,14 +1479,17 @@
   </label>
 </div>
 
-<!-- Create-tag modal — TagEditModal in create mode (tag=null, no fixed
-     tagGroupId) shows a Group select over every tag group. onSaved
-     auto-applies the new tag to this import's "Tags to apply" list. -->
+<!-- Tag create/edit modal. Create mode (tag=null, focusGroup) shows a Group
+     select over every tag group with no default selection and auto-applies
+     the new tag to this import's "Tags to apply" list. Edit mode (tag set,
+     opened from a pill's name/pencil) edits the tag in place and refreshes
+     the pill. One onSaved handles both. -->
 <TagEditModal
-  bind:show={showCreateTagModal}
-  tag={null}
+  bind:show={showTagModal}
+  tag={editingTag}
   initialName={createTagInitialName}
-  onSaved={onTagCreated}
+  focusGroup={editingTag === null}
+  onSaved={onTagSaved}
 />
 
 {#if showAddSetDialog}

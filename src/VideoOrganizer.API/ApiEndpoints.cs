@@ -16,12 +16,48 @@ using Xabe.FFmpeg;
 
 namespace VideoOrganizer.API;
 
-public static class ApiEndpoints
+public static partial class ApiEndpoints
 {
     // In-memory playlist storage (lost on restart, same as before).
     private static readonly Dictionary<Guid, PlaylistDto> _playlists = new();
 
     // --- Video DTO projection ----------------------------------------------
+
+    // Project the OcrScanProgress singleton's snapshot tuple to the wire DTO.
+    private static OcrScanProgressDto ToScanDto(
+        (bool Active, Guid VideoId, double ScannedThroughSeconds, double DurationSeconds,
+         int Hits, string Phase, string? Error) s)
+        => new(s.Active, s.ScannedThroughSeconds, s.DurationSeconds, s.Hits, s.Phase, s.Error);
+
+    // Project the ClipExportProgress snapshot tuple to the wire DTO.
+    private static ClipExportProgressDto ToClipExportDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
+    // Project the BlockRemovalProgress snapshot tuple to the wire DTO.
+    private static BlockRemovalProgressDto ToBlockRemovalDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
+    // Project the RepairProgress snapshot tuple to the wire DTO.
+    private static RepairProgressDto ToRepairDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
+    // Project the JoinProgress snapshot tuple to the wire DTO.
+    private static JoinProgressDto ToJoinDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
+    // Project the EncodeProgress snapshot tuple to the wire DTO.
+    private static EncodeProgressDto ToEncodeDto(
+        (bool Active, int Total, int Done, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Current, s.Phase, s.Errors);
+
+    // Project the StreamingOptimizeProgress snapshot tuple to the wire DTO.
+    private static StreamingOptimizeProgressDto ToOptimizeDto(
+        (bool Active, int Total, int Done, int Optimized, int Skipped, string Current, string Phase, IReadOnlyList<string> Errors) s)
+        => new(s.Active, s.Total, s.Done, s.Optimized, s.Skipped, s.Current, s.Phase, s.Errors);
 
     private static VideoDto ToDto(Video v)
     {
@@ -61,9 +97,10 @@ public static class ApiEndpoints
             (Shared.Dto.CameraTypes)(int)v.CameraType,
             (Shared.Dto.VideoQuality)(int)v.VideoQuality,
             v.WatchCount, v.Notes,
-            v.NeedsReview, v.PlaybackIssue, v.MarkedForDeletion,
+            v.NeedsReview, v.PlaybackIssue, v.MarkedForDeletion, v.IsFavorite,
             v.ParentVideoId, v.ClipStartSeconds, v.ClipEndSeconds,
-            v.ParentVideoId.HasValue,
+            v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip, // Clip umbrella (#167)
+            v.IsExportedClip, v.IsEdited,
             v.ChapterMarkers.Select(c => new ChapterMarkerDto(c.Offset, c.Comment)).ToList(),
             v.VideoBlocks.Select(b => new VideoBlockDto(
                 b.OffsetInSeconds, b.LengthInSeconds, (Shared.Dto.VideoBlockTypes)(int)b.VideoBlockType)).ToList(),
@@ -216,6 +253,7 @@ public static class ApiEndpoints
             foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
             {
                 if (PathFilters.IsInExcludedFolder(file, path)) continue;
+                if (PathFilters.IsHiddenFile(file)) continue; // issue #62
                 if (VideoFileExtensions.IsVideo(file))
                 {
                     count++;
@@ -228,6 +266,111 @@ public static class ApiEndpoints
         {
             return 0;
         }
+    }
+
+    // Recursive video count for one folder, memoized in the scan cache. A hit
+    // skips the disk walk but still credits the discovered total so the live
+    // counter stays meaningful. Shared by the lazy /import/folder-count
+    // endpoint (issue #197).
+    private static int CachedVideoCount(
+        DirectoryScanCache scanCache, ImportScanProgress progress, string path)
+    {
+        var key = PathNormalizer.Normalize(path);
+        if (scanCache.TryGet(key, out var hit))
+        {
+            progress.Add(hit);
+            return hit;
+        }
+        var n = CountVideoFilesRecursive(path, progress);
+        scanCache.Set(key, n);
+        return n;
+    }
+
+    // Evicts only the directories whose recursive video count changed when a
+    // file moved between folders (issue #4). A directory's count changes iff
+    // the file entered or left its subtree — i.e. it's an ancestor of exactly
+    // one of {fromDir, toDir}. Directories that are ancestors of both (the
+    // source root for a within-source move) net zero and stay cached, so a
+    // move no longer forces a full re-walk on the next browse.
+    private static void EvictMovedDirs(DirectoryScanCache cache, string? fromDir, string? toDir)
+    {
+        var changed = AncestorKeys(fromDir);
+        changed.SymmetricExceptWith(AncestorKeys(toDir));
+        foreach (var key in changed) cache.Remove(key);
+    }
+
+    // Normalized cache keys for `dir` and every ancestor up to the filesystem
+    // root. Case-insensitive to match the cache. Path.GetDirectoryName flips
+    // to the platform separator, so each level is re-normalized to the
+    // forward-slash form the cache stores.
+    private static HashSet<string> AncestorKeys(string? dir)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var d = dir;
+        while (!string.IsNullOrEmpty(d))
+        {
+            set.Add(PathNormalizer.Normalize(d));
+            var parent = Path.GetDirectoryName(d);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, d, StringComparison.Ordinal)) break;
+            d = parent;
+        }
+        return set;
+    }
+
+    // Normalizes free text into a space-delimited lowercase token string for
+    // tag-suggestion matching (issue #10). Every non-alphanumeric character
+    // becomes a separator so "Bob.Marley_live-2009" and "bob marley" line up;
+    // runs of separators collapse. Matching against the result with a leading
+    // and trailing space gives whole-word/phrase hits without substring noise.
+    private static string NormalizeForMatch(string s)
+    {
+        var chars = s.Select(ch => char.IsLetterOrDigit(ch) ? char.ToLowerInvariant(ch) : ' ');
+        return string.Join(' ', new string(chars.ToArray())
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    // Release / quality / codec tokens that show up in file names but are
+    // never useful as content tags — dropped from candidate extraction so the
+    // "Potential tags" list isn't polluted with "1080p", "x264", etc. (#10).
+    private static readonly HashSet<string> TagCandidateNoise = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "1080p", "720p", "480p", "360p", "2160p", "4k", "8k", "uhd", "hd", "sd", "hdr",
+        "x264", "x265", "h264", "h265", "hevc", "avc", "xvid", "divx", "mpeg", "mp4", "mkv", "avi",
+        "aac", "ac3", "dts", "mp3", "flac", "opus", "5", "1ch",
+        "web", "webrip", "webdl", "bluray", "bdrip", "brrip", "dvdrip", "hdtv", "hdrip", "cam", "ts",
+        "proper", "repack", "internal", "extended", "uncut", "remux", "10bit", "8bit", "60fps", "30fps"
+    };
+
+    // Splits a file-name stem + folder path into candidate tag names for the
+    // Tag panel's "Potential tags" feature (issue #10). The stem is broken on
+    // common field delimiters (keeping internal spaces, so "Bob Marley - Live"
+    // yields "Bob Marley" and "Live"); folder segments are kept whole so a
+    // multi-word "Bob Marley" folder survives. Bare numbers, 1-char tokens, and
+    // known release-noise tokens are dropped; results are case-insensitively
+    // deduped in first-seen order and capped.
+    private static List<string> ExtractTagCandidates(string fileStem, string folderText)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+
+        void Add(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            var name = string.Join(' ', raw.Split(
+                (char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            if (name.Length < 2) return;
+            if (name.All(char.IsDigit)) return;
+            if (TagCandidateNoise.Contains(name)) return;
+            if (seen.Add(name)) result.Add(name);
+        }
+
+        var delimiters = new[] { '_', '.', '-', '–', '—', '~', '|', ',', '[', ']', '(', ')', '{', '}' };
+        foreach (var part in fileStem.Split(delimiters, StringSplitOptions.RemoveEmptyEntries))
+            Add(part);
+        foreach (var seg in folderText.Split('/', StringSplitOptions.RemoveEmptyEntries))
+            Add(seg);
+
+        return result.Take(25).ToList();
     }
 
     // Moves a file from src to dst, reporting byte progress (issue #4).
@@ -597,6 +740,21 @@ public static class ApiEndpoints
         };
     }
 
+    // Hidden-by-default tags (issue #84) whose videos must be suppressed from a
+    // listing — except any the caller explicitly filtered FOR (referencedTagIds),
+    // which is how "filter for it to see it" works. Hidden means hidden across
+    // every surface (browse, playlists, related, search), so each listing query
+    // excludes videos carrying one of these.
+    private static async Task<HashSet<Guid>> LoadAutoHideTagIdsAsync(
+        VideoOrganizerDbContext db, IReadOnlyCollection<Guid> referencedTagIds, CancellationToken ct)
+    {
+        var hidden = await db.Tags.AsNoTracking()
+            .Where(t => t.HiddenByDefault)
+            .Select(t => t.Id)
+            .ToListAsync(ct);
+        return hidden.Where(id => !referencedTagIds.Contains(id)).ToHashSet();
+    }
+
     private static bool MatchesFilter(FilterRef f, Video v, TagLookup _)
     {
         switch (f.Type)
@@ -628,11 +786,13 @@ public static class ApiEndpoints
                     "playbackIssue" => v.PlaybackIssue,
                     "markedForDeletion" => v.MarkedForDeletion,
                     "favorite" => v.IsFavorite,
-                    // "isClip" reads off the structural ParentVideoId
-                    // — a Video row is a clip iff it has a parent. No
-                    // separate boolean column; clips are flagged
-                    // automatically when CreateClip inserts the row.
-                    "isClip" => v.ParentVideoId.HasValue,
+                    // Clip flags (#167): "clip" is the umbrella (embedded child
+                    // OR user-marked OR exported); the others narrow it.
+                    "clip" => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip,
+                    "embedded" => v.ParentVideoId.HasValue,
+                    "exported" => v.IsExportedClip,
+                    "edited" => v.IsEdited,
+                    "isClip" => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip, // back-compat
                     _ => false
                 };
             default:
@@ -666,7 +826,8 @@ public static class ApiEndpoints
             var limit = Math.Clamp(take ?? 1000, 1, 5000);
             var since = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(minutes);
             return Results.Ok(buf.SnapshotRecent(since, limit));
-        }).WithName("GetLogs");
+        }).Produces<List<LogEvent>>(StatusCodes.Status200OK)
+          .WithName("GetLogs");
 
         // === Global search ==================================================
         // Powers the Ctrl+K command palette on the frontend. v1 returns
@@ -738,12 +899,25 @@ public static class ApiEndpoints
             // in v1 (see note above).
             var baseQuery = db.Videos
                 .AsNoTracking()
+                // Exported clips (#69) are hidden everywhere, search included.
+                .Where(v => !v.ClipExported)
                 .Where(v =>
                     EF.Functions.ILike(v.FileName, pat) ||
                     EF.Functions.ILike(v.FilePath, pat) ||
                     EF.Functions.ILike(v.Notes, pat) ||
                     (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
-                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)) ||
+                    // On-screen text found by an OCR scan (issue #5).
+                    v.OcrTextLines.Any(o => EF.Functions.ILike(o.Text, pat)));
+
+            // Hidden-by-default videos (#84) are never findable via search — hidden
+            // means hidden everywhere. (Search has no tag-filter to "reveal" via.)
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, Array.Empty<Guid>(), ct);
+            if (autoHideTagIds.Count > 0)
+            {
+                var hidden = autoHideTagIds.ToList();
+                baseQuery = baseQuery.Where(v => !v.VideoTags.Any(vt => hidden.Contains(vt.TagId)));
+            }
 
             var totalCount = await baseQuery.CountAsync(ct);
 
@@ -763,6 +937,16 @@ public static class ApiEndpoints
                 .Take(lim)
                 .ToListAsync(ct);
 
+            // Which of this page's videos have an OCR-text hit for the query
+            // (issue #5). Done as one narrow id query rather than Include-ing
+            // every stored line — a scanned video can have thousands.
+            var pageIds = rows.Select(v => v.Id).ToList();
+            var ocrMatchIds = (await db.OcrTextLines.AsNoTracking()
+                .Where(o => pageIds.Contains(o.VideoId) && EF.Functions.ILike(o.Text, pat))
+                .Select(o => o.VideoId)
+                .Distinct()
+                .ToListAsync(ct)).ToHashSet();
+
             var results = rows.Select(v =>
             {
                 // Tag matches in this iteration so the UI can surface
@@ -773,6 +957,7 @@ public static class ApiEndpoints
                 if (v.FilePath.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("filePath");
                 if (v.Notes.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("notes");
                 if (v.Md5 != null && v.Md5.Contains(query, StringComparison.OrdinalIgnoreCase)) matched.Add("md5");
+                if (ocrMatchIds.Contains(v.Id)) matched.Add("ocrText");
                 foreach (var vt in v.VideoTags)
                 {
                     if (vt.Tag != null && vt.Tag.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
@@ -806,7 +991,8 @@ public static class ApiEndpoints
                 TotalCount: totalCount,
                 Truncated: totalCount > off + lim,
                 Results: results));
-        }).WithName("Search");
+        }).Produces<SearchResponse>(StatusCodes.Status200OK)
+          .WithName("Search");
 
         // === Runtime info ===================================================
         // Tells the frontend whether the request came in over the loopback
@@ -824,7 +1010,8 @@ public static class ApiEndpoints
                    : OperatingSystem.IsLinux() ? "linux"
                    : "other";
             return Results.Ok(new RuntimeInfoDto(IsLocalRequest(http), os));
-        }).WithName("GetRuntimeInfo");
+        }).Produces<RuntimeInfoDto>(StatusCodes.Status200OK)
+          .WithName("GetRuntimeInfo");
 
         // === Data validation ================================================
         // Diagnostic endpoints powering the /data-validation page:
@@ -902,7 +1089,8 @@ public static class ApiEndpoints
                 .OrderBy(m => m.SourceName)
                 .ThenBy(m => m.FilePath)
                 .ToList());
-        }).WithName("GetValidationMissingFiles");
+        }).Produces<List<MissingVideoFileDto>>(StatusCodes.Status200OK)
+          .WithName("GetValidationMissingFiles");
 
         // POST /validation/missing-files/purge — remove DB rows for videos
         // whose file is gone from disk. Deliberately DB-only: the file is
@@ -951,7 +1139,8 @@ public static class ApiEndpoints
                 SkippedPresent: skippedPresent.Count,
                 NotFound: notFound,
                 SkippedPresentIds: skippedPresent));
-        }).WithName("PurgeValidationMissingFiles");
+        }).Produces<PurgeMissingFilesResultDto>(StatusCodes.Status200OK)
+          .WithName("PurgeValidationMissingFiles");
 
         api.MapGet("/validation/extra-files", async (
             VideoOrganizerDbContext db, Guid? sourceId, bool? includeDisabled,
@@ -1016,7 +1205,8 @@ public static class ApiEndpoints
                 .OrderBy(x => x.SourceName)
                 .ThenBy(x => x.FilePath)
                 .ToList());
-        }).WithName("GetValidationExtraFiles");
+        }).Produces<List<ExtraDiskFileDto>>(StatusCodes.Status200OK)
+          .WithName("GetValidationExtraFiles");
 
         // GET /validation/md5-candidates — list of videos eligible
         // for MD5 re-verification. Skips clips (share parent's file),
@@ -1067,7 +1257,8 @@ public static class ApiEndpoints
                 .OrderBy(r => r.SourceName)
                 .ThenBy(r => r.FilePath)
                 .ToList());
-        }).WithName("GetValidationMd5Candidates");
+        }).Produces<List<Md5CandidateDto>>(StatusCodes.Status200OK)
+          .WithName("GetValidationMd5Candidates");
 
         // POST /validation/md5-check/{id} — recompute the MD5 of one
         // video's file and compare against the stored hash. Streams
@@ -1128,7 +1319,8 @@ public static class ApiEndpoints
                     FileSize: video.FileSize, FileExists: true,
                     Error: ex.Message));
             }
-        }).WithName("PostValidationMd5Check");
+        }).Produces<Md5CheckResultDto>(StatusCodes.Status200OK)
+          .WithName("PostValidationMd5Check");
 
         // === Thumbnails worker ==============================================
 
@@ -1239,7 +1431,8 @@ public static class ApiEndpoints
                     v.Id, v.FileName, v.FilePath, v.FileSize, v.ThumbnailsFailedError))
                 .ToListAsync(ct);
             return Results.Ok(rows);
-        }).WithName("GetFailedThumbnails");
+        }).Produces<List<WorkerFailedRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetFailedThumbnails");
 
         api.MapGet("/thumbnails/queue", async (
             ThumbnailWarmingProgressTracker progress,
@@ -1264,7 +1457,8 @@ public static class ApiEndpoints
                 rows = rows.Where(r => !string.Equals(r.FilePath, curPath, StringComparison.Ordinal)).ToList();
             }
             return Results.Ok(rows);
-        }).WithName("GetThumbnailQueue");
+        }).Produces<List<WorkerQueueRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetThumbnailQueue");
 
         // === Md5 worker =====================================================
 
@@ -1363,7 +1557,8 @@ public static class ApiEndpoints
             var result = rows.Select(r => new Md5DuplicateRowDto(
                 r.Id, r.FileName, r.FilePath, r.FileSize, r.Md5, sizeByMd5[r.Md5])).ToList();
             return Results.Ok(result);
-        }).WithName("GetMd5Duplicates");
+        }).Produces<List<Md5DuplicateRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetMd5Duplicates");
 
         api.MapGet("/md5-backfill/failed", async (VideoOrganizerDbContext db, CancellationToken ct) =>
         {
@@ -1375,7 +1570,8 @@ public static class ApiEndpoints
                     v.Id, v.FileName, v.FilePath, v.FileSize, v.Md5FailedError))
                 .ToListAsync(ct);
             return Results.Ok(rows);
-        }).WithName("GetFailedMd5");
+        }).Produces<List<WorkerFailedRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetFailedMd5");
 
         api.MapGet("/md5-backfill/queue", async (
             Md5BackfillProgressTracker progress,
@@ -1395,125 +1591,15 @@ public static class ApiEndpoints
                 rows = rows.Where(r => !string.Equals(r.FilePath, filePath, StringComparison.Ordinal)).ToList();
             }
             return Results.Ok(rows);
-        }).WithName("GetMd5BackfillQueue");
+        }).Produces<List<WorkerQueueRowDto>>(StatusCodes.Status200OK)
+          .WithName("GetMd5BackfillQueue");
 
         // === Video sets =====================================================
 
-        var videoSets = api.MapGroup("/video-sets").WithTags("VideoSets");
+        MapVideoSetEndpoints(api);
 
-        videoSets.MapGet("/", async (
-            VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
-        {
-            // Same per-row resilience as /import/browse: a single bad
-            // path (permission-denied, broken symlink, unreachable
-            // mount) should not 500 the whole listing. Project to an
-            // anonymous shape outside the EF query so the PathExists
-            // probe runs once per row in C# memory, with TryDirectoryExists
-            // already swallowing filesystem failures.
-            var sets = await db.VideoSets
-                .OrderBy(s => s.SortOrder).ThenBy(s => s.Name)
-                .ToListAsync(ct);
-            var result = sets.Select(s => new
-            {
-                s.Id,
-                s.Name,
-                s.Path,
-                s.Enabled,
-                s.SortOrder,
-                PathExists = TryDirectoryExists(s.Path, logger)
-            }).ToList();
-            return Results.Ok(result);
-        }).WithName("ListVideoSets");
-
-        videoSets.MapPost("/", async (
-            VideoSet input, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            input.Path = PathNormalizer.Normalize(input.Path ?? string.Empty);
-            var error = ValidateVideoSet(input, db, currentId: null);
-            if (error is not null) return Results.BadRequest(new { error });
-
-            input.Id = input.Id == Guid.Empty ? Guid.NewGuid() : input.Id;
-            db.VideoSets.Add(input);
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation(
-                "Created VideoSet {VideoSetId} '{Name}' at {Path} (enabled={Enabled})",
-                input.Id, input.Name, input.Path, input.Enabled);
-            return Results.Created($"/api/video-sets/{input.Id}", input);
-        }).WithName("CreateVideoSet");
-
-        videoSets.MapPut("/{id:guid}", async (
-            Guid id, VideoSet input, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var existing = await db.VideoSets.FirstOrDefaultAsync(s => s.Id == id, ct);
-            if (existing is null) return Results.NotFound();
-
-            var error = ValidateVideoSet(input, db, currentId: id);
-            if (error is not null) return Results.BadRequest(new { error });
-
-            // Capture before-state. Path changes are especially worth flagging
-            // because every Video below the old path becomes an orphan; the
-            // app uses Path as a prefix lookup, not an FK.
-            var oldPath = existing.Path;
-            var oldEnabled = existing.Enabled;
-
-            existing.Name = input.Name;
-            existing.Path = PathNormalizer.Normalize(input.Path ?? string.Empty);
-            existing.Enabled = input.Enabled;
-            existing.SortOrder = input.SortOrder;
-            await db.SaveChangesAsync(ct);
-
-            if (!string.Equals(oldPath, existing.Path, StringComparison.OrdinalIgnoreCase))
-            {
-                var orphans = await db.Videos.CountAsync(v => v.FilePath.StartsWith(oldPath), ct);
-                logger.LogWarning(
-                    "VideoSet {VideoSetId} '{Name}' Path changed {OldPath}→{NewPath} — {OrphanCount} videos still point at the old prefix and won't be browsable until they're moved or re-rooted",
-                    existing.Id, existing.Name, oldPath, existing.Path, orphans);
-            }
-            else if (oldEnabled != existing.Enabled)
-            {
-                logger.LogInformation(
-                    "VideoSet {VideoSetId} '{Name}' enabled={Enabled} (was {OldEnabled})",
-                    existing.Id, existing.Name, existing.Enabled, oldEnabled);
-            }
-            return Results.Ok(existing);
-        }).WithName("UpdateVideoSet");
-
-        videoSets.MapGet("/{id:guid}/orphan-count",
-            async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
-        {
-            var set = await db.VideoSets.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct);
-            if (set is null) return Results.NotFound();
-            var count = await db.Videos.CountAsync(v => v.FilePath.StartsWith(set.Path), ct);
-            return Results.Ok(new { count });
-        }).WithName("GetVideoSetOrphanCount");
-
-        videoSets.MapDelete("/{id:guid}", async (
-            Guid id, bool? force, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var set = await db.VideoSets.FirstOrDefaultAsync(s => s.Id == id, ct);
-            if (set is null) return Results.NotFound();
-
-            var orphanCount = await db.Videos.CountAsync(v => v.FilePath.StartsWith(set.Path), ct);
-            if (orphanCount > 0 && force != true)
-            {
-                logger.LogWarning(
-                    "VideoSet {VideoSetId} ({Name}, {Path}) delete blocked — would orphan {OrphanCount} videos. Caller must retry with ?force=true to override.",
-                    set.Id, set.Name, set.Path, orphanCount);
-                return Results.Conflict(new { orphanCount, error = "Deleting this set would orphan videos. Pass ?force=true to proceed." });
-            }
-
-            logger.LogInformation(
-                "VideoSet {VideoSetId} ({Name}, {Path}) deleted{ForcedSuffix} — {OrphanCount} videos now point at a missing root",
-                set.Id, set.Name, set.Path,
-                orphanCount > 0 ? " (forced)" : string.Empty,
-                orphanCount);
-            db.VideoSets.Remove(set);
-            await db.SaveChangesAsync(ct);
-            return Results.NoContent();
-        }).WithName("DeleteVideoSet");
+        // === Backups (issue #32) ============================================
+        MapBackupEndpoints(api);
 
         // === Videos =========================================================
 
@@ -1540,21 +1626,25 @@ public static class ApiEndpoints
         {
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (enabledRoots.Count == 0)
-                return Results.Ok(new FlagCountsDto(0, 0, 0, 0, 0));
+                return Results.Ok(new FlagCountsDto(0, 0, 0, 0, 0, 0, 0, 0));
             var scoped = db.Videos.AsNoTracking()
                 .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
-            // Five small COUNT queries against indexed boolean / FK
-            // columns — Postgres handles this in milliseconds. Doing
-            // them sequentially (rather than as a single grouped
-            // aggregate) keeps the EF translation stable.
+            // Small COUNT queries against indexed boolean / FK columns —
+            // Postgres handles these in milliseconds. Sequential (rather than
+            // one grouped aggregate) keeps the EF translation stable.
             var favorite = await scoped.CountAsync(v => v.IsFavorite, ct);
             var needsReview = await scoped.CountAsync(v => v.NeedsReview, ct);
             var playbackIssue = await scoped.CountAsync(v => v.PlaybackIssue, ct);
             var markedForDeletion = await scoped.CountAsync(v => v.MarkedForDeletion, ct);
-            var isClip = await scoped.CountAsync(v => v.ParentVideoId.HasValue, ct);
+            // Clip is the umbrella: embedded (child) OR user-marked OR exported.
+            var clip = await scoped.CountAsync(v => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip, ct);
+            var embedded = await scoped.CountAsync(v => v.ParentVideoId.HasValue, ct);
+            var exported = await scoped.CountAsync(v => v.IsExportedClip, ct);
+            var edited = await scoped.CountAsync(v => v.IsEdited, ct);
             return Results.Ok(new FlagCountsDto(
-                favorite, needsReview, playbackIssue, markedForDeletion, isClip));
-        }).WithName("GetFlagCounts");
+                favorite, needsReview, playbackIssue, markedForDeletion, clip, embedded, exported, edited));
+        }).Produces<FlagCountsDto>(StatusCodes.Status200OK)
+          .WithName("GetFlagCounts");
 
         // GET /api/videos — simple AND-of-tags filter. Repeatable ?tagId=
         // narrows by every passed tag. For richer filtering, use POST
@@ -1574,21 +1664,43 @@ public static class ApiEndpoints
                 .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
 
             var tagIdParams = http.Request.Query["tagId"];
+            var referencedTagIds = new HashSet<Guid>();
             foreach (var raw in tagIdParams)
             {
                 if (Guid.TryParse(raw, out var tid))
+                {
+                    referencedTagIds.Add(tid);
                     query = query.Where(v => v.VideoTags.Any(vt => vt.TagId == tid));
+                }
+            }
+
+            // Suppress hidden-by-default videos (#84) unless the caller is
+            // explicitly filtering for that tag.
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
+            if (autoHideTagIds.Count > 0)
+            {
+                var hidden = autoHideTagIds.ToList();
+                query = query.Where(v => !v.VideoTags.Any(vt => hidden.Contains(vt.TagId)));
             }
 
             var videos = await query.ToListAsync(ct);
             return Results.Ok(videos.Select(ToDto).ToList());
-        }).WithName("GetVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetVideos");
 
         api.MapPost("/videos/filter", async (
             PlaylistFilterRequest? filter,
             VideoOrganizerDbContext db,
+            HttpContext http,
             CancellationToken ct) =>
         {
+            // How many videos matched the filter but were suppressed by the
+            // hidden-by-default auto-hide (#84). Surfaced as a response header so
+            // the browse bar can show an "N hidden" status without the hidden
+            // videos themselves leaking into the result (issue: favorite count
+            // mismatch — the flag badge counts them, the grid hides them).
+            void ReportHidden(int n) => http.Response.Headers["X-Hidden-Count"] = n.ToString();
+
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled)
                 .Select(s => s.Path).ToListAsync(ct);
 
@@ -1598,7 +1710,10 @@ public static class ApiEndpoints
             // to filter against anyway — return an empty list so the
             // browse page can render its empty state instead of a 500.
             if (enabledRoots.Count == 0)
+            {
+                ReportHidden(0);
                 return Results.Ok(new List<VideoDto>());
+            }
 
             // Build the SQL-side candidates query. The base filter is the
             // enabled-VideoSet path-prefix predicate; SearchQuery (when
@@ -1607,7 +1722,9 @@ public static class ApiEndpoints
             // instead of yanking every video into memory and filtering.
             var candidatesQuery = IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+                // Clips already exported to their own file (#69) are hidden from
+                // the library — the standalone export stands in for them.
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)) && !v.ClipExported);
 
             var searchQuery = filter?.SearchQuery?.Trim();
             if (!string.IsNullOrEmpty(searchQuery))
@@ -1618,27 +1735,167 @@ public static class ApiEndpoints
                     EF.Functions.ILike(v.FilePath, pat) ||
                     EF.Functions.ILike(v.Notes, pat) ||
                     (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
-                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)));
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)) ||
+                    // On-screen text found by an OCR scan (issue #5).
+                    v.OcrTextLines.Any(o => EF.Functions.ILike(o.Text, pat)));
             }
-
-            var candidates = await candidatesQuery.ToListAsync(ct);
-
-            var lookup = await LoadTagLookupAsync(db, ct);
 
             var required = filter?.Required ?? new();
             var optional = filter?.Optional ?? new();
             var excluded = filter?.Excluded ?? new();
 
-            var matched = candidates.Where(v =>
-            {
-                if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
-                if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
-                if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
-                return true;
-            }).ToList();
+            // Hidden-by-default tags (issue #84): videos carrying one are
+            // suppressed UNLESS the user explicitly filters for that tag
+            // (Required/Optional). Tags the user opted into via the filter are
+            // removed from the auto-hide set so "filter for it to see it" works.
+            var referencedTagIds = required.Concat(optional)
+                .Where(f => f.Type == FilterRefType.Tag && Guid.TryParse(f.Value, out _))
+                .Select(f => Guid.Parse(f.Value))
+                .ToHashSet();
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
 
-            return Results.Ok(matched.Select(ToDto).ToList());
-        }).WithName("FilterVideos");
+            // Push every safely-translatable slot into SQL (#127), but NOT the
+            // auto-hide — we apply that last, in memory, so we can also count how
+            // many matches it suppressed. When a Folder filter is present the
+            // query is still narrowed by everything else; the residual in-memory
+            // pass below applies the exact MatchesFilter semantics over that
+            // (much smaller) set.
+            var (narrowed, needsInMemory) =
+                VideoFilterTranslator.Apply(candidatesQuery, required, optional, excluded, Array.Empty<Guid>());
+
+            // All videos matching the filter, BEFORE auto-hide suppression.
+            List<Video> matchedAll;
+            if (!needsInMemory)
+            {
+                matchedAll = await narrowed.ToListAsync(ct);
+            }
+            else
+            {
+                var lookup = await LoadTagLookupAsync(db, ct);
+                var candidates = await narrowed.ToListAsync(ct);
+                matchedAll = candidates.Where(v =>
+                {
+                    if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
+                    if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
+                    if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
+                    return true;
+                }).ToList();
+            }
+
+            // Suppress hidden-by-default tags from the result, and report how many
+            // were suppressed so the UI can say "N hidden".
+            var visible = autoHideTagIds.Count == 0
+                ? matchedAll
+                : matchedAll.Where(v => !v.VideoTags.Any(vt => autoHideTagIds.Contains(vt.TagId))).ToList();
+            ReportHidden(matchedAll.Count - visible.Count);
+
+            return Results.Ok(visible.Select(ToDto).ToList());
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("FilterVideos");
+
+        // Keyset-paginated variant of /videos/filter (#127). Same filter body;
+        // pagination via query params: sort (shuffle|fileName|fileSize|duration|
+        // folderFile), dir (asc|desc), limit, cursor (opaque), seed (shuffle).
+        // Returns one page + the cursor for the next, so the browser never pulls
+        // the whole matched set at once.
+        api.MapPost("/videos/filter-page", async (
+            PlaylistFilterRequest? filter,
+            string? sort, string? dir, int? limit, string? cursor, string? seed,
+            VideoOrganizerDbContext db,
+            CancellationToken ct) =>
+        {
+            var enabledRoots = await db.VideoSets.Where(s => s.Enabled)
+                .Select(s => s.Path).ToListAsync(ct);
+            if (enabledRoots.Count == 0)
+                return Results.Ok(new FilteredVideosPage(Array.Empty<VideoDto>(), null, 0, 0));
+
+            var candidatesQuery = IncludeForVideoDto(db.Videos)
+                .AsNoTracking()
+                // Clips already exported to their own file (#69) are hidden from
+                // the library — the standalone export stands in for them.
+                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)) && !v.ClipExported);
+
+            var searchQuery = filter?.SearchQuery?.Trim();
+            if (!string.IsNullOrEmpty(searchQuery))
+            {
+                var pat = $"%{SqlHelpers.EscapeLikePattern(searchQuery)}%";
+                candidatesQuery = candidatesQuery.Where(v =>
+                    EF.Functions.ILike(v.FileName, pat) ||
+                    EF.Functions.ILike(v.FilePath, pat) ||
+                    EF.Functions.ILike(v.Notes, pat) ||
+                    (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
+                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)) ||
+                    // On-screen text found by an OCR scan (issue #5).
+                    v.OcrTextLines.Any(o => EF.Functions.ILike(o.Text, pat)));
+            }
+
+            var required = filter?.Required ?? new();
+            var optional = filter?.Optional ?? new();
+            var excluded = filter?.Excluded ?? new();
+            var referencedTagIds = required.Concat(optional)
+                .Where(f => f.Type == FilterRefType.Tag && Guid.TryParse(f.Value, out _))
+                .Select(f => Guid.Parse(f.Value))
+                .ToHashSet();
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
+
+            // Total auto-hidden matches (whole filter, not just this page) for the
+            // "N hidden" status — count of filter-matching rows carrying a hidden tag.
+            var hiddenCount = 0;
+            if (autoHideTagIds.Count > 0)
+            {
+                var (allMatches, _) = VideoFilterTranslator.Apply(
+                    candidatesQuery, required, optional, excluded, Array.Empty<Guid>());
+                var hiddenIds = autoHideTagIds.ToList();
+                hiddenCount = await allMatches.CountAsync(v => v.VideoTags.Any(vt => hiddenIds.Contains(vt.TagId)), ct);
+            }
+
+            // Apply the filter with auto-hide suppressed in SQL so pages exclude
+            // hidden rows. Folder filters can't translate → fall back to the
+            // full in-memory pass (no cursor; the client windows it).
+            var (narrowed, needsInMemory) =
+                VideoFilterTranslator.Apply(candidatesQuery, required, optional, excluded, autoHideTagIds);
+
+            if (needsInMemory)
+            {
+                var lookup = await LoadTagLookupAsync(db, ct);
+                var loaded = await narrowed.ToListAsync(ct);
+                var matched = loaded.Where(v =>
+                {
+                    if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
+                    if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
+                    if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
+                    return true;
+                }).ToList();
+                return Results.Ok(new FilteredVideosPage(matched.Select(ToDto).ToList(), null, matched.Count, hiddenCount));
+            }
+
+            // Full match count (visible, after auto-hide) for the "video N of M"
+            // badge — the client only holds the pages it has scrolled to.
+            var totalCount = await narrowed.CountAsync(ct);
+
+            var pageSize = Math.Clamp(limit ?? 48, 1, 200);
+            var mode = VideoPagination.ParseSort(sort);
+            var descending = dir == "desc";
+            var theSeed = string.IsNullOrEmpty(seed) ? "0" : seed!;
+            var cur = VideoPagination.Decode(cursor);
+
+            // Fetch pageSize + 1 to know whether a further page exists.
+            var rows = await VideoPagination.OrderAndSeek(narrowed, mode, descending, cur, theSeed)
+                .Take(pageSize + 1)
+                .ToListAsync(ct);
+
+            string? nextCursor = null;
+            if (rows.Count > pageSize)
+            {
+                var last = rows[pageSize - 1];
+                nextCursor = VideoPagination.Encode(
+                    new VideoPagination.Cursor(VideoPagination.KeyOf(last, mode, theSeed), last.Id));
+                rows = rows.Take(pageSize).ToList();
+            }
+
+            return Results.Ok(new FilteredVideosPage(rows.Select(ToDto).ToList(), nextCursor, totalCount, hiddenCount));
+        }).Produces<FilteredVideosPage>(StatusCodes.Status200OK)
+          .WithName("FilterVideosPage");
 
         api.MapGet("/videos/{id:guid}", async (VideoOrganizerDbContext db, Guid id, CancellationToken ct) =>
         {
@@ -1646,7 +1903,8 @@ public static class ApiEndpoints
                 .AsNoTracking()
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
             return video is null ? Results.NotFound() : Results.Ok(ToDto(video));
-        }).WithName("GetVideoById");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("GetVideoById");
 
         // Related videos: rank other videos by overlap with the current
         // video's tags. Tags weighted equally regardless of group.
@@ -1668,16 +1926,24 @@ public static class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled)
                 .Select(s => s.Path).ToListAsync(ct);
 
+            // Hidden-by-default videos never surface as "related" (#84).
+            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, Array.Empty<Guid>(), ct);
+
             IQueryable<Video> q = IncludeForVideoDto(db.Videos)
                 .AsNoTracking()
                 .Where(v => v.Id != id)
                 .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)));
+            if (autoHideTagIds.Count > 0)
+            {
+                var hidden = autoHideTagIds.ToList();
+                q = q.Where(v => !v.VideoTags.Any(vt => hidden.Contains(vt.TagId)));
+            }
 
             if (tagIds.Count == 0)
             {
                 // No tags to rank by — random sample.
                 var allIds = await q.Select(v => v.Id).ToListAsync(ct);
-                var rng = new Random();
+                var rng = Random.Shared;
                 var pickedIds = allIds.OrderBy(_ => rng.Next()).Take(limit).ToHashSet();
                 if (pickedIds.Count == 0) return Results.Ok(Array.Empty<VideoDto>());
                 var fallback = await IncludeForVideoDto(db.Videos)
@@ -1687,29 +1953,28 @@ public static class ApiEndpoints
                 return Results.Ok(fallback.Select(ToDto).ToList());
             }
 
-            q = q.Where(v => v.VideoTags.Any(vt => tagIds.Contains(vt.TagId)));
-            var candidates = await q.ToListAsync(ct);
-            var ranked = candidates
-                .Select(v => new
-                {
-                    Video = v,
-                    Score = v.VideoTags.Count(vt => tagIds.Contains(vt.TagId))
-                })
-                .OrderByDescending(x => x.Score)
-                .ThenByDescending(x => x.Video.IngestDate)
+            // Rank in SQL and take only `limit` rows, so we never materialize the
+            // entire tag-sharing candidate set (#127). Score = number of tags
+            // shared with the current video.
+            var tagIdList = tagIds.ToList();
+            var ranked = await q
+                .Where(v => v.VideoTags.Any(vt => tagIdList.Contains(vt.TagId)))
+                .OrderByDescending(v => v.VideoTags.Count(vt => tagIdList.Contains(vt.TagId)))
+                .ThenByDescending(v => v.IngestDate)
                 .Take(limit)
-                .Select(x => x.Video)
-                .ToList();
+                .ToListAsync(ct);
 
             return Results.Ok(ranked.Select(ToDto).ToList());
-        }).WithName("GetRelatedVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetRelatedVideos");
 
         api.MapPost("/videos", async (VideoOrganizerDbContext db, Video video, CancellationToken ct) =>
         {
             db.Videos.Add(video);
             await db.SaveChangesAsync(ct);
             return Results.CreatedAtRoute("GetVideoById", new { id = video.Id }, video);
-        }).WithName("CreateVideo");
+        }).Produces<Video>(StatusCodes.Status201Created)
+          .WithName("CreateVideo");
 
         // PUT /api/videos/{id} — full editable-field update. Tags managed via
         // /videos/{id}/tags, properties via /videos/{id}/properties.
@@ -1720,6 +1985,13 @@ public static class ApiEndpoints
             var video = await IncludeForVideoDto(db.Videos)
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video == null) return Results.NotFound();
+
+            // FileName is the displayed/used name and a non-null DB column;
+            // reject blank rather than silently storing an empty string.
+            if (string.IsNullOrWhiteSpace(input.FileName))
+                return Results.BadRequest(new { error = "FileName is required." });
+            if (input.WatchCount < 0)
+                return Results.BadRequest(new { error = "WatchCount cannot be negative." });
 
             video.FileName = input.FileName;
             video.IngestDate = input.IngestDate;
@@ -1773,6 +2045,165 @@ public static class ApiEndpoints
             return Results.NoContent();
         }).WithName("DeleteVideo");
 
+        // GET /api/videos/{id}/ocr?t=<seconds> — read on-screen text from the
+        // frame at time t (issue #5). Snapshots that frame with ffmpeg and runs
+        // it through the tesseract CLI. 503 (with an install hint) when
+        // tesseract isn't available.
+        api.MapGet("/videos/{id:guid}/ocr", async (
+            Guid id, double? t, VideoOrganizerDbContext db, OcrService ocr,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (!File.Exists(video.FilePath))
+                return Results.BadRequest(new { error = "The video's file is missing on disk." });
+
+            var seconds = Math.Max(0, t ?? 0);
+            // PNG (lossless) reads better than a JPEG snapshot for OCR.
+            var tmp = Path.Combine(Path.GetTempPath(), $"ocr_{Guid.NewGuid():N}.png");
+            try
+            {
+                var snapshot = await FFmpeg.Conversions.FromSnippet.Snapshot(
+                    video.FilePath, tmp, TimeSpan.FromSeconds(seconds));
+                await snapshot.Start(ct);
+
+                var text = await ocr.RecognizeAsync(tmp, ct);
+                return Results.Ok(new OcrResultDto(seconds, text));
+            }
+            catch (OcrService.OcrUnavailableException ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: 503);
+            }
+            catch (OperationCanceledException)
+            {
+                return Results.StatusCode(499);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "OCR failed for video {VideoId} at {Seconds}s", id, seconds);
+                return Results.Problem("Failed to read text from the frame.");
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort cleanup */ }
+            }
+        }).Produces<OcrResultDto>(StatusCodes.Status200OK)
+          .WithName("OcrVideoFrame");
+
+        // POST /api/videos/{id}/ocr-scan — start (or resume) a full-video OCR
+        // text scan (issue #5, ask 2). Returns 202 with the live progress;
+        // 409 if a scan is already running, 404/400 if the video or its file
+        // is gone. The scan runs in the background; poll the GET below.
+        api.MapPost("/videos/{id:guid}/ocr-scan", async (
+            Guid id, OcrScanService scanner, OcrScanProgress progress, CancellationToken ct) =>
+        {
+            var result = await scanner.TryStartAsync(id, ct);
+            return result switch
+            {
+                OcrScanService.StartResult.NotFound => Results.NotFound(),
+                OcrScanService.StartResult.FileMissing =>
+                    Results.BadRequest(new { error = "The video's file is missing on disk." }),
+                OcrScanService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "An OCR scan is already running." }),
+                _ => Results.Json(ToScanDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<OcrScanProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartOcrScan");
+
+        // GET /api/videos/{id}/ocr-scan — poll OCR scan progress. Returns the
+        // live snapshot while this video is scanning (or just finished); else a
+        // synthesized idle state from the durable resume marker + stored hit
+        // count, so the panel can render "scanned up to MM:SS, N hits" on load.
+        api.MapGet("/videos/{id:guid}/ocr-scan", async (
+            Guid id, OcrScanProgress progress, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var snap = progress.Snapshot();
+            if (snap.VideoId == id && (snap.Active || snap.Phase is not "idle"))
+                return Results.Ok(ToScanDto(snap));
+
+            var video = await db.Videos.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+
+            var hits = await db.OcrTextLines.CountAsync(o => o.VideoId == id, ct);
+            return Results.Ok(new OcrScanProgressDto(
+                Active: false,
+                ScannedThroughSeconds: video.OcrScannedThroughSeconds ?? 0,
+                DurationSeconds: video.Duration.TotalSeconds,
+                Hits: hits,
+                Phase: "idle",
+                Error: null));
+        }).Produces<OcrScanProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetOcrScanProgress");
+
+        // POST /api/videos/{id}/ocr-scan/stop — request the running scan stop.
+        // Cooperative: the scan halts after the current frame, keeping its
+        // resume marker so "Scan more" can pick up where it left off.
+        api.MapPost("/videos/{id:guid}/ocr-scan/stop", (
+            Guid id, OcrScanProgress progress) =>
+        {
+            var snap = progress.Snapshot();
+            if (snap.Active && snap.VideoId == id) progress.RequestStop();
+            return Results.Ok(ToScanDto(progress.Snapshot()));
+        }).Produces<OcrScanProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopOcrScan");
+
+        // GET /api/videos/{id}/ocr-text?q= — list a video's stored OCR hits in
+        // playhead order, optionally filtered to those containing q. Drives the
+        // results list (click a line → seek to its timestamp).
+        api.MapGet("/videos/{id:guid}/ocr-text", async (
+            Guid id, string? q, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var query = db.OcrTextLines.AsNoTracking().Where(o => o.VideoId == id);
+            if (!string.IsNullOrWhiteSpace(q))
+                query = query.Where(o => EF.Functions.ILike(o.Text, $"%{q.Trim()}%"));
+
+            var lines = await query
+                .OrderBy(o => o.TimeSeconds)
+                .Select(o => new OcrTextLineDto(o.TimeSeconds, o.Text))
+                .ToListAsync(ct);
+            return Results.Ok(lines);
+        }).Produces<List<OcrTextLineDto>>(StatusCodes.Status200OK)
+          .WithName("GetVideoOcrText");
+
+        // POST /api/library/remove-folder — drop every imported video under a
+        // folder from the library (issue #53). Files on disk are NOT touched;
+        // only the DB rows go, and EF cascades take their tags, properties,
+        // duplicate pairs, move logs, and clips with them. Clips reuse the
+        // parent's path, so the path-prefix match catches them too.
+        api.MapPost("/library/remove-folder", async (
+            RemoveFolderRequest req, VideoOrganizerDbContext db,
+            ILogger<Program> logger, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Path))
+                return Results.BadRequest(new { error = "No folder path provided." });
+
+            var folder = PathNormalizer.Normalize(Path.GetFullPath(req.Path)).TrimEnd('/');
+
+            // Guard: only a folder that sits under a configured source can be
+            // removed — keeps a stray/empty path from wiping unrelated rows.
+            var roots = await db.VideoSets.Select(s => s.Path).ToListAsync(ct);
+            var underSource = roots.Any(r =>
+            {
+                var root = PathNormalizer.Normalize(Path.GetFullPath(r)).TrimEnd('/');
+                return folder.Equals(root, StringComparison.OrdinalIgnoreCase)
+                    || folder.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase);
+            });
+            if (!underSource)
+                return Results.BadRequest(new { error = "That folder is not under any configured source." });
+
+            var prefix = folder + "/";
+            var victims = await db.Videos
+                .Where(v => v.FilePath.StartsWith(prefix))
+                .ToListAsync(ct);
+            db.Videos.RemoveRange(victims);
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "Removed folder {Folder} from library — {Count} video(s) purged", folder, victims.Count);
+            return Results.Ok(new RemoveFolderResponse(victims.Count));
+        }).Produces<RemoveFolderResponse>(StatusCodes.Status200OK)
+          .WithName("RemoveLibraryFolder");
+
         // POST /api/videos/{id}/move — move the video's file into another
         // folder under some enabled source (within or across sources).
         // Logged + reversible via file_move_logs; byte progress is reported
@@ -1780,7 +2211,8 @@ public static class ApiEndpoints
         // (issue #4)
         api.MapPost("/videos/{id:guid}/move", async (
             Guid id, MoveVideoRequest req, VideoOrganizerDbContext db,
-            FileMoveProgress progress, ILogger<Program> logger, CancellationToken ct) =>
+            FileMoveProgress progress, DirectoryScanCache scanCache,
+            ILogger<Program> logger, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.TargetDirectory))
                 return Results.BadRequest(new { error = "No target folder provided." });
@@ -1835,11 +2267,84 @@ public static class ApiEndpoints
                 MovedAt = DateTime.UtcNow
             });
             await db.SaveChangesAsync(ct);
+            // Only the folders that gained/lost the file have stale counts —
+            // evict those, not the whole cache, so the next browse stays fast
+            // right after a move. (issue #4)
+            EvictMovedDirs(scanCache, Path.GetDirectoryName(fromPath), targetDir);
             logger.LogInformation(
                 "Moved video {VideoId} ({FileName}) from {From} to {To}",
                 id, fileName, fromPath, dest);
             return await ReturnFreshDtoAsync(db, id, ct);
-        }).WithName("MoveVideo");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("MoveVideo");
+
+        // POST /api/videos/{id}/rename — rename the file in place (same folder,
+        // new base name; original extension kept). A same-volume File.Move, so
+        // it's instant. Child clips share the parent's file, so their FilePath
+        // is updated too. Rejects on name collision (the user picked the name).
+        // (issue #172)
+        api.MapPost("/videos/{id:guid}/rename", async (
+            Guid id, RenameVideoRequest req, VideoOrganizerDbContext db,
+            DirectoryScanCache scanCache, ILogger<Program> logger, CancellationToken ct) =>
+        {
+            var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+            if (video.ParentVideoId.HasValue)
+                return Results.BadRequest(new { error = "Clips share their parent's file and can't be renamed on their own." });
+            if (!File.Exists(video.FilePath))
+                return Results.BadRequest(new { error = "The video's file is missing on disk." });
+
+            // Sanitize to a bare file name (no path separators / illegal chars),
+            // and keep the original extension regardless of what the user typed.
+            var ext = Path.GetExtension(video.FilePath);
+            var invalid = Path.GetInvalidFileNameChars();
+            var cleaned = new string((req.NewName ?? string.Empty)
+                .Where(c => !invalid.Contains(c) && c != Path.DirectorySeparatorChar && c != Path.AltDirectorySeparatorChar)
+                .ToArray()).Trim().Trim('.');
+            if (ext.Length > 0 && cleaned.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+                cleaned = cleaned[..^ext.Length];
+            if (cleaned.Length == 0)
+                return Results.BadRequest(new { error = "Please provide a valid file name." });
+
+            var dir = Path.GetDirectoryName(video.FilePath) ?? ".";
+            var newFileName = cleaned + ext;
+            var dest = Path.Combine(dir, newFileName);
+            var fromPath = video.FilePath;
+            if (string.Equals(Path.GetFullPath(dest), Path.GetFullPath(fromPath), StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "That's already the file's name." });
+            if (File.Exists(dest))
+                return Results.BadRequest(new { error = "A file with that name already exists in this folder." });
+
+            try
+            {
+                File.Move(fromPath, dest);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to rename {Src} to {Dst}", fromPath, dest);
+                return Results.Problem($"Could not rename file: {ex.Message}");
+            }
+
+            var normalizedDest = PathNormalizer.Normalize(dest);
+            video.FilePath = normalizedDest;
+            video.FileName = newFileName;
+            // Child clips point at the same physical file — keep them in sync.
+            await db.Videos.Where(v => v.ParentVideoId == id)
+                .ExecuteUpdateAsync(s => s.SetProperty(v => v.FilePath, normalizedDest), ct);
+            db.FileMoveLogs.Add(new FileMoveLog
+            {
+                VideoId = id,
+                FileName = newFileName,
+                FromPath = PathNormalizer.Normalize(fromPath),
+                ToPath = normalizedDest,
+                MovedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync(ct);
+            EvictMovedDirs(scanCache, dir, dir);
+            logger.LogInformation("Renamed video {VideoId} from {From} to {To}", id, fromPath, dest);
+            return await ReturnFreshDtoAsync(db, id, ct);
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("RenameVideo");
 
         // GET /api/videos/{id}/move-progress — live byte progress for an
         // in-flight move/undo of this video; idle when nothing is moving it.
@@ -1849,7 +2354,8 @@ public static class ApiEndpoints
             return active && vid == id
                 ? Results.Ok(new MoveProgressDto(true, copied, total, phase))
                 : Results.Ok(new MoveProgressDto(false, 0, 0, "idle"));
-        }).WithName("GetMoveProgress");
+        }).Produces<MoveProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetMoveProgress");
 
         // GET /api/file-moves — recent moves, newest first, for the Moves
         // list + Undo. (issue #4)
@@ -1866,13 +2372,14 @@ public static class ApiEndpoints
                     m.RevertedAt.HasValue ? m.RevertedAt.Value.ToString("o") : null))
                 .ToListAsync(ct);
             return Results.Ok(moves);
-        }).WithName("ListFileMoves");
+        }).Produces<List<FileMoveLogDto>>(StatusCodes.Status200OK)
+          .WithName("ListFileMoves");
 
         // POST /api/file-moves/{moveId}/revert — undo a move by putting the
         // file back at its original path and restoring the row. (issue #4)
         api.MapPost("/file-moves/{moveId:guid}/revert", async (
             Guid moveId, VideoOrganizerDbContext db, FileMoveProgress progress,
-            ILogger<Program> logger, CancellationToken ct) =>
+            DirectoryScanCache scanCache, ILogger<Program> logger, CancellationToken ct) =>
         {
             var move = await db.FileMoveLogs.FirstOrDefaultAsync(m => m.Id == moveId, ct);
             if (move is null) return Results.NotFound();
@@ -1907,9 +2414,12 @@ public static class ApiEndpoints
             video.FilePath = PathNormalizer.Normalize(dest);
             move.RevertedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
+            // File moved back → evict only the affected folders. (issue #4)
+            EvictMovedDirs(scanCache, Path.GetDirectoryName(move.ToPath), Path.GetDirectoryName(dest));
             logger.LogInformation("Reverted move {MoveId}: {To} -> {From}", moveId, move.ToPath, dest);
             return await ReturnFreshDtoAsync(db, move.VideoId, ct);
-        }).WithName("RevertFileMove");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("RevertFileMove");
 
         // PUT /api/videos/{id}/tags — replace the tag set for a video.
         // Enforces TagGroup.AllowMultiple = false for single-value groups.
@@ -1921,11 +2431,133 @@ public static class ApiEndpoints
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
 
+            // Adding a tag counts as reviewing the video (#200): if the new set
+            // introduces any tag the video didn't already have, clear NeedsReview.
+            var hadTagIds = video.VideoTags.Select(vt => vt.TagId).ToHashSet();
+            var addedTag = req.TagIds.Any(t => !hadTagIds.Contains(t));
+
             var err = await ReplaceVideoTagsAsync(db, video, req.TagIds, logger, ct);
             if (err is not null) return Results.BadRequest(new { error = err });
+            if (addedTag) video.NeedsReview = false;
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("SetVideoTags");
+
+        // GET /api/videos/{id}/tag-suggestions — tags whose name or an alias
+        // appears in the video's file name or folder path, minus the ones
+        // already applied (issue #10). Lets the player offer "found these in
+        // the name — add them?" on demand. Whole-word/phrase matching on
+        // normalized text; file-name hits rank above folder hits.
+        api.MapGet("/videos/{id:guid}/tag-suggestions", async (
+            Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var video = await db.Videos.AsNoTracking()
+                .Include(v => v.VideoTags)
+                .FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+
+            var applied = video.VideoTags.Select(vt => vt.TagId).ToHashSet();
+
+            // Split the path into the file name and the folder segments that
+            // sit below the containing source root — matching the whole
+            // absolute path would drag in drive letters and system folders.
+            var norm = PathNormalizer.Normalize(video.FilePath);
+            var fileText = Path.GetFileNameWithoutExtension(norm);
+            var dir = Path.GetDirectoryName(norm)?.Replace('\\', '/') ?? string.Empty;
+            var roots = await db.VideoSets.Select(s => s.Path).ToListAsync(ct);
+            var setRoot = roots
+                .Select(p => PathNormalizer.Normalize(p).TrimEnd('/'))
+                .Where(r => norm.StartsWith(r + "/", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(r => r.Length)
+                .FirstOrDefault();
+            var folderText = setRoot != null && dir.Length > setRoot.Length
+                ? dir[(setRoot.Length + 1)..]
+                : Path.GetFileName(dir);
+
+            var fileHay = $" {NormalizeForMatch(fileText)} ";
+            var folderHay = $" {NormalizeForMatch(folderText)} ";
+            // Collapsed (separator-free) forms so a multi-word tag written
+            // without spaces still hits — "BobMarley" / "bobmarley" for the tag
+            // "Bob Marley" (issue #10 follow-up). The whole-word haystacks above
+            // can't catch that because the run has no separator to split on.
+            // collapsedMin keeps short tags from turning into substring noise.
+            var fileCollapsed = fileHay.Replace(" ", string.Empty);
+            var folderCollapsed = folderHay.Replace(" ", string.Empty);
+            const int collapsedMin = 4;
+
+            var tags = await db.Tags.AsNoTracking().Include(t => t.TagGroup).ToListAsync(ct);
+            var suggestions = new List<TagSuggestion>();
+            foreach (var t in tags)
+            {
+                if (applied.Contains(t.Id)) continue;
+
+                string? source = null;
+                string matched = string.Empty;
+                foreach (var candidate in new[] { t.Name }.Concat(t.Aliases))
+                {
+                    var cn = NormalizeForMatch(candidate);
+                    if (cn.Length < 2) continue; // 1-char tags match everything
+                    var cc = cn.Replace(" ", string.Empty); // collapsed tag
+
+                    var inFile = fileHay.Contains($" {cn} ", StringComparison.Ordinal)
+                        || (cc.Length >= collapsedMin && fileCollapsed.Contains(cc, StringComparison.Ordinal));
+                    if (inFile)
+                    {
+                        source = "File name";
+                        matched = candidate;
+                        break; // file-name hit is the best source; stop looking
+                    }
+                    if (source is null)
+                    {
+                        var inFolder = folderHay.Contains($" {cn} ", StringComparison.Ordinal)
+                            || (cc.Length >= collapsedMin && folderCollapsed.Contains(cc, StringComparison.Ordinal));
+                        if (inFolder)
+                        {
+                            source = "Folder";
+                            matched = candidate;
+                        }
+                    }
+                }
+                if (source is not null)
+                    suggestions.Add(new TagSuggestion(
+                        t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty, t.Name, source, matched));
+            }
+
+            var ordered = suggestions
+                .OrderByDescending(s => s.Source == "File name")
+                .ThenBy(s => s.TagGroupName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return Results.Ok(ordered);
+        }).WithName("GetTagSuggestions");
+
+        // GET /api/videos/{id}/tag-candidates — names parsed out of the file
+        // name + folder path as *potential new tags* for the Tag panel
+        // (issue #10). Unlike tag-suggestions this doesn't match the existing
+        // tag table — it just proposes raw candidate names; the client treats
+        // a picked candidate as a new tag (opens the create modal) and filters
+        // out any that already exist in the focused group.
+        api.MapGet("/videos/{id:guid}/tag-candidates", async (
+            Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
+            if (video is null) return Results.NotFound();
+
+            var norm = PathNormalizer.Normalize(video.FilePath);
+            var fileStem = Path.GetFileNameWithoutExtension(norm);
+            var dir = Path.GetDirectoryName(norm)?.Replace('\\', '/') ?? string.Empty;
+            var roots = await db.VideoSets.Select(s => s.Path).ToListAsync(ct);
+            var setRoot = roots
+                .Select(p => PathNormalizer.Normalize(p).TrimEnd('/'))
+                .Where(r => norm.StartsWith(r + "/", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(r => r.Length)
+                .FirstOrDefault();
+            var folderText = setRoot != null && dir.Length > setRoot.Length
+                ? dir[(setRoot.Length + 1)..]
+                : Path.GetFileName(dir);
+
+            return Results.Ok(ExtractTagCandidates(fileStem, folderText));
+        }).WithName("GetTagCandidates");
 
         api.MapPut("/videos/{id:guid}/properties", async (
             Guid id, SetPropertyValuesRequest req, VideoOrganizerDbContext db,
@@ -1942,23 +2574,28 @@ public static class ApiEndpoints
         api.MapPost("/videos/{id:guid}/mark-for-deletion", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
+            // Flagging counts as reviewing it (#200): clear NeedsReview too.
             return await MarkAndMoveAsync(id, "_ToDelete",
-                v => v.MarkedForDeletion = true, db, logger, ct);
-        }).WithName("MarkVideoForDeletion");
+                v => { v.MarkedForDeletion = true; v.NeedsReview = false; }, db, logger, ct);
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("MarkVideoForDeletion");
 
         api.MapPost("/videos/{id:guid}/unmark-for-deletion", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
             return await UnmarkAndRestoreAsync(id, "_ToDelete",
                 v => v.MarkedForDeletion = false, db, logger, ct);
-        }).WithName("UnmarkVideoForDeletion");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("UnmarkVideoForDeletion");
 
         api.MapPost("/videos/{id:guid}/mark-playback-issue", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
+            // Flagging counts as reviewing it (#200): clear NeedsReview too.
             return await MarkAndMoveAsync(id, "_PlaybackIssue",
-                v => v.PlaybackIssue = true, db, logger, ct);
-        }).WithName("MarkVideoPlaybackIssue");
+                v => { v.PlaybackIssue = true; v.NeedsReview = false; }, db, logger, ct);
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("MarkVideoPlaybackIssue");
 
         // NeedsReview is structural but has no file-system side effect — just a
         // bool flip. Setting NeedsReview = false ("mark reviewed") is the
@@ -1988,7 +2625,8 @@ public static class ApiEndpoints
         {
             return await UnmarkAndRestoreAsync(id, "_PlaybackIssue",
                 v => v.PlaybackIssue = false, db, logger, ct);
-        }).WithName("UnmarkVideoPlaybackIssue");
+        }).Produces<VideoDto>(StatusCodes.Status200OK)
+          .WithName("UnmarkVideoPlaybackIssue");
 
         // Favorite is a plain boolean — no file-system side effect, just a
         // user-set flag rendered as ★ throughout the UI.
@@ -1998,6 +2636,7 @@ public static class ApiEndpoints
             var v = await db.Videos.FindAsync(new object[] { id }, ct);
             if (v is null) return Results.NotFound();
             v.IsFavorite = true;
+            v.NeedsReview = false; // flagging counts as reviewing it (#200)
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("MarkVideoFavorite");
@@ -2011,6 +2650,29 @@ public static class ApiEndpoints
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("UnmarkVideoFavorite");
+
+        // Clip flag (#167) — user-settable umbrella so imported standalone clips
+        // can be marked. (Embedded/exported clips are flagged automatically.)
+        api.MapPost("/videos/{id:guid}/mark-clip", async (
+            Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var v = await db.Videos.FindAsync(new object[] { id }, ct);
+            if (v is null) return Results.NotFound();
+            v.IsClip = true;
+            v.NeedsReview = false; // flagging counts as reviewing it (#200)
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        }).WithName("MarkVideoClip");
+
+        api.MapPost("/videos/{id:guid}/unmark-clip", async (
+            Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var v = await db.Videos.FindAsync(new object[] { id }, ct);
+            if (v is null) return Results.NotFound();
+            v.IsClip = false;
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        }).WithName("UnmarkVideoClip");
 
         api.MapPost("/videos/{id:guid}/watched", async (
             Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
@@ -2080,7 +2742,8 @@ public static class ApiEndpoints
                 Notes = parent.Notes,
                 ParentVideoId = parent.Id,
                 ClipStartSeconds = start,
-                ClipEndSeconds = end
+                ClipEndSeconds = end,
+                IsClip = true   // embedded clip → Clip flag (#167)
             };
 
             // Inherit parent tags.
@@ -2110,13 +2773,328 @@ public static class ApiEndpoints
                 .AsNoTracking()
                 .Where(v => v.ParentVideoId == parentId
                     && v.ClipStartSeconds != null
-                    && v.ClipEndSeconds != null)
+                    && v.ClipEndSeconds != null
+                    // A deleted (marked-for-deletion) child clip drops its band
+                    // from the parent's scrubber (#69 follow-up).
+                    && !v.MarkedForDeletion)
                 .OrderBy(v => v.ClipStartSeconds)
                 .Select(v => new ClipSummaryDto(
-                    v.Id, v.FileName, v.ClipStartSeconds!.Value, v.ClipEndSeconds!.Value))
+                    v.Id, v.FileName, v.ClipStartSeconds!.Value, v.ClipEndSeconds!.Value, v.ClipExported))
                 .ToListAsync(ct);
             return Results.Ok(clips);
-        }).WithName("GetClipsOfParent");
+        }).Produces<List<ClipSummaryDto>>(StatusCodes.Status200OK)
+          .WithName("GetClipsOfParent");
+
+        // GET /api/clips-export/queue — parents that still have un-exported
+        // clips, each with its clips (issue #69). Drives the clips-export page.
+        api.MapGet("/clips-export/queue", async (
+            VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var clips = await db.Videos.AsNoTracking()
+                .Where(v => v.ParentVideoId != null && !v.ClipExported && !v.MarkedForDeletion
+                    && v.ClipStartSeconds != null && v.ClipEndSeconds != null)
+                .Select(v => new
+                {
+                    v.Id,
+                    v.FileName,
+                    ParentId = v.ParentVideoId!.Value,
+                    Start = v.ClipStartSeconds!.Value,
+                    End = v.ClipEndSeconds!.Value
+                })
+                .ToListAsync(ct);
+
+            var parentIds = clips.Select(c => c.ParentId).Distinct().ToList();
+            var parents = await db.Videos.AsNoTracking()
+                .Where(v => parentIds.Contains(v.Id))
+                .Select(v => new { v.Id, v.FileName, v.Duration })
+                .ToListAsync(ct);
+            var byId = parents.ToDictionary(p => p.Id);
+
+            var items = clips
+                .GroupBy(c => c.ParentId)
+                .Where(g => byId.ContainsKey(g.Key))
+                .Select(g => new ClipExportQueueItemDto(
+                    g.Key,
+                    byId[g.Key].FileName,
+                    byId[g.Key].Duration.TotalSeconds,
+                    g.OrderBy(c => c.Start)
+                     .Select(c => new ClipSummaryDto(c.Id, c.FileName, c.Start, c.End, false))
+                     .ToList()))
+                .OrderBy(i => i.ParentFileName)
+                .ToList();
+            return Results.Ok(items);
+        }).Produces<List<ClipExportQueueItemDto>>(StatusCodes.Status200OK)
+          .WithName("GetClipExportQueue");
+
+        // GET /api/videos/{clipId}/keyframe-cut — the keyframe-snapped start the
+        // stream-copy export will actually use, for the page's preview (#69).
+        api.MapGet("/videos/{clipId:guid}/keyframe-cut", async (
+            Guid clipId, VideoOrganizerDbContext db, ClipExportService exporter,
+            CancellationToken ct) =>
+        {
+            var clip = await db.Videos.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == clipId, ct);
+            if (clip is null || clip.ParentVideoId is null
+                || clip.ClipStartSeconds is null || clip.ClipEndSeconds is null)
+                return Results.NotFound();
+
+            var parent = await db.Videos.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == clip.ParentVideoId, ct);
+            if (parent is null || !File.Exists(parent.FilePath))
+                return Results.NotFound();
+
+            var snapped = await exporter.GetSnappedStartAsync(
+                parent.FilePath, clip.ClipStartSeconds.Value, ct);
+            return Results.Ok(new KeyframeCutDto(
+                clip.ClipStartSeconds.Value, snapped, clip.ClipEndSeconds.Value));
+        }).Produces<KeyframeCutDto>(StatusCodes.Status200OK)
+          .WithName("GetClipKeyframeCut");
+
+        // POST /api/clips-export — start a background export of the given clips
+        // (issue #69). 202 with progress; 409 if a run is already going.
+        api.MapPost("/clips-export", async (
+            ExportClipsRequest req, ClipExportService exporter,
+            ClipExportProgress progress, CancellationToken ct) =>
+        {
+            var items = req.Clips ?? Array.Empty<ExportClipItem>();
+            if (items.Count == 0) return Results.BadRequest(new { error = "No clips selected." });
+
+            var result = await exporter.TryStartAsync(items, ct);
+            return result switch
+            {
+                ClipExportService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "A clip export is already running." }),
+                ClipExportService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected clips can be exported." }),
+                _ => Results.Json(ToClipExportDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<ClipExportProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartClipExport");
+
+        // GET /api/clips-export — poll the export run's progress.
+        api.MapGet("/clips-export", (ClipExportProgress progress) =>
+            Results.Ok(ToClipExportDto(progress.Snapshot())))
+          .Produces<ClipExportProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetClipExportProgress");
+
+        // POST /api/clips-export/stop — ask the running export to stop after the
+        // current clip (already-exported clips stay exported).
+        api.MapPost("/clips-export/stop", (ClipExportProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToClipExportDto(progress.Snapshot()));
+        }).Produces<ClipExportProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopClipExport");
+
+        // === Remove blocked sections (issue #70) ============================
+
+        // GET /api/remove-blocks/queue — videos with "Hide" blocks that can be
+        // trimmed into a new file. VideoBlocks are a JSON column, so the Hide
+        // filter is applied in memory after loading the (non-clip) rows.
+        api.MapGet("/remove-blocks/queue", async (
+            VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var rows = await db.Videos.AsNoTracking()
+                .Where(v => v.ParentVideoId == null)
+                .Select(v => new { v.Id, v.FileName, v.Duration, v.VideoBlocks })
+                .ToListAsync(ct);
+
+            var items = rows
+                .Where(r => r.VideoBlocks.Any(b => b.VideoBlockType == Domain.Models.VideoBlockTypes.Hide))
+                .Select(r => new BlockRemovalQueueItemDto(
+                    r.Id, r.FileName, r.Duration.TotalSeconds,
+                    r.VideoBlocks
+                        .Where(b => b.VideoBlockType == Domain.Models.VideoBlockTypes.Hide)
+                        .OrderBy(b => b.OffsetInSeconds)
+                        .Select(b => new VideoBlockDto(b.OffsetInSeconds, b.LengthInSeconds,
+                            (Shared.Dto.VideoBlockTypes)(int)b.VideoBlockType))
+                        .ToList()))
+                .OrderBy(i => i.FileName)
+                .ToList();
+            return Results.Ok(items);
+        }).Produces<List<BlockRemovalQueueItemDto>>(StatusCodes.Status200OK)
+          .WithName("GetBlockRemovalQueue");
+
+        // POST /api/remove-blocks — start a background run that builds a trimmed
+        // file (Hide sections removed) for each video. 202 / 409 / 400.
+        api.MapPost("/remove-blocks", async (
+            RemoveBlocksRequest req, BlockRemovalService remover,
+            BlockRemovalProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count == 0) return Results.BadRequest(new { error = "No videos selected." });
+
+            var result = await remover.TryStartAsync(ids, ct);
+            return result switch
+            {
+                BlockRemovalService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "A block-removal run is already going." }),
+                BlockRemovalService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected videos have hidden sections." }),
+                _ => Results.Json(ToBlockRemovalDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<BlockRemovalProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartBlockRemoval");
+
+        // GET /api/remove-blocks — poll the run's progress.
+        api.MapGet("/remove-blocks", (BlockRemovalProgress progress) =>
+            Results.Ok(ToBlockRemovalDto(progress.Snapshot())))
+          .Produces<BlockRemovalProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetBlockRemovalProgress");
+
+        // POST /api/remove-blocks/stop — stop after the current video.
+        api.MapPost("/remove-blocks/stop", (BlockRemovalProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToBlockRemovalDto(progress.Snapshot()));
+        }).Produces<BlockRemovalProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopBlockRemoval");
+
+        // === Repair unplayable videos (issue #165) ==========================
+
+        // POST /api/repair — re-encode the given videos to browser-friendly
+        // H.264, producing a "<stem>_repaired.mp4" per video. 202 / 409 / 400.
+        api.MapPost("/repair", async (
+            RepairRequest req, RepairService repairer, RepairProgress progress,
+            CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count == 0) return Results.BadRequest(new { error = "No videos selected." });
+
+            var result = await repairer.TryStartAsync(ids, ct);
+            return result switch
+            {
+                RepairService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "A repair run is already going." }),
+                RepairService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected videos can be repaired." }),
+                _ => Results.Json(ToRepairDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<RepairProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartRepair");
+
+        // GET /api/repair — poll the repair run's progress.
+        api.MapGet("/repair", (RepairProgress progress) =>
+            Results.Ok(ToRepairDto(progress.Snapshot())))
+          .Produces<RepairProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetRepairProgress");
+
+        // POST /api/repair/stop — stop after the current video.
+        api.MapPost("/repair/stop", (RepairProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToRepairDto(progress.Snapshot()));
+        }).Produces<RepairProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopRepair");
+
+        // === Join (concatenate) videos (issue #163) =========================
+
+        // POST /api/join — concatenate the given videos (in order) into one new
+        // file. 202 / 409 (already running) / 400 (need ≥2).
+        api.MapPost("/join", async (
+            JoinRequest req, JoinService joiner, JoinProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count < 2) return Results.BadRequest(new { error = "Select at least two videos to join." });
+
+            var result = await joiner.TryStartAsync(ids, req.Reencode, req.Name, ct);
+            return result switch
+            {
+                JoinService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "A join is already running." }),
+                JoinService.StartResult.NotEnough =>
+                    Results.BadRequest(new { error = "Need at least two existing videos to join." }),
+                _ => Results.Json(ToJoinDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<JoinProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartJoin");
+
+        // GET /api/join — poll the join run's progress.
+        api.MapGet("/join", (JoinProgress progress) =>
+            Results.Ok(ToJoinDto(progress.Snapshot())))
+          .Produces<JoinProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetJoinProgress");
+
+        // POST /api/join/stop — stop the run.
+        api.MapPost("/join/stop", (JoinProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToJoinDto(progress.Snapshot()));
+        }).Produces<JoinProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopJoin");
+
+        // === Encode/convert to a profile (issue #164) =======================
+
+        // POST /api/encode — encode the given videos to the configured profile
+        // ("<stem>_encoded.mp4" each). 202 / 409 / 400.
+        api.MapPost("/encode", async (
+            EncodeRequest req, EncodeService encoder, EncodeProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count == 0) return Results.BadRequest(new { error = "No videos selected." });
+
+            var result = await encoder.TryStartAsync(ids, ct);
+            return result switch
+            {
+                EncodeService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "An encode is already running." }),
+                EncodeService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected videos can be encoded." }),
+                _ => Results.Json(ToEncodeDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<EncodeProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartEncode");
+
+        // GET /api/encode — poll the encode run's progress.
+        api.MapGet("/encode", (EncodeProgress progress) =>
+            Results.Ok(ToEncodeDto(progress.Snapshot())))
+          .Produces<EncodeProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetEncodeProgress");
+
+        // POST /api/encode/stop — stop after the current video.
+        api.MapPost("/encode/stop", (EncodeProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToEncodeDto(progress.Snapshot()));
+        }).Produces<EncodeProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopEncode");
+
+        // === Optimize for streaming (faststart) (issue #166) ================
+
+        // POST /api/optimize-streaming — faststart-remux the given videos in
+        // place (skips already-optimized / non-MP4). 202 / 409 / 400.
+        api.MapPost("/optimize-streaming", async (
+            OptimizeStreamingRequest req, StreamingOptimizeService optimizer,
+            StreamingOptimizeProgress progress, CancellationToken ct) =>
+        {
+            var ids = req.VideoIds ?? Array.Empty<Guid>();
+            if (ids.Count == 0) return Results.BadRequest(new { error = "No videos selected." });
+
+            var result = await optimizer.TryStartAsync(ids, ct);
+            return result switch
+            {
+                StreamingOptimizeService.StartResult.AlreadyRunning =>
+                    Results.Conflict(new { error = "An optimize run is already going." }),
+                StreamingOptimizeService.StartResult.NothingToDo =>
+                    Results.BadRequest(new { error = "None of the selected videos can be optimized." }),
+                _ => Results.Json(ToOptimizeDto(progress.Snapshot()), statusCode: 202),
+            };
+        }).Produces<StreamingOptimizeProgressDto>(StatusCodes.Status202Accepted)
+          .WithName("StartOptimizeStreaming");
+
+        // GET /api/optimize-streaming — poll the optimize run's progress.
+        api.MapGet("/optimize-streaming", (StreamingOptimizeProgress progress) =>
+            Results.Ok(ToOptimizeDto(progress.Snapshot())))
+          .Produces<StreamingOptimizeProgressDto>(StatusCodes.Status200OK)
+          .WithName("GetOptimizeStreamingProgress");
+
+        // POST /api/optimize-streaming/stop — stop after the current video.
+        api.MapPost("/optimize-streaming/stop", (StreamingOptimizeProgress progress) =>
+        {
+            progress.RequestStop();
+            return Results.Ok(ToOptimizeDto(progress.Snapshot()));
+        }).Produces<StreamingOptimizeProgressDto>(StatusCodes.Status200OK)
+          .WithName("StopOptimizeStreaming");
 
         api.MapGet("/videos/marked-for-deletion", async (
             VideoOrganizerDbContext db, CancellationToken ct) =>
@@ -2127,7 +3105,40 @@ public static class ApiEndpoints
                 .OrderBy(v => v.FilePath)
                 .ToListAsync(ct);
             return Results.Ok(videos.Select(ToDto).ToList());
-        }).WithName("GetMarkedForDeletionVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetMarkedForDeletionVideos");
+
+        // GET /api/videos/purge-clip-warnings — parents marked for deletion that
+        // still have embedded (non-exported, non-deleted) clips (#174). Purging
+        // them loses those clip ranges, so the Purge page warns + offers export.
+        api.MapGet("/videos/purge-clip-warnings", async (
+            VideoOrganizerDbContext db, CancellationToken ct) =>
+        {
+            var marked = await db.Videos.AsNoTracking()
+                .Where(v => v.MarkedForDeletion && v.ParentVideoId == null)
+                .Select(v => new { v.Id, v.FileName })
+                .ToListAsync(ct);
+            if (marked.Count == 0)
+                return Results.Ok(new List<PurgeClipWarningDto>());
+
+            var ids = marked.Select(m => m.Id).ToList();
+            var counts = await db.Videos.AsNoTracking()
+                .Where(c => c.ParentVideoId != null && ids.Contains(c.ParentVideoId.Value)
+                    && !c.ClipExported && !c.MarkedForDeletion
+                    && c.ClipStartSeconds != null && c.ClipEndSeconds != null)
+                .GroupBy(c => c.ParentVideoId!.Value)
+                .Select(g => new { ParentId = g.Key, Count = g.Count() })
+                .ToListAsync(ct);
+            var countById = counts.ToDictionary(x => x.ParentId, x => x.Count);
+
+            var result = marked
+                .Where(m => countById.ContainsKey(m.Id))
+                .Select(m => new PurgeClipWarningDto(m.Id, m.FileName, countById[m.Id]))
+                .OrderBy(w => w.FileName)
+                .ToList();
+            return Results.Ok(result);
+        }).Produces<List<PurgeClipWarningDto>>(StatusCodes.Status200OK)
+          .WithName("GetPurgeClipWarnings");
 
         // List of videos flagged with PlaybackIssue. Mirrors the
         // marked-for-deletion list and powers the /playback-issues
@@ -2141,7 +3152,8 @@ public static class ApiEndpoints
                 .OrderBy(v => v.FilePath)
                 .ToListAsync(ct);
             return Results.Ok(videos.Select(ToDto).ToList());
-        }).WithName("GetPlaybackIssueVideos");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetPlaybackIssueVideos");
 
         // Reveal the file in the host OS's file manager (Explorer /
         // Finder / xdg-open). Loopback-gated: launching processes for a
@@ -2153,7 +3165,7 @@ public static class ApiEndpoints
             Guid id, VideoOrganizerDbContext db, HttpContext http,
             ILogger<Program> logger, CancellationToken ct) =>
         {
-            if (!IsLocalRequest(http)) return Results.Forbid();
+            if (!IsLocalRequest(http)) return Results.StatusCode(403);
 
             var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
@@ -2163,7 +3175,7 @@ public static class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             var fullPath = Path.GetFullPath(video.FilePath);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             try
             {
@@ -2232,7 +3244,7 @@ public static class ApiEndpoints
             Guid id, VideoOrganizerDbContext db, HttpContext http,
             ILogger<Program> logger, CancellationToken ct) =>
         {
-            if (!IsLocalRequest(http)) return Results.Forbid();
+            if (!IsLocalRequest(http)) return Results.StatusCode(403);
 
             var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
@@ -2242,7 +3254,7 @@ public static class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             var fullPath = Path.GetFullPath(video.FilePath);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             var dir = Path.GetDirectoryName(fullPath);
             if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
@@ -2300,7 +3312,7 @@ public static class ApiEndpoints
             Guid id, VideoOrganizerDbContext db, HttpContext http,
             ILogger<Program> logger, CancellationToken ct) =>
         {
-            if (!IsLocalRequest(http)) return Results.Forbid();
+            if (!IsLocalRequest(http)) return Results.StatusCode(403);
 
             var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
@@ -2310,7 +3322,7 @@ public static class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             var fullPath = Path.GetFullPath(video.FilePath);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             try
             {
@@ -2357,7 +3369,8 @@ public static class ApiEndpoints
                     "ffprobe failed for video {VideoId} at {Path}", video.Id, fullPath);
                 return Results.Problem($"ffprobe failed: {ex.Message}");
             }
-        }).WithName("RunFfprobeOnVideo");
+        }).Produces<FfprobeResultDto>(StatusCodes.Status200OK)
+          .WithName("RunFfprobeOnVideo");
 
         api.MapPost("/videos/{id:guid}/purge", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
@@ -2505,7 +3518,7 @@ public static class ApiEndpoints
             var fullPath = Path.GetFullPath(path);
             var enabledRoots = await dbContext.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             var contentType = Path.GetExtension(fullPath).ToLowerInvariant() switch
             {
@@ -2541,7 +3554,7 @@ public static class ApiEndpoints
             var fullPath = Path.GetFullPath(path);
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             var prefix = fullPath.Replace('\\', '/').TrimEnd('/');
             var query = IncludeForVideoDto(db.Videos)
@@ -2562,7 +3575,8 @@ public static class ApiEndpoints
             }
 
             return Results.Ok(list.Select(ToDto).ToList());
-        }).WithName("GetVideosByFolder");
+        }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
+          .WithName("GetVideosByFolder");
 
         api.MapGet("/videos/{id:guid}/poster.jpg", async (
             VideoOrganizerDbContext db, Guid id, ILogger<Program> logger, HttpContext http, CancellationToken ct) =>
@@ -2575,7 +3589,7 @@ public static class ApiEndpoints
             var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             var fullPath = Path.GetFullPath(path);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             var mtime = File.GetLastWriteTimeUtc(fullPath);
             var keySource = $"poster|{fullPath}|{mtime.Ticks}";
@@ -2627,7 +3641,7 @@ public static class ApiEndpoints
             var fullPath = Path.GetFullPath(path);
             var enabledRoots = await dbContext.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
             if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                return Results.Forbid();
+                return Results.StatusCode(403);
 
             try
             {
@@ -2660,833 +3674,27 @@ public static class ApiEndpoints
         }).WithName("GetVideoSpriteImage");
 
         // === Tag Groups =====================================================
-
-        var tagGroups = api.MapGroup("/tag-groups").WithTags("TagGroups");
-
-        tagGroups.MapGet("/", async (VideoOrganizerDbContext db, CancellationToken ct) =>
-        {
-            // Two queries instead of one-with-correlated-subquery. The
-            // earlier `db.Tags.Count(t => t.TagGroupId == g.Id)` inside
-            // the projection threw 500 on certain Npgsql/EF combos
-            // (specifically when TagGroups was empty or partially
-            // seeded). Pre-fetching the counts as a separate dictionary
-            // sidesteps the correlated-subquery translation entirely.
-            var counts = await db.Tags.AsNoTracking()
-                .GroupBy(t => t.TagGroupId)
-                .Select(g => new { TagGroupId = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.TagGroupId, x => x.Count, ct);
-
-            // For each group, count distinct videos that have at least
-            // one tag from that group. Subtracting from the total
-            // video count gives the "Missing / None" badge value the
-            // browse sidebar shows next to the missing-leaf for each
-            // group. Distinct over (TagGroupId, VideoId) avoids
-            // counting a video twice if it has multiple tags in the
-            // same group.
-            var totalVideos = await db.Videos.CountAsync(ct);
-            var videosWithTagInGroup = await db.VideoTags.AsNoTracking()
-                .Where(vt => vt.Tag != null)
-                .Select(vt => new { vt.Tag!.TagGroupId, vt.VideoId })
-                .Distinct()
-                .GroupBy(x => x.TagGroupId)
-                .Select(g => new { TagGroupId = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.TagGroupId, x => x.Count, ct);
-
-            var groups = await db.TagGroups.AsNoTracking()
-                .OrderBy(g => g.SortOrder).ThenBy(g => g.Name)
-                .Select(g => new { g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes })
-                .ToListAsync(ct);
-
-            var rows = groups.Select(g => new TagGroupDto(
-                g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes,
-                counts.GetValueOrDefault(g.Id, 0),
-                Math.Max(0, totalVideos - videosWithTagInGroup.GetValueOrDefault(g.Id, 0)))).ToList();
-            return Results.Ok(rows);
-        }).WithName("ListTagGroups");
-
-        tagGroups.MapGet("/{id:guid}", async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
-        {
-            var g = await db.TagGroups.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
-            if (g is null) return Results.NotFound();
-            var count = await db.Tags.CountAsync(t => t.TagGroupId == id, ct);
-            return Results.Ok(new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, count));
-        }).WithName("GetTagGroup");
-
-        tagGroups.MapPost("/", async (
-            CreateTagGroupRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
-            if (await db.TagGroups.AnyAsync(g => g.Name == req.Name, ct))
-                return Results.Conflict(new { error = "A tag group with that name already exists." });
-            var g = new TagGroup
-            {
-                Id = Guid.NewGuid(),
-                Name = req.Name,
-                AllowMultiple = req.AllowMultiple,
-                DisplayAsCheckboxes = req.DisplayAsCheckboxes,
-                SortOrder = req.SortOrder,
-                Notes = req.Notes
-            };
-            db.TagGroups.Add(g);
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation(
-                "Created TagGroup {TagGroupId} '{Name}' (allowMultiple={AllowMultiple}, checkboxes={Checkboxes})",
-                g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes);
-            return Results.Created($"/api/tag-groups/{g.Id}",
-                new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, 0));
-        }).WithName("CreateTagGroup");
-
-        tagGroups.MapPut("/{id:guid}", async (
-            Guid id, UpdateTagGroupRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var g = await db.TagGroups.FirstOrDefaultAsync(x => x.Id == id, ct);
-            if (g is null) return Results.NotFound();
-            if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
-            if (await db.TagGroups.AnyAsync(x => x.Name == req.Name && x.Id != id, ct))
-                return Results.Conflict(new { error = "A tag group with that name already exists." });
-
-            // Capture meaningful before-state so we can flag policy changes —
-            // particularly AllowMultiple flipping true→false, which can leave
-            // existing videos with multi-tag assignments that violate the new
-            // rule. The DB doesn't repair those automatically.
-            var oldName = g.Name;
-            var oldAllowMultiple = g.AllowMultiple;
-
-            g.Name = req.Name;
-            g.AllowMultiple = req.AllowMultiple;
-            g.DisplayAsCheckboxes = req.DisplayAsCheckboxes;
-            g.SortOrder = req.SortOrder;
-            g.Notes = req.Notes;
-            await db.SaveChangesAsync(ct);
-
-            if (oldAllowMultiple && !req.AllowMultiple)
-            {
-                // Count videos currently violating the new policy so the
-                // operator can decide whether to clean them up.
-                var orphans = await db.VideoTags
-                    .Where(vt => vt.Tag!.TagGroupId == id)
-                    .GroupBy(vt => vt.VideoId)
-                    .Where(grp => grp.Count() > 1)
-                    .CountAsync(ct);
-                logger.LogWarning(
-                    "TagGroup {TagGroupId} '{Name}' AllowMultiple flipped true→false — {ViolatingVideos} videos now have multi-tag assignments that violate the new single-value rule (existing rows are NOT cleaned up automatically)",
-                    g.Id, g.Name, orphans);
-            }
-
-            logger.LogInformation(
-                "Updated TagGroup {TagGroupId}: '{OldName}'→'{NewName}', allowMultiple={AllowMultiple}, checkboxes={Checkboxes}",
-                g.Id, oldName, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes);
-            return Results.NoContent();
-        }).WithName("UpdateTagGroup");
-
-        tagGroups.MapDelete("/{id:guid}", async (
-            Guid id, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var g = await db.TagGroups.FirstOrDefaultAsync(x => x.Id == id, ct);
-            if (g is null) return Results.NotFound();
-
-            // Count what's about to cascade away so the audit log answers
-            // "I deleted a TagGroup — what data went with it?".
-            var tagCount = await db.Tags.CountAsync(t => t.TagGroupId == id, ct);
-            var videoTagCount = await db.VideoTags.CountAsync(vt => vt.Tag!.TagGroupId == id, ct);
-            var propDefCount = await db.PropertyDefinitions.CountAsync(p => p.TagGroupId == id, ct);
-
-            db.TagGroups.Remove(g);  // cascades to tags + property defs
-            await db.SaveChangesAsync(ct);
-            logger.LogWarning(
-                "Deleted TagGroup {TagGroupId} '{Name}' — cascaded {TagCount} tags ({VideoTagCount} VideoTag rows) and {PropertyDefinitionCount} property definitions",
-                g.Id, g.Name, tagCount, videoTagCount, propDefCount);
-            return Results.NoContent();
-        }).WithName("DeleteTagGroup");
+        MapTagGroupEndpoints(api);
 
         // === Tags ===========================================================
-
-        var tagsGroup = api.MapGroup("/tags").WithTags("Tags");
-
-        // GET /api/tags?groupId=&withCounts=&q=
-        tagsGroup.MapGet("/", async (
-            Guid? groupId,
-            bool? withCounts,
-            string? q,
-            VideoOrganizerDbContext db,
-            CancellationToken ct) =>
-        {
-            IQueryable<Tag> query = db.Tags.AsNoTracking().Include(t => t.TagGroup);
-            if (groupId.HasValue) query = query.Where(t => t.TagGroupId == groupId.Value);
-            if (!string.IsNullOrWhiteSpace(q))
-            {
-                var lower = q.Trim().ToLower();
-                query = query.Where(t => t.Name.ToLower().Contains(lower));
-            }
-            var rows = await query
-                .OrderBy(t => t.TagGroup!.SortOrder)
-                .ThenBy(t => t.SortOrder)
-                .ThenBy(t => t.Name)
-                .ToListAsync(ct);
-
-            Dictionary<Guid, int> counts = new();
-            if (withCounts == true)
-            {
-                var tagIds = rows.Select(t => t.Id).ToList();
-                counts = await db.VideoTags.AsNoTracking()
-                    .Where(vt => tagIds.Contains(vt.TagId))
-                    .GroupBy(vt => vt.TagId)
-                    .Select(g => new { TagId = g.Key, Count = g.Count() })
-                    .ToDictionaryAsync(x => x.TagId, x => x.Count, ct);
-            }
-
-            var dtos = rows.Select(t => new TagDto(
-                t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty,
-                t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes,
-                counts.TryGetValue(t.Id, out var c) ? c : 0)).ToList();
-            return Results.Ok(dtos);
-        }).WithName("ListTags");
-
-        tagsGroup.MapGet("/{id:guid}", async (Guid id, VideoOrganizerDbContext db, CancellationToken ct) =>
-        {
-            var t = await db.Tags.AsNoTracking()
-                .Include(x => x.TagGroup)
-                .FirstOrDefaultAsync(x => x.Id == id, ct);
-            if (t is null) return Results.NotFound();
-            var count = await db.VideoTags.CountAsync(vt => vt.TagId == id, ct);
-            return Results.Ok(new TagDto(
-                t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty,
-                t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, count));
-        }).WithName("GetTag");
-
-        tagsGroup.MapPost("/", async (
-            CreateTagRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
-            if (!await db.TagGroups.AnyAsync(g => g.Id == req.TagGroupId, ct))
-                return Results.BadRequest(new { error = "TagGroup not found." });
-            if (await db.Tags.AnyAsync(t => t.TagGroupId == req.TagGroupId && t.Name == req.Name, ct))
-                return Results.Conflict(new { error = "A tag with that name already exists in this group." });
-
-            var t = new Tag
-            {
-                Id = Guid.NewGuid(),
-                TagGroupId = req.TagGroupId,
-                Name = req.Name,
-                Aliases = req.Aliases?.ToList() ?? new(),
-                IsFavorite = req.IsFavorite,
-                SortOrder = req.SortOrder,
-                Notes = req.Notes
-            };
-            db.Tags.Add(t);
-            await db.SaveChangesAsync(ct);
-
-            var grp = await db.TagGroups.AsNoTracking().FirstAsync(g => g.Id == t.TagGroupId, ct);
-            logger.LogInformation(
-                "Created Tag {TagId} '{Name}' in TagGroup {TagGroupId} '{GroupName}' ({AliasCount} aliases)",
-                t.Id, t.Name, t.TagGroupId, grp.Name, t.Aliases.Count);
-            return Results.Created($"/api/tags/{t.Id}",
-                new TagDto(t.Id, t.TagGroupId, grp.Name, t.Name, t.Aliases, t.IsFavorite, t.SortOrder, t.Notes, 0));
-        }).WithName("CreateTag");
-
-        tagsGroup.MapPut("/{id:guid}", async (
-            Guid id, UpdateTagRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var t = await db.Tags.FirstOrDefaultAsync(x => x.Id == id, ct);
-            if (t is null) return Results.NotFound();
-            if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
-
-            // Optional group move. VideoTag rows reference the tag by id, so
-            // re-pointing TagGroupId carries every existing video tagging
-            // into the new group untouched — exactly the contract a "I made
-            // this tag in the wrong group" fix needs. The name-uniqueness
-            // check below runs against the TARGET group so the move can't
-            // land on a name collision.
-            var targetGroupId = req.TagGroupId ?? t.TagGroupId;
-            if (targetGroupId != t.TagGroupId
-                && !await db.TagGroups.AnyAsync(g => g.Id == targetGroupId, ct))
-            {
-                return Results.BadRequest(new { error = "Target TagGroup not found." });
-            }
-            if (await db.Tags.AnyAsync(x => x.TagGroupId == targetGroupId && x.Name == req.Name && x.Id != id, ct))
-                return Results.Conflict(new { error = "A tag with that name already exists in this group." });
-
-            // Capture before-state so the log can show what actually changed —
-            // a tag rename + alias edit affects search/typeahead behavior, so
-            // it's worth being able to grep for "when did this tag get
-            // renamed".
-            var oldName = t.Name;
-            var oldAliasCount = t.Aliases.Count;
-            var oldGroupId = t.TagGroupId;
-
-            t.Name = req.Name;
-            t.Aliases = req.Aliases.ToList();
-            t.IsFavorite = req.IsFavorite;
-            t.SortOrder = req.SortOrder;
-            t.Notes = req.Notes;
-            t.TagGroupId = targetGroupId;
-            await db.SaveChangesAsync(ct);
-
-            if (oldGroupId != t.TagGroupId)
-            {
-                var attachedVideos = await db.VideoTags.CountAsync(vt => vt.TagId == id, ct);
-                logger.LogInformation(
-                    "Moved Tag {TagId} '{Name}' from TagGroup {OldGroupId} to {NewGroupId} ({AttachedVideos} video taggings preserved)",
-                    t.Id, t.Name, oldGroupId, t.TagGroupId, attachedVideos);
-            }
-            if (!string.Equals(oldName, t.Name, StringComparison.Ordinal))
-            {
-                logger.LogInformation(
-                    "Renamed Tag {TagId} '{OldName}'→'{NewName}' (aliases {OldAliasCount}→{NewAliasCount})",
-                    t.Id, oldName, t.Name, oldAliasCount, t.Aliases.Count);
-            }
-            else if (oldAliasCount != t.Aliases.Count)
-            {
-                logger.LogInformation(
-                    "Updated Tag {TagId} '{Name}' aliases ({OldAliasCount}→{NewAliasCount})",
-                    t.Id, t.Name, oldAliasCount, t.Aliases.Count);
-            }
-            return Results.NoContent();
-        }).WithName("UpdateTag");
-
-        tagsGroup.MapDelete("/{id:guid}", async (
-            Guid id, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var t = await db.Tags.FirstOrDefaultAsync(x => x.Id == id, ct);
-            if (t is null) return Results.NotFound();
-
-            // Pre-count cascaded rows so the audit log includes the blast
-            // radius, not just an opaque "deleted".
-            var videoTagCount = await db.VideoTags.CountAsync(vt => vt.TagId == id, ct);
-            var propValueCount = await db.TagPropertyValues.CountAsync(pv => pv.TagId == id, ct);
-
-            db.Tags.Remove(t);  // cascades VideoTag + TagPropertyValue
-            await db.SaveChangesAsync(ct);
-            logger.LogWarning(
-                "Deleted Tag {TagId} '{Name}' (group {TagGroupId}) — cascaded {VideoTagCount} VideoTag rows and {PropertyValueCount} TagPropertyValue rows",
-                t.Id, t.Name, t.TagGroupId, videoTagCount, propValueCount);
-            return Results.NoContent();
-        }).WithName("DeleteTag");
-
-        tagsGroup.MapPost("/merge", async (
-            MergeTagsRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            if (req.SourceIds.Contains(req.TargetId))
-            {
-                logger.LogWarning(
-                    "Tag merge rejected — target {TargetId} is also listed as a source",
-                    req.TargetId);
-                return Results.BadRequest(new { error = "Target must not be in sources." });
-            }
-            var target = await db.Tags.FirstOrDefaultAsync(t => t.Id == req.TargetId, ct);
-            if (target is null) return Results.NotFound(new { error = "Target tag not found." });
-            var sources = await db.Tags.Where(t => req.SourceIds.Contains(t.Id)).ToListAsync(ct);
-            if (sources.Any(s => s.TagGroupId != target.TagGroupId))
-            {
-                logger.LogWarning(
-                    "Tag merge rejected — sources {SourceIds} span TagGroups, but target {TargetId} is in TagGroup {TargetGroupId}",
-                    sources.Select(s => s.Id).ToArray(), target.Id, target.TagGroupId);
-                return Results.BadRequest(new { error = "All merged tags must belong to the same group." });
-            }
-
-            // Re-point video_tags from sources to target. VideoTag's PK is
-            // (VideoId, TagId), so EF Core won't let us mutate TagId in place
-            // — we delete the source rows and insert fresh target rows for
-            // any video that didn't already have the target.
-            var srcIds = sources.Select(s => s.Id).ToList();
-            var affected = await db.VideoTags
-                .Where(vt => srcIds.Contains(vt.TagId))
-                .ToListAsync(ct);
-            var alreadyHasTarget = await db.VideoTags
-                .Where(vt => vt.TagId == target.Id)
-                .Select(vt => vt.VideoId)
-                .ToListAsync(ct);
-            var alreadySet = new HashSet<Guid>(alreadyHasTarget);
-            var newlyAttached = new HashSet<Guid>();
-
-            foreach (var vt in affected)
-            {
-                db.VideoTags.Remove(vt);
-                if (!alreadySet.Contains(vt.VideoId) && newlyAttached.Add(vt.VideoId))
-                {
-                    db.VideoTags.Add(new VideoTag { VideoId = vt.VideoId, TagId = target.Id });
-                }
-            }
-
-            // Fold each source's name and aliases into the target's alias list
-            // so the search/typeahead can still find the target by what users
-            // typed for the merged-away tags. Case-insensitive dedup, and we
-            // never add anything that collides with the target's own name.
-            var existing = new HashSet<string>(target.Aliases, StringComparer.OrdinalIgnoreCase);
-            foreach (var s in sources)
-            {
-                if (!string.Equals(s.Name, target.Name, StringComparison.OrdinalIgnoreCase)
-                    && existing.Add(s.Name))
-                {
-                    target.Aliases.Add(s.Name);
-                }
-                foreach (var a in s.Aliases)
-                {
-                    if (!string.Equals(a, target.Name, StringComparison.OrdinalIgnoreCase)
-                        && existing.Add(a))
-                    {
-                        target.Aliases.Add(a);
-                    }
-                }
-            }
-
-            db.Tags.RemoveRange(sources);
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation(
-                "Merged tags {SourceIds} into {TargetId} ('{TargetName}', group {TargetGroupId}) — re-pointed {RepointedRows} VideoTag rows ({NewlyAttached} new attachments, {SkippedDuplicates} skipped because target was already attached), folded source names/aliases into target",
-                sources.Select(s => s.Id).ToArray(),
-                target.Id, target.Name, target.TagGroupId,
-                affected.Count, newlyAttached.Count, affected.Count - newlyAttached.Count);
-            return Results.Ok(new { mergedVideos = affected.Count, removedSources = sources.Count });
-        }).WithName("MergeTags");
-
-        // Unified search across all tag groups for the filter chip picker.
-        tagsGroup.MapGet("/search", async (
-            string q, VideoOrganizerDbContext db, CancellationToken ct) =>
-        {
-            if (string.IsNullOrWhiteSpace(q)) return Results.Ok(Array.Empty<TagSearchHit>());
-            var lower = q.Trim().ToLower();
-            const int limit = 40;
-
-            var matches = await db.Tags.AsNoTracking()
-                .Include(t => t.TagGroup)
-                .Where(t => t.Name.ToLower().Contains(lower))
-                .OrderBy(t => t.TagGroup!.SortOrder)
-                .ThenBy(t => t.Name)
-                .Take(limit)
-                .ToListAsync(ct);
-
-            var hits = matches.Select(t => new TagSearchHit(
-                t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty, t.Name, t.Aliases)).ToList();
-
-            // Fall back to alias matching if name-only didn't fill the limit.
-            if (hits.Count < limit)
-            {
-                var seen = hits.Select(h => h.TagId).ToHashSet();
-                var aliasCandidates = await db.Tags.AsNoTracking()
-                    .Include(t => t.TagGroup)
-                    .Where(t => !seen.Contains(t.Id))
-                    .ToListAsync(ct);
-                foreach (var t in aliasCandidates)
-                {
-                    if (hits.Count >= limit) break;
-                    if (t.Aliases.Any(a => a.ToLower().Contains(lower)))
-                    {
-                        hits.Add(new TagSearchHit(
-                            t.Id, t.TagGroupId, t.TagGroup?.Name ?? string.Empty, t.Name, t.Aliases));
-                    }
-                }
-            }
-
-            return Results.Ok(hits);
-        }).WithName("SearchTags");
-
-        // Replace property values on a tag.
-        tagsGroup.MapPut("/{id:guid}/properties", async (
-            Guid id, SetPropertyValuesRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var tag = await db.Tags.Include(t => t.PropertyValues)
-                .FirstOrDefaultAsync(t => t.Id == id, ct);
-            if (tag is null) return Results.NotFound();
-            await ReplaceTagPropertiesAsync(db, tag, req.Values, logger, ct);
-            await db.SaveChangesAsync(ct);
-            return Results.NoContent();
-        }).WithName("SetTagProperties");
+        MapTagEndpoints(api);
 
         // === Property definitions ===========================================
-
-        var props = api.MapGroup("/properties").WithTags("Properties");
-
-        props.MapGet("/", async (Guid? tagGroupId, VideoOrganizerDbContext db, CancellationToken ct) =>
-        {
-            IQueryable<PropertyDefinition> q = db.PropertyDefinitions.AsNoTracking();
-            if (tagGroupId.HasValue) q = q.Where(p => p.TagGroupId == tagGroupId.Value);
-            var rows = await q
-                .OrderBy(p => p.SortOrder).ThenBy(p => p.Name)
-                .Select(p => new PropertyDefinitionDto(
-                    p.Id, p.Name, (PropertyDataTypeDto)p.DataType, (PropertyScopeDto)p.Scope,
-                    p.TagGroupId, p.Required, p.SortOrder, p.Notes))
-                .ToListAsync(ct);
-            return Results.Ok(rows);
-        }).WithName("ListProperties");
-
-        props.MapPost("/", async (
-            CreatePropertyDefinitionRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
-            if (req.Scope == PropertyScopeDto.Tag && !req.TagGroupId.HasValue)
-                return Results.BadRequest(new { error = "Tag-scoped properties must specify a TagGroupId." });
-            if (req.Scope == PropertyScopeDto.Video && req.TagGroupId.HasValue)
-                return Results.BadRequest(new { error = "Video-scoped properties must not specify a TagGroupId." });
-            if (req.TagGroupId.HasValue && !await db.TagGroups.AnyAsync(g => g.Id == req.TagGroupId, ct))
-                return Results.BadRequest(new { error = "TagGroup not found." });
-
-            var def = new PropertyDefinition
-            {
-                Id = Guid.NewGuid(),
-                Name = req.Name,
-                DataType = (PropertyDataType)req.DataType,
-                Scope = (PropertyScope)req.Scope,
-                TagGroupId = req.TagGroupId,
-                Required = req.Required,
-                SortOrder = req.SortOrder,
-                Notes = req.Notes
-            };
-            db.PropertyDefinitions.Add(def);
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation(
-                "Created PropertyDefinition {PropertyId} '{Name}' (scope={Scope}, dataType={DataType}, tagGroup={TagGroupId}, required={Required})",
-                def.Id, def.Name, def.Scope, def.DataType, def.TagGroupId, def.Required);
-            return Results.Created($"/api/properties/{def.Id}",
-                new PropertyDefinitionDto(def.Id, def.Name,
-                    (PropertyDataTypeDto)def.DataType, (PropertyScopeDto)def.Scope,
-                    def.TagGroupId, def.Required, def.SortOrder, def.Notes));
-        }).WithName("CreateProperty");
-
-        props.MapPut("/{id:guid}", async (
-            Guid id, UpdatePropertyDefinitionRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var def = await db.PropertyDefinitions.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (def is null) return Results.NotFound();
-            var oldName = def.Name;
-            var oldDataType = def.DataType;
-            def.Name = req.Name;
-            def.DataType = (PropertyDataType)req.DataType;
-            def.Required = req.Required;
-            def.SortOrder = req.SortOrder;
-            def.Notes = req.Notes;
-            await db.SaveChangesAsync(ct);
-
-            // DataType changes are especially worth flagging — existing
-            // string values stay in the DB and may no longer parse under
-            // the new type. Operator should know.
-            if (oldDataType != def.DataType)
-            {
-                logger.LogWarning(
-                    "PropertyDefinition {PropertyId} '{Name}' DataType changed {OldDataType}→{NewDataType} — existing values are NOT re-validated",
-                    def.Id, def.Name, oldDataType, def.DataType);
-            }
-            else if (!string.Equals(oldName, def.Name, StringComparison.Ordinal))
-            {
-                logger.LogInformation(
-                    "Renamed PropertyDefinition {PropertyId} '{OldName}'→'{NewName}'",
-                    def.Id, oldName, def.Name);
-            }
-            return Results.NoContent();
-        }).WithName("UpdateProperty");
-
-        props.MapDelete("/{id:guid}", async (
-            Guid id, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var def = await db.PropertyDefinitions.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (def is null) return Results.NotFound();
-
-            // Count cascaded value rows before removing.
-            var videoValueCount = await db.VideoPropertyValues.CountAsync(v => v.PropertyDefinitionId == id, ct);
-            var tagValueCount = await db.TagPropertyValues.CountAsync(t => t.PropertyDefinitionId == id, ct);
-
-            db.PropertyDefinitions.Remove(def);  // cascades to value rows
-            await db.SaveChangesAsync(ct);
-            logger.LogWarning(
-                "Deleted PropertyDefinition {PropertyId} '{Name}' (scope={Scope}) — cascaded {VideoValueCount} VideoPropertyValue rows and {TagValueCount} TagPropertyValue rows",
-                def.Id, def.Name, def.Scope, videoValueCount, tagValueCount);
-            return Results.NoContent();
-        }).WithName("DeleteProperty");
+        MapPropertyEndpoints(api);
 
         // === Playlists ======================================================
+        MapPlaylistEndpoints(api);
 
-        var playlists = api.MapGroup("/playlists").WithTags("Playlists");
-
-        playlists.MapPost("/random", async (
-            PlaylistFilterRequest? filter,
-            VideoOrganizerDbContext db,
-            ILogger<Program> logger,
-            CancellationToken ct) =>
-        {
-            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
-            var candidates = await db.Videos
-                .AsNoTracking()
-                .Include(v => v.VideoTags)
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)))
-                .ToListAsync(ct);
-            var lookup = await LoadTagLookupAsync(db, ct);
-
-            var required = filter?.Required ?? new();
-            var optional = filter?.Optional ?? new();
-            var excluded = filter?.Excluded ?? new();
-
-            var matched = candidates.Where(v =>
-            {
-                if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
-                if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
-                if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
-                return true;
-            }).Select(v => v.Id).ToList();
-
-            if (matched.Count == 0)
-                return Results.BadRequest("No videos found matching the filter criteria");
-
-            var rng = new Random();
-            var shuffled = matched.OrderBy(_ => rng.Next()).ToList();
-            var playlistId = Guid.NewGuid();
-            var playlist = new PlaylistDto(playlistId, shuffled, DateTime.UtcNow);
-            _playlists[playlistId] = playlist;
-            logger.LogInformation("Created random playlist {PlaylistId} with {Count} videos", playlistId, shuffled.Count);
-            return Results.Ok(playlist);
-        }).WithName("CreateRandomPlaylist");
-
-        playlists.MapPost("/even", async (
-            PlaylistFilterRequest? filter,
-            VideoOrganizerDbContext db,
-            ILogger<Program> logger,
-            CancellationToken ct) =>
-        {
-            var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
-            var candidates = await db.Videos
-                .AsNoTracking()
-                .Include(v => v.VideoTags)
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)))
-                .ToListAsync(ct);
-            var lookup = await LoadTagLookupAsync(db, ct);
-
-            var required = filter?.Required ?? new();
-            var optional = filter?.Optional ?? new();
-            var excluded = filter?.Excluded ?? new();
-
-            var matched = candidates.Where(v =>
-            {
-                if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
-                if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
-                if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
-                return true;
-            }).Select(v => new { v.Id, v.WatchCount }).ToList();
-
-            if (matched.Count == 0)
-                return Results.BadRequest("No videos found matching the filter criteria");
-
-            var rng = new Random();
-            var ordered = matched
-                .OrderBy(x => x.WatchCount)
-                .ThenBy(_ => rng.Next())
-                .Select(x => x.Id)
-                .ToList();
-            var playlistId = Guid.NewGuid();
-            var playlist = new PlaylistDto(playlistId, ordered, DateTime.UtcNow);
-            _playlists[playlistId] = playlist;
-            logger.LogInformation("Created even-distribution playlist {PlaylistId} with {Count} videos",
-                playlistId, ordered.Count);
-            return Results.Ok(playlist);
-        }).WithName("CreateEvenDistributionPlaylist");
-
-        playlists.MapGet("/{id:guid}", (Guid id, ILogger<Program> logger) =>
-        {
-            if (!_playlists.TryGetValue(id, out var playlist))
-            {
-                logger.LogWarning("Playlist {PlaylistId} not found", id);
-                return Results.NotFound();
-            }
-            return Results.Ok(playlist);
-        }).WithName("GetPlaylist");
-
-        playlists.MapGet("/{playlistId:guid}/navigation/{videoId:guid}",
-            (Guid playlistId, Guid videoId, ILogger<Program> logger) =>
-        {
-            if (!_playlists.TryGetValue(playlistId, out var playlist))
-                return Results.NotFound("Playlist not found");
-
-            var currentIndex = playlist.VideoIds.IndexOf(videoId);
-            if (currentIndex == -1) return Results.NotFound("Video not found in playlist");
-
-            var previousVideoId = currentIndex > 0 ? playlist.VideoIds[currentIndex - 1] : (Guid?)null;
-            var nextVideoId = currentIndex < playlist.VideoIds.Count - 1
-                ? playlist.VideoIds[currentIndex + 1] : (Guid?)null;
-            return Results.Ok(new PlaylistNavigationDto(
-                videoId, nextVideoId, previousVideoId, currentIndex, playlist.VideoIds.Count));
-        }).WithName("GetPlaylistNavigation");
+        // === Auth config (public) ===========================================
+        MapAuthEndpoints(api);
 
         // === Duplicates =====================================================
         // User-flagged "these two videos might be the same content" pairs.
         // Created from the browse page's duplicate-hunt flow, reviewed on
         // the /duplicates page (confirm / reject / reopen / delete).
-
-        var duplicates = api.MapGroup("/duplicates").WithTags("Duplicates");
-
-        // Project a candidate plus both fully-loaded videos. The videos
-        // are loaded separately through IncludeForVideoDto so the tag /
-        // property projections match every other Video endpoint.
-        static DuplicateCandidateDto ToDuplicateDto(DuplicateCandidate d, Video a, Video b) =>
-            new(d.Id, (DuplicateStatusDto)(int)d.Status, d.CreatedAt, ToDto(a), ToDto(b));
-
-        duplicates.MapPost("/", async (
-            CreateDuplicateCandidateRequest req, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            if (req.VideoAId == req.VideoBId)
-                return Results.BadRequest(new { error = "A video cannot be a duplicate of itself." });
-
-            // Normalize the pair ordering so (A,B) and (B,A) land on the
-            // same row — the unique index then guarantees one row per pair.
-            var (aId, bId) = req.VideoAId.CompareTo(req.VideoBId) < 0
-                ? (req.VideoAId, req.VideoBId)
-                : (req.VideoBId, req.VideoAId);
-
-            var videos = await IncludeForVideoDto(db.Videos.AsNoTracking())
-                .Where(v => v.Id == aId || v.Id == bId)
-                .ToListAsync(ct);
-            var a = videos.FirstOrDefault(v => v.Id == aId);
-            var b = videos.FirstOrDefault(v => v.Id == bId);
-            if (a is null || b is null)
-                return Results.NotFound(new { error = "One or both videos not found." });
-
-            var existing = await db.DuplicateCandidates
-                .FirstOrDefaultAsync(d => d.VideoAId == aId && d.VideoBId == bId, ct);
-            if (existing is not null)
-            {
-                // Idempotent: re-flagging an existing pair just returns it
-                // (whatever its review status) instead of erroring — the
-                // user pressing "mark" twice mid-hunt shouldn't see a 409.
-                return Results.Ok(ToDuplicateDto(existing, a, b));
-            }
-
-            var candidate = new DuplicateCandidate { VideoAId = aId, VideoBId = bId };
-            db.DuplicateCandidates.Add(candidate);
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation(
-                "Flagged duplicate candidate {CandidateId}: {VideoAId} ('{FileA}') vs {VideoBId} ('{FileB}')",
-                candidate.Id, aId, a.FileName, bId, b.FileName);
-            return Results.Created($"/api/duplicates/{candidate.Id}", ToDuplicateDto(candidate, a, b));
-        }).WithName("CreateDuplicateCandidate");
-
-        duplicates.MapGet("/", async (
-            string? status, VideoOrganizerDbContext db, CancellationToken ct) =>
-        {
-            IQueryable<DuplicateCandidate> query = db.DuplicateCandidates.AsNoTracking();
-            // status filter: pending / confirmed / rejected; omitted or
-            // "all" returns everything.
-            if (!string.IsNullOrWhiteSpace(status)
-                && !string.Equals(status, "all", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!Enum.TryParse<DuplicateStatus>(status, ignoreCase: true, out var parsed))
-                    return Results.BadRequest(new { error = $"Unknown status '{status}'." });
-                query = query.Where(d => d.Status == parsed);
-            }
-            var candidates = await query.OrderByDescending(d => d.CreatedAt).ToListAsync(ct);
-            if (candidates.Count == 0) return Results.Ok(Array.Empty<DuplicateCandidateDto>());
-
-            // Load every referenced video once (with the standard tag /
-            // property includes) instead of Include()-ing through both
-            // navigations on every row.
-            var videoIds = candidates.SelectMany(d => new[] { d.VideoAId, d.VideoBId }).Distinct().ToList();
-            var videoById = await IncludeForVideoDto(db.Videos.AsNoTracking())
-                .Where(v => videoIds.Contains(v.Id))
-                .ToDictionaryAsync(v => v.Id, ct);
-
-            // A cascade-deleted video can't leave an orphan row (FK), but
-            // guard anyway so one inconsistent row can't 500 the page.
-            var dtos = candidates
-                .Where(d => videoById.ContainsKey(d.VideoAId) && videoById.ContainsKey(d.VideoBId))
-                .Select(d => ToDuplicateDto(d, videoById[d.VideoAId], videoById[d.VideoBId]))
-                .ToList();
-            return Results.Ok(dtos);
-        }).WithName("ListDuplicateCandidates");
-
-        // Review transitions. Reopen lets a mis-click on Confirm/Reject be
-        // undone without deleting and re-flagging the pair.
-        async Task<IResult> SetDuplicateStatus(
-            Guid id, DuplicateStatus newStatus, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct)
-        {
-            var d = await db.DuplicateCandidates.FirstOrDefaultAsync(x => x.Id == id, ct);
-            if (d is null) return Results.NotFound();
-            var old = d.Status;
-            d.Status = newStatus;
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation(
-                "Duplicate candidate {CandidateId} status {OldStatus} -> {NewStatus}", id, old, newStatus);
-
-            var videos = await IncludeForVideoDto(db.Videos.AsNoTracking())
-                .Where(v => v.Id == d.VideoAId || v.Id == d.VideoBId)
-                .ToListAsync(ct);
-            var a = videos.FirstOrDefault(v => v.Id == d.VideoAId);
-            var b = videos.FirstOrDefault(v => v.Id == d.VideoBId);
-            if (a is null || b is null) return Results.NoContent();
-            return Results.Ok(ToDuplicateDto(d, a, b));
-        }
-
-        duplicates.MapPost("/{id:guid}/confirm",
-            (Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
-                SetDuplicateStatus(id, DuplicateStatus.Confirmed, db, logger, ct))
-            .WithName("ConfirmDuplicateCandidate");
-
-        duplicates.MapPost("/{id:guid}/reject",
-            (Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
-                SetDuplicateStatus(id, DuplicateStatus.Rejected, db, logger, ct))
-            .WithName("RejectDuplicateCandidate");
-
-        duplicates.MapPost("/{id:guid}/reopen",
-            (Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
-                SetDuplicateStatus(id, DuplicateStatus.Pending, db, logger, ct))
-            .WithName("ReopenDuplicateCandidate");
-
-        duplicates.MapDelete("/{id:guid}", async (
-            Guid id, VideoOrganizerDbContext db,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            var d = await db.DuplicateCandidates.FirstOrDefaultAsync(x => x.Id == id, ct);
-            if (d is null) return Results.NotFound();
-            db.DuplicateCandidates.Remove(d);
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation("Deleted duplicate candidate {CandidateId} ({Status})", id, d.Status);
-            return Results.NoContent();
-        }).WithName("DeleteDuplicateCandidate");
+        MapDuplicateEndpoints(api);
 
         // === Import =========================================================
-
-        var import = api.MapGroup("/import").WithTags("Import");
-
-        import.MapPost("/directory", (
-            DirectoryImportRequest request,
-            ImportProgressTracker progressTracker,
-            ImportQueueService importQueue) =>
-        {
-            var jobId = progressTracker.StartJob(request.DirectoryPath, request.Name);
-            progressTracker.AddMessage(jobId, "Import queued.");
-            if (!importQueue.Enqueue(new QueuedImport(jobId, request)))
-            {
-                progressTracker.MarkFailed(jobId, "Failed to enqueue import (service shutting down).");
-                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-            }
-            return Results.Accepted($"/api/import/progress/{jobId}", new { JobId = jobId });
-        }).WithName("ImportFromDirectory");
-
-        import.MapGet("/progress/{jobId:guid}", (
-            Guid jobId, ImportProgressTracker progressTracker) =>
-        {
-            var (messages, isCompleted, error, fileStatuses) = progressTracker.GetStatus(jobId);
-            return Results.Ok(new ImportProgressResponse(messages, isCompleted, error, fileStatuses));
-        }).WithName("GetImportProgress");
-
-        import.MapPost("/pause", (WorkerPauseStatus pause) =>
-        {
-            pause.ImportPaused = true;
-            return Results.NoContent();
-        }).WithName("PauseImports");
-        import.MapPost("/resume", (WorkerPauseStatus pause) =>
-        {
-            pause.ImportPaused = false;
-            return Results.NoContent();
-        }).WithName("ResumeImports");
 
         api.MapGet("/worker-pause-status", (WorkerPauseStatus pause) =>
         {
@@ -3498,309 +3706,7 @@ public static class ApiEndpoints
             });
         }).WithName("GetWorkerPauseStatus");
 
-        import.MapGet("/jobs", async (
-            ImportProgressTracker progressTracker,
-            VideoOrganizerDbContext db,
-            CancellationToken ct) =>
-        {
-            var snapshots = progressTracker.GetAllJobSnapshots();
-            if (snapshots.Count == 0) return Results.Ok(Array.Empty<ImportJobSummaryDto>());
-
-            var jobIds = snapshots.Select(s => s.JobId).ToHashSet();
-            var rows = await db.Videos
-                .AsNoTracking()
-                .Where(v => v.ImportJobId != null && jobIds.Contains(v.ImportJobId.Value))
-                .Select(v => new
-                {
-                    JobId = v.ImportJobId!.Value,
-                    v.ThumbnailsGenerated,
-                    v.ThumbnailsFailed,
-                    HasMd5 = v.Md5 != null,
-                    v.Md5Failed,
-                })
-                .ToListAsync(ct);
-            var byJob = rows.GroupBy(r => r.JobId).ToDictionary(g => g.Key, g => g.ToList());
-
-            var result = snapshots.Select(s =>
-            {
-                byJob.TryGetValue(s.JobId, out var videos);
-                videos ??= new();
-                int total = videos.Count;
-                int thumbDone = videos.Count(v => v.ThumbnailsGenerated);
-                int thumbFailed = videos.Count(v => v.ThumbnailsFailed);
-                int thumbPending = total - thumbDone - thumbFailed;
-                int md5Done = videos.Count(v => v.HasMd5);
-                int md5Failed = videos.Count(v => v.Md5Failed);
-                int md5Pending = total - md5Done - md5Failed;
-
-                bool importPhaseDone = s.IsCompleted;
-                bool thumbsTaskDone = total == 0 || (thumbDone + thumbFailed >= total);
-                bool md5TaskDone = total == 0 || (md5Done + md5Failed >= total);
-                bool isFullyDone = importPhaseDone && (s.Error != null || (thumbsTaskDone && md5TaskDone));
-                DateTime? completedAt = isFullyDone ? s.CompletedAt : null;
-
-                return new ImportJobSummaryDto(
-                    s.JobId, s.Name, s.DirectoryPath, s.EnqueuedAt, s.StartedAt, completedAt,
-                    isFullyDone, s.Error, s.TotalFiles, s.CompletedCount, s.FailedCount,
-                    s.SkippedCount, s.ImportingCount, s.CurrentFilePath,
-                    new ImportTaskProgressDto(total, thumbDone, Math.Max(0, thumbPending), thumbFailed),
-                    new ImportTaskProgressDto(total, md5Done, Math.Max(0, md5Pending), md5Failed));
-            }).ToList();
-            return Results.Ok(result);
-        }).WithName("ListImportJobs");
-
-        import.MapDelete("/jobs/completed", (ImportProgressTracker progressTracker) =>
-        {
-            var removed = progressTracker.ClearCompleted();
-            return Results.Ok(new { removed });
-        }).WithName("ClearCompletedImportJobs");
-
-        import.MapGet("/failed-files", (ImportProgressTracker progressTracker) =>
-            Results.Ok(progressTracker.GetFailedFiles())
-        ).WithName("ListFailedImportFiles");
-
-        import.MapGet("/queue", (ImportProgressTracker progressTracker) =>
-            Results.Ok(progressTracker.GetQueueFiles())
-        ).WithName("ListImportQueue");
-
-        import.MapGet("/browse", async (
-            VideoOrganizerDbContext db, string? path, ImportScanProgress progress,
-            ILogger<Program> logger, CancellationToken ct) =>
-        {
-            // The recursive video-file count below feeds a shared progress
-            // counter so the Import page can poll GET /import/scan-progress
-            // for a live "discovered N" total while a source loads. (issue #27)
-            progress.Begin();
-            try
-            {
-                // Include disabled sources too so the browse-page
-                // Sources tree can still surface them (rendered with
-                // a strikethrough + "(Disabled)" suffix on the
-                // client). Disabling a source hides its videos from
-                // the playback grid but shouldn't cut off filesystem
-                // visibility — users may want to see what's there
-                // before re-enabling.
-                var sets = await db.VideoSets
-                    .OrderBy(s => s.SortOrder).ThenBy(s => s.Name)
-                    .ToListAsync(ct);
-
-                async Task<List<ImportBrowseDirectory>> AnnotateAsync(
-                    IEnumerable<(string name, string fullPath, bool hasSubs)> dirs, string dbPrefix)
-                {
-                    var dirList = dirs.ToList();
-                    var normalizedPrefix = PathNormalizer.Normalize(dbPrefix);
-                    var importedPaths = await db.Videos
-                        .Where(v => v.FilePath.StartsWith(normalizedPrefix))
-                        .Select(v => v.FilePath)
-                        .ToListAsync(ct);
-
-                    return dirList.Select(d =>
-                    {
-                        var normalizedDir = PathNormalizer.Normalize(d.fullPath);
-                        var importedCount = importedPaths.Count(p =>
-                            p.StartsWith(normalizedDir, StringComparison.OrdinalIgnoreCase));
-                        return new ImportBrowseDirectory(
-                            Name: d.name, FullPath: d.fullPath, HasSubdirectories: d.hasSubs,
-                            VideoCount: CountVideoFilesRecursive(d.fullPath, progress),
-                            ImportedCount: importedCount);
-                    }).ToList();
-                }
-
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    // Per-source try/catch — a single source with an
-                    // invalid path, permission-denied folder, or
-                    // unreachable network mount used to take down the
-                    // whole endpoint with a 500. Now we log and skip
-                    // so the user can still see / add other sources.
-                    var annotated = new List<ImportBrowseDirectory>();
-                    foreach (var s in sets)
-                    {
-                        try
-                        {
-                            var full = Path.GetFullPath(s.Path);
-                            var hasSubs = TryDirectoryExists(s.Path, logger)
-                                && SafeGetDirectoryCount(s.Path, logger) > 0;
-                            var normalizedSet = PathNormalizer.Normalize(s.Path);
-                            var importedCount = await db.Videos
-                                .CountAsync(v => v.FilePath.StartsWith(normalizedSet), ct);
-                            annotated.Add(new ImportBrowseDirectory(
-                                Name: s.Name, FullPath: full, HasSubdirectories: hasSubs,
-                                VideoCount: CountVideoFilesRecursive(full, progress),
-                                ImportedCount: importedCount));
-                        }
-                        catch (Exception ex)
-                        {
-                            logger.LogWarning(ex,
-                                "Skipping VideoSet {VideoSetId} '{Name}' ({Path}) in /import/browse — listing failed",
-                                s.Id, s.Name, s.Path);
-                        }
-                    }
-                    return Results.Ok(new ImportBrowseResponse(string.Empty, null, annotated));
-                }
-
-                var fullPath = Path.GetFullPath(path);
-                var containingSet = sets.FirstOrDefault(s =>
-                    fullPath.StartsWith(Path.GetFullPath(s.Path), StringComparison.Ordinal));
-                if (containingSet is null) return Results.Forbid();
-
-                var issue = DescribeDirectoryIssue(fullPath);
-                if (issue is not null) return Results.NotFound(issue);
-
-                var rawDirs = Directory.GetDirectories(fullPath)
-                    .Where(d => !PathFilters.IsExcludedFolderName(Path.GetFileName(d)))
-                    .OrderBy(d => Path.GetFileName(d))
-                    .Select(d => (
-                        name: Path.GetFileName(d),
-                        fullPath: d,
-                        hasSubs: Directory.GetDirectories(d).Length > 0
-                    ));
-
-                var directories = await AnnotateAsync(rawDirs, fullPath);
-
-                var setRoot = Path.GetFullPath(containingSet.Path);
-                string? parent;
-                if (string.Equals(fullPath, setRoot, StringComparison.Ordinal))
-                {
-                    parent = string.Empty;
-                }
-                else
-                {
-                    var fsParent = Directory.GetParent(fullPath)?.FullName;
-                    parent = fsParent != null && fsParent.StartsWith(setRoot, StringComparison.Ordinal)
-                        ? fsParent : setRoot;
-                }
-                return Results.Ok(new ImportBrowseResponse(fullPath, parent, directories));
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error browsing directory: {Path}", path);
-                return Results.Problem("Failed to browse directory");
-            }
-            finally
-            {
-                progress.End();
-            }
-        }).WithName("BrowseDirectory");
-
-        // Live progress for an in-flight /import/browse scan. The Import
-        // page polls this (~500ms) to show a climbing "Discovered N video
-        // files…" count while a source loads, instead of a blind spinner.
-        // Scanning=false once the walk(s) finish; Discovered holds the
-        // final total until the next scan starts. (issue #27)
-        import.MapGet("/scan-progress", (ImportScanProgress progress) =>
-        {
-            var (scanning, discovered) = progress.Snapshot();
-            return Results.Ok(new ImportScanProgressDto(scanning, discovered));
-        }).WithName("GetImportScanProgress");
-
-        import.MapGet("/files", async (
-            VideoOrganizerDbContext db, string directoryPath, ILogger<Program> logger,
-            CancellationToken ct, bool includeSubdirectories = true) =>
-        {
-            try
-            {
-                var targetPath = Path.GetFullPath(directoryPath);
-                var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
-                if (!enabledRoots.Any(r => targetPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                    return Results.Forbid();
-
-                var fileIssue = DescribeDirectoryIssue(targetPath);
-                if (fileIssue is not null) return Results.NotFound(fileIssue);
-
-                var searchOption = includeSubdirectories
-                    ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-                var allFiles = Directory.EnumerateFiles(targetPath, "*.*", searchOption)
-                    .Where(f => !PathFilters.IsInExcludedFolder(f, targetPath))
-                    .OrderBy(f => f)
-                    .ToList();
-
-                var importable = new List<string>();
-                var nonImportable = new List<string>();
-                foreach (var file in allFiles)
-                {
-                    if (VideoFileExtensions.IsVideo(file)) importable.Add(file);
-                    else nonImportable.Add(file);
-                }
-
-                var importableByNormalized = importable
-                    .GroupBy(p => PathNormalizer.Normalize(p), StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-                var normalizedTarget = PathNormalizer.Normalize(targetPath);
-                var dbMatches = await db.Videos
-                    .Where(v => v.FilePath.StartsWith(normalizedTarget))
-                    .Select(v => v.FilePath)
-                    .ToListAsync(ct);
-                var importedFiles = dbMatches
-                    .Where(p => importableByNormalized.ContainsKey(p))
-                    .Select(p => importableByNormalized[p])
-                    .ToList();
-
-                return Results.Ok(new ImportFileListResponse(targetPath, importable, nonImportable, importedFiles));
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error listing files for directory {Path}", directoryPath);
-                return Results.Problem("Failed to list files");
-            }
-        }).WithName("ListImportFiles");
-
-        import.MapGet("/thumbnail", async (
-            VideoOrganizerDbContext db, string path, ILogger<Program> logger, HttpContext http, CancellationToken ct) =>
-        {
-            try
-            {
-                var fullPath = Path.GetFullPath(path);
-                if (!File.Exists(fullPath)) return Results.NotFound();
-
-                var enabledRoots = await db.VideoSets.Where(s => s.Enabled).Select(s => s.Path).ToListAsync(ct);
-                if (!enabledRoots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
-                    return Results.Forbid();
-                if (!VideoFileExtensions.IsVideo(fullPath)) return Results.BadRequest();
-
-                var mtime = File.GetLastWriteTimeUtc(fullPath);
-                var keySource = $"{fullPath}|{mtime.Ticks}";
-                var hash = Convert.ToHexString(
-                    System.Security.Cryptography.SHA1.HashData(Encoding.UTF8.GetBytes(keySource)));
-                var cacheDir = Path.Combine(Path.GetTempPath(), "vo-import-thumbs");
-                Directory.CreateDirectory(cacheDir);
-                var cachePath = Path.Combine(cacheDir, $"{hash}.jpg");
-
-                if (!File.Exists(cachePath))
-                {
-                    var snapshotTime = TimeSpan.FromSeconds(5);
-                    try
-                    {
-                        var conversion = await FFmpeg.Conversions.FromSnippet.Snapshot(
-                            fullPath, cachePath, snapshotTime);
-                        await conversion.AddParameter("-s 240x135").Start(ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogWarning(ex, "Thumbnail generation failed at 5s for {Path}, retrying at 0s", fullPath);
-                        try
-                        {
-                            var conversion = await FFmpeg.Conversions.FromSnippet.Snapshot(
-                                fullPath, cachePath, TimeSpan.Zero);
-                            await conversion.AddParameter("-s 240x135").Start(ct);
-                        }
-                        catch (Exception ex2)
-                        {
-                            logger.LogError(ex2, "Thumbnail generation failed for {Path}", fullPath);
-                            return Results.NotFound();
-                        }
-                    }
-                }
-                http.Response.Headers.CacheControl = "public, max-age=604800, immutable";
-                return Results.File(cachePath, "image/jpeg");
-            }
-            catch (OperationCanceledException) { return Results.StatusCode(499); }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error serving thumbnail for {Path}", path);
-                return Results.Problem("Failed to generate thumbnail");
-            }
-        }).WithName("GetImportThumbnail");
+        MapImportEndpoints(api);
     }
 
     // --- Tag-set / property-set replace helpers -----------------------------

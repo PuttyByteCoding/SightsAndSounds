@@ -165,7 +165,54 @@
     }
   }
 
-  onMount(load);
+  onMount(async () => {
+    await load();
+    // Resume the progress display if a repair run is already in flight.
+    try {
+      const p = await api.getRepairProgress();
+      if (p.active) { repair = p; startRepairPolling(); }
+    } catch { /* none running */ }
+  });
+
+  // --- Repair (re-encode to H.264) (#165) ----------------------------
+  let repair = $state<import('$lib/types').RepairProgress | null>(null);
+  let repairBusy = $state(false);
+  let repairPoll: ReturnType<typeof setInterval> | null = null;
+  const repairing = $derived(!!repair?.active);
+  const repairPct = $derived(
+    repair && repair.total > 0 ? Math.round((repair.done / repair.total) * 100) : 0
+  );
+
+  function startRepairPolling() {
+    stopRepairPolling();
+    repairPoll = setInterval(async () => {
+      try {
+        const p = await api.getRepairProgress();
+        repair = p;
+        if (!p.active) { stopRepairPolling(); await load(); }
+      } catch { stopRepairPolling(); }
+    }, 1000);
+  }
+  function stopRepairPolling() {
+    if (repairPoll) { clearInterval(repairPoll); repairPoll = null; }
+  }
+
+  async function repairVideos(ids: string[]) {
+    if (repairBusy || repairing || ids.length === 0) return;
+    repairBusy = true;
+    errorMessage = null;
+    try {
+      repair = await api.startRepair(ids);
+      startRepairPolling();
+    } catch (e) {
+      errorMessage = e instanceof Error ? e.message : String(e);
+    } finally {
+      repairBusy = false;
+    }
+  }
+  async function stopRepair() {
+    try { repair = await api.stopRepair(); } catch { /* poll reconciles */ }
+  }
 
   function formatBytes(bytes: number): string {
     if (!bytes || bytes <= 0) return '';
@@ -378,6 +425,23 @@
         {#if loading}<span class="loading loading-spinner loading-xs"></span>{/if}
         Refresh
       </button>
+      <!-- Repair: re-encode all flagged videos to browser-friendly H.264 (#165).
+           Each produces a "_repaired.mp4" sibling; originals stay flagged so you
+           can compare and then delete them. -->
+      {#if repairing}
+        <button type="button" class="btn btn-sm btn-warning" onclick={stopRepair}>Stop repair</button>
+      {:else}
+        <button
+          type="button"
+          class="btn btn-sm btn-primary"
+          onclick={() => repairVideos(videos.map(v => v.id))}
+          disabled={repairBusy || videos.length === 0}
+          title="Re-encode every flagged video to H.264 (fixes most won't-play files)"
+        >
+          {#if repairBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Repair All ({videos.length})
+        </button>
+      {/if}
       <!-- Restore (safe) on the inside, Purge (destructive) on the
            outside — same arrangement as /purge so the dangerous
            action is visually offset. -->
@@ -408,6 +472,28 @@
     <div class="alert alert-error mb-4 text-sm flex items-start gap-2">
       <span class="flex-1">{errorMessage}</span>
       <button class="btn btn-xs btn-ghost" onclick={() => (errorMessage = null)}>Dismiss</button>
+    </div>
+  {/if}
+
+  <!-- Repair run progress (#165). -->
+  {#if repair && (repair.active || repair.phase !== 'idle')}
+    <div class="alert {repair.phase === 'error' ? 'alert-warning' : 'alert-info'} mb-4 text-sm flex-col items-start gap-2">
+      <div class="flex items-center gap-2 w-full">
+        {#if repair.active}<span class="loading loading-spinner loading-xs"></span>{/if}
+        <span>
+          {repair.active ? 'Repairing' : repair.phase === 'error' ? 'Finished with errors' : 'Repair done'} —
+          {repair.done}/{repair.total}
+        </span>
+        {#if repair.current}<span class="text-base-content/60 truncate">{repair.current}</span>{/if}
+        <span class="flex-1"></span>
+        <span>{repairPct}%</span>
+      </div>
+      <progress class="progress progress-primary w-full h-1.5" value={repairPct} max="100"></progress>
+      {#if repair.errors.length > 0}
+        <ul class="list-disc ml-5">
+          {#each repair.errors as e (e)}<li class="break-all">{e}</li>{/each}
+        </ul>
+      {/if}
     </div>
   {/if}
 
@@ -542,6 +628,13 @@
                     title="Run ffprobe and show codec / format / stream details"
                   >Diagnose</button>
                 {/if}
+                <button
+                  type="button"
+                  class="btn btn-xs btn-primary ml-1"
+                  onclick={() => repairVideos([v.id])}
+                  disabled={busy || repairBusy || repairing}
+                  title="Re-encode this video to browser-friendly H.264 (creates a _repaired.mp4)"
+                >Repair</button>
                 <button
                   type="button"
                   class="btn btn-xs btn-cancel ml-1"

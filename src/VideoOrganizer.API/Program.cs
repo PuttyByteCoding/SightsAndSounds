@@ -180,6 +180,46 @@ builder.Services.AddSingleton<ImportScanProgress>();
 // dialog. (issue #4)
 builder.Services.AddSingleton<FileMoveProgress>();
 
+// Memoizes the per-folder recursive video-file count so the Sources tree
+// doesn't re-walk the filesystem on every /import/browse. Invalidated on
+// file move/undo and by the Sources refresh button. (issue #4)
+builder.Services.AddSingleton<DirectoryScanCache>();
+
+// Database backup/restore — JSON snapshots written under Backup:Directory.
+// (issue #32)
+builder.Services.AddSingleton<BackupService>();
+
+// On-screen-text OCR via the tesseract CLI (issue #5).
+builder.Services.AddSingleton<OcrService>();
+// Full-video OCR text scan (issue #5, ask 2): a background scanner plus its
+// live-progress singleton, polled by the player's "Scan for text" panel.
+builder.Services.AddSingleton<OcrScanProgress>();
+builder.Services.AddSingleton<OcrScanService>();
+// Clip export (issue #69): stream-copy clips to standalone files in the
+// background + a live-progress singleton polled by the clips-export page.
+builder.Services.AddSingleton<ClipExportProgress>();
+builder.Services.AddSingleton<ClipExportService>();
+// Block removal (issue #70): build a new file with the "Hide" sections cut out,
+// + a live-progress singleton polled by the remove-blocked page.
+builder.Services.AddSingleton<BlockRemovalProgress>();
+builder.Services.AddSingleton<BlockRemovalService>();
+// Repair (issue #165): re-encode unplayable videos to browser-friendly H.264,
+// + a live-progress singleton polled by the Playback Issues page.
+builder.Services.AddSingleton<RepairProgress>();
+builder.Services.AddSingleton<RepairService>();
+// Join (issue #163): concatenate several videos into one new file + a
+// live-progress singleton polled by the Join page.
+builder.Services.AddSingleton<JoinProgress>();
+builder.Services.AddSingleton<JoinService>();
+// Encode/convert to a configurable profile (issue #164): ffmpeg or HandBrake,
+// + a live-progress singleton polled by the Encode page.
+builder.Services.AddSingleton<EncodeProgress>();
+builder.Services.AddSingleton<EncodeService>();
+// Optimize for streaming (issue #166): faststart remux so large MP4s start
+// playing immediately, + a live-progress singleton polled by the Optimize page.
+builder.Services.AddSingleton<StreamingOptimizeProgress>();
+builder.Services.AddSingleton<StreamingOptimizeService>();
+
 // Reads config/tags.seed.json on first run; no-op once tag_groups has rows.
 builder.Services.AddScoped<TagSeedService>();
 // Centralized pause flags for the three workers. Toggled by
@@ -190,6 +230,10 @@ builder.Services.AddSingleton<WorkerPauseStatus>();
 // import requests (Import1 finishes saving its Videos before Import2 starts).
 builder.Services.AddSingleton<ImportQueueService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ImportQueueService>());
+
+// Keycloak JWT auth (#124). No-op unless Auth:Enabled — keeps the app's
+// current no-auth behavior until the flag is flipped on.
+VideoOrganizer.API.Auth.AuthSetup.AddSightsAuth(builder.Services, builder.Configuration);
 
 // Add CORS policy
 builder.Services.AddCors(options =>
@@ -206,14 +250,32 @@ builder.Services.AddCors(options =>
 // Scalar wraps it for the interactive UI (mapped below at /swagger).
 builder.Services.AddOpenApi(options =>
 {
-    // Domain.Models and Shared.Dto each define same-named enums
-    // (CameraTypes, VideoQuality, VideoCodec, VideoDimensionFormat).
-    // The default schema-id strategy uses Type.Name, so the two
-    // collide and produce a broken document with $refs pointing at
-    // the wrong schema. Disambiguate on FullName instead — '.' isn't
-    // a legal char inside a $ref path so we replace it with '_'.
+    // Schema reference ids → clean, stable names so the spec is readable and
+    // frontend type generation (issue #125) produces sane names.
+    //   - Inline generics + arrays (List<T>, IReadOnlyList<T>, T[]) instead of
+    //     emitting assembly-qualified named schemas per instantiation (the old
+    //     FullName strategy produced monstrosities like
+    //     "System_Collections_Generic_IReadOnlyList`1[[System_Guid, ...]]").
+    //   - Domain.Models and Shared.Dto both define same-named enums (CameraTypes,
+    //     VideoQuality, VideoCodec, VideoDimensionFormat, VideoBlockTypes); the
+    //     Shared DTOs are the public contract, so they keep the clean short name
+    //     and the Domain enums get a "Domain" prefix — without this, two types map
+    //     to one id and the document breaks.
     options.CreateSchemaReferenceId = jsonTypeInfo =>
-        jsonTypeInfo.Type.FullName?.Replace('.', '_') ?? jsonTypeInfo.Type.Name;
+    {
+        var type = jsonTypeInfo.Type;
+        if (type.IsGenericType || type.IsArray) return null; // inline → array schema
+        // Only our own types become reusable components. Returning a non-null id
+        // for framework types (string, Guid, int, DateTime, …) wrongly hoists each
+        // primitive into components/schemas and turns every property into a $ref to
+        // it — non-standard and it pollutes generated clients. Returning null keeps
+        // them inline, which is the default OpenAPI behaviour.
+        if (type.Namespace is not { } ns || !ns.StartsWith("VideoOrganizer", StringComparison.Ordinal))
+            return null;
+        return type is { Namespace: "VideoOrganizer.Domain.Models", IsEnum: true }
+            ? "Domain" + type.Name
+            : type.Name;
+    };
 
     // The default Info.Title is the assembly name, which renders as the
     // unhelpful bare "API" header in Scalar. Set something meaningful so
@@ -228,20 +290,73 @@ builder.Services.AddOpenApi(options =>
             "background workers (thumbnail sprites + Md5 dedup), and bulk import.";
         return Task.CompletedTask;
     });
+
+    // Enum schemas carry no values by default, so the spec describes them as
+    // opaque and generated clients get `unknown`. Emit the camelCase wire values
+    // (matching LenientEnumConverter) so /swagger documents the allowed values
+    // and frontend type generation (#125) produces real string-literal unions.
+    options.AddSchemaTransformer((schema, context, _) =>
+    {
+        var type = context.JsonTypeInfo.Type;
+        if (type.IsEnum)
+        {
+            schema.Type = Microsoft.OpenApi.JsonSchemaType.String;
+            schema.Enum = Enum.GetNames(type)
+                .Select(name => (System.Text.Json.Nodes.JsonNode)
+                    System.Text.Json.Nodes.JsonValue.Create(LenientEnumConverterFactory.ToWireCamelCase(name))!)
+                .ToList();
+        }
+        return Task.CompletedTask;
+    });
+
+    // Numeric schemas are emitted as the union type ["integer","string"] (with a
+    // validation pattern) because System.Text.Json can leniently *read* numbers
+    // from strings. That's a server-side tolerance, not the response contract —
+    // responses always serialize numbers as numbers. Left in the spec it makes
+    // every generated numeric field `number | string`, which is unusable on the
+    // client (#125). Drop the string alternative (and its pattern) so numbers
+    // are plain integers/numbers; nullability (the Null flag) is preserved.
+    options.AddSchemaTransformer((schema, _, _) =>
+    {
+        if (schema.Type is { } t
+            && (t.HasFlag(Microsoft.OpenApi.JsonSchemaType.Integer) || t.HasFlag(Microsoft.OpenApi.JsonSchemaType.Number))
+            && t.HasFlag(Microsoft.OpenApi.JsonSchemaType.String))
+        {
+            schema.Type = t & ~Microsoft.OpenApi.JsonSchemaType.String;
+            schema.Pattern = null;
+        }
+        return Task.CompletedTask;
+    });
 });
 
 var app = builder.Build();
+
+// IP allowlist (#124). No-op unless Network:RestrictByIp. Runs first so a
+// disallowed device can't reach anything (not even the SPA or error pages).
+VideoOrganizer.API.Access.IpAccessSetup.UseIpAllowlist(app);
 
 // Surface unhandled-exception detail in the response body during dev.
 // Without this, ASP.NET Core's default in dev is to return an empty
 // 500 for AJAX requests — the SvelteKit error toasts then show only
 // "GET /foo failed: 500" with no clue what threw. With it, the response
 // includes the type, message, and stack trace so the user can debug
-// without needing to open Seq for every 500. Production keeps the
-// default empty body for safety.
+// without needing to open Seq for every 500.
 if (app.Environment.IsDevelopment())
 {
     app.UseDeveloperExceptionPage();
+}
+else
+{
+    // Production: return a consistent { error } body for unhandled exceptions
+    // (matching the shape endpoints already use for 4xx) instead of an empty
+    // 500 the frontend can't parse. Details stay out of the response and in the
+    // logs/Seq — the exception was already logged by the framework.
+    app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new { error = "An unexpected error occurred." });
+    }));
 }
 
 // Download FFmpeg if not already present (needed for thumbnail generation).
@@ -250,7 +365,21 @@ if (app.Environment.IsDevelopment())
 var ffmpegDir = Path.Combine(AppContext.BaseDirectory, "ffmpeg");
 Directory.CreateDirectory(ffmpegDir);
 FFmpeg.SetExecutablesPath(ffmpegDir);
-await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, ffmpegDir);
+// Skip the (network) download when ffmpeg + ffprobe are already in place — a
+// prior run, a system install seeded into this dir, or the integration tests
+// that pre-seed it. Avoids a needless fetch on every boot and keeps tests
+// offline. On a fresh prod install the dir is empty, so the download still runs.
+if (!FfmpegBinariesPresent(ffmpegDir))
+{
+    await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, ffmpegDir);
+}
+
+static bool FfmpegBinariesPresent(string dir)
+{
+    var ext = OperatingSystem.IsWindows() ? ".exe" : string.Empty;
+    return File.Exists(Path.Combine(dir, "ffmpeg" + ext))
+        && File.Exists(Path.Combine(dir, "ffprobe" + ext));
+}
 
 // Apply any pending migrations at startup
 using (var scope = app.Services.CreateScope())
@@ -373,6 +502,10 @@ app.UseStaticFiles();
     });
 }
 
+// Keycloak auth gate (#124). No-op unless Auth:Enabled. Placed before the
+// endpoints so /api requires a valid token (and admin for writes) when on.
+VideoOrganizer.API.Auth.AuthSetup.UseSightsAuth(app);
+
 app.MapApiEndpoints();
 
 // SPA fallback: any non-API, non-Swagger, non-file route returns index.html
@@ -380,4 +513,8 @@ app.MapApiEndpoints();
 app.MapFallbackToFile("index.html");
 
 app.Run();
+
+// Exposed so WebApplicationFactory<Program> in the integration tests can boot
+// the real app. Top-level statements otherwise compile to an internal Program.
+public partial class Program { }
 

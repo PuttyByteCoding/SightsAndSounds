@@ -38,6 +38,7 @@
   let removing = $state(false);
   let deleting = $state(false);
   let togglingFav = $state(false);
+  let togglingHidden = $state(false);
   let errorMessage = $state<string | null>(null);
 
   // Cached full Tag for the current pending. Pre-fetched on dialog
@@ -204,6 +205,28 @@
     }
   }
 
+  // Flip the tag's "hidden by default" flag (issue #84). Optimistic, with
+  // rollback on failure, same as the favorite toggle. onTagChanged lets the
+  // host refresh the sidebar so the "(default hidden)" marker updates.
+  async function onToggleHidden() {
+    const p = filterStore.pending;
+    if (!p || p.type !== 'tag' || !loadedTag) return;
+    togglingHidden = true;
+    errorMessage = null;
+    const previous = loadedTag;
+    const next = !previous.hiddenByDefault;
+    loadedTag = { ...previous, hiddenByDefault: next };
+    try {
+      await api.setTagHiddenByDefault(p.value, next);
+      if (onTagChanged) await onTagChanged();
+    } catch (e) {
+      loadedTag = previous;
+      errorMessage = `Failed to update hidden-by-default: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      togglingHidden = false;
+    }
+  }
+
   async function onRemoveFromVideo() {
     const p = filterStore.pending;
     if (!p?.videoId || p.type !== 'tag') return;
@@ -252,7 +275,7 @@
   // beat repeated inline expressions on every {#if}.
   const isTag = $derived(filterStore.pending?.type === 'tag');
   const hasVideoCtx = $derived(!!filterStore.pending?.videoId);
-  const busy = $derived(renaming || removing || deleting || togglingFav);
+  const busy = $derived(renaming || removing || deleting || togglingFav || togglingHidden);
 </script>
 
 <svelte:window onkeydown={filterStore.pending ? onKey : undefined} />
@@ -361,11 +384,10 @@
         </div>
       {/if}
 
-      <!-- Two filter actions (both work for tag, folder, status, missing):
-           "Add to Existing Filter" keeps the current filter and adds this
-           item to a bucket; "Clear Existing Filter & Set" wipes the active
-           filter and makes this item the only one. -->
-      <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1">Add to Existing Filter</div>
+      <!-- Filter actions: add this item to one of the three buckets,
+           keeping the current filter intact. (The old "Clear Existing
+           Filter & Set" row that wiped the whole filter was removed.) -->
+      <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1">Add to Filter</div>
       <div class="flex gap-2">
         <button
           class="btn btn-sm btn-soft btn-success border border-success/50 flex-1"
@@ -384,24 +406,30 @@
         >Exclude</button>
       </div>
 
-      <div class="text-xs uppercase tracking-wide text-base-content/60 mb-1 mt-3">Clear Existing Filter &amp; Set</div>
-      <div class="flex gap-2">
-        <button
-          class="btn btn-sm btn-soft btn-success border border-success/50 flex-1"
-          onclick={() => filterStore.applyPendingReplacingAll('required')}
-          disabled={busy}
-        >Required</button>
-        <button
-          class="btn btn-sm btn-soft btn-info border border-info/50 flex-1"
-          onclick={() => filterStore.applyPendingReplacingAll('optional')}
-          disabled={busy}
-        >Optional</button>
-        <button
-          class="btn btn-sm btn-soft btn-error border border-error/50 flex-1"
-          onclick={() => filterStore.applyPendingReplacingAll('excluded')}
-          disabled={busy}
-        >Exclude</button>
-      </div>
+      {#if isTag}
+        <!-- Hidden-by-default toggle (issue #84). Videos with this tag are
+             hidden from the grid unless the user filters for the tag. Reflects
+             the pre-fetched tag's flag; optimistic on click. -->
+        <div class="flex items-center justify-between gap-3 mt-4 p-2 rounded bg-base-200">
+          <div class="min-w-0">
+            <div class="text-sm font-medium">Hidden by default</div>
+            <div class="text-xs text-base-content/60">
+              Hide videos with this tag unless you filter for it.
+            </div>
+          </div>
+          <span class="shrink-0 flex items-center gap-2">
+            {#if togglingHidden}<span class="loading loading-spinner loading-xs"></span>{/if}
+            <input
+              type="checkbox"
+              class="toggle toggle-sm toggle-primary"
+              checked={loadedTag?.hiddenByDefault ?? false}
+              disabled={busy || !loadedTag}
+              onchange={onToggleHidden}
+              aria-label="Hidden by default"
+            />
+          </span>
+        </div>
+      {/if}
 
       {#if isTag}
         <!-- Visual divider between the filter row (additive,

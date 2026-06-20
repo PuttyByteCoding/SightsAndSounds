@@ -1,12 +1,21 @@
 import type {
+  BackupInfo,
+  BackupSettings,
+  BulkCreateTagsRequest,
+  BulkCreateTagsResponse,
   CreateClipRequest,
   CreatePropertyDefinitionRequest,
   CreateTagGroupRequest,
   CreateTagRequest,
   DirectoryImportRequest,
   ImportBrowseResponse,
+  ImportFolderCount,
+  ImportedFolder,
   ImportScanProgress,
   MoveProgress,
+  OcrResult,
+  OcrTextLine,
+  OcrScanProgress,
   FileMoveLog,
   ImportFailedFileRow,
   ImportFileListResponse,
@@ -20,6 +29,8 @@ import type {
   LogEvent,
   PlaylistDto,
   PlaylistFilterRequest,
+  FilteredVideosPage,
+  BrowseSort,
   PlaylistNavigationDto,
   PropertyDefinition,
   SetPropertyValuesRequest,
@@ -27,17 +38,29 @@ import type {
   Tag,
   TagGroup,
   TagSearchHit,
+  TagSuggestion,
   UpdatePropertyDefinitionRequest,
   UpdateTagGroupRequest,
   UpdateTagRequest,
   UpdateVideoRequest,
   Video,
+  PurgeClipWarning,
+  StreamingOptimizeProgress,
+  RepairProgress,
+  JoinProgress,
+  EncodeProgress,
   VideoSet,
   VideoSetInput,
+  ReRootPreview,
   RuntimeInfo,
   FfprobeResult,
   FlagCounts,
   ClipSummary,
+  ClipExportQueueItem,
+  ClipExportProgress,
+  KeyframeCut,
+  BlockRemovalQueueItem,
+  BlockRemovalProgress,
   MissingVideoFile,
   PurgeMissingFilesResult,
   ExtraDiskFile,
@@ -49,11 +72,28 @@ import type {
   DuplicateStatus
 } from './types';
 
+import { errorBanner, httpErrorMessage } from './errorBanner.svelte';
+import { auth } from './auth.svelte';
+
 const BASE = '';
+
+// Bearer header for the current sign-in (#124). Empty when auth is off or the
+// user isn't signed in — so requests are unchanged in the no-auth case.
+async function authHeader(): Promise<Record<string, string>> {
+  const token = await auth.getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly method: string, public readonly url: string, body?: string) {
     super(`${method} ${url} failed: ${status}${body ? ` — ${body}` : ''}`);
+    // Surface every 4xx/5xx in the global banner (issue #201), regardless of
+    // whether the caller also handles it. Browser-only so SSR data loads don't
+    // push into the server-shared store. Constructed only on !res.ok, so any
+    // ApiError is a 4xx/5xx in practice; the guard is belt-and-suspenders.
+    if (status >= 400 && typeof window !== 'undefined') {
+      errorBanner.push(httpErrorMessage(status, method, url, body));
+    }
   }
 }
 
@@ -67,6 +107,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.body !== undefined && headers['Content-Type'] === undefined) {
     headers['Content-Type'] = 'application/json';
   }
+  Object.assign(headers, await authHeader());
   const res = await fetch(url, { ...init, headers });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -92,6 +133,18 @@ export const api = {
     request<void>(`/api/video-sets/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
   getVideoSetOrphanCount: (id: string) =>
     request<{ count: number }>(`/api/video-sets/${id}/orphan-count`),
+  // Re-root: spot-check a proposed new base path (no writes), then commit
+  // the move (rewrites the source path + every child video's FilePath). (#32)
+  reRootVideoSetPreview: (id: string, newPath: string) =>
+    request<ReRootPreview>(`/api/video-sets/${id}/re-root/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ newPath })
+    }),
+  reRootVideoSet: (id: string, newPath: string) =>
+    request<{ reRooted: number; newPath: string }>(`/api/video-sets/${id}/re-root`, {
+      method: 'POST',
+      body: JSON.stringify({ newPath })
+    }),
 
   // --- Workers -------------------------------------------------------------
 
@@ -146,12 +199,48 @@ export const api = {
   getVideo: (id: string) => request<Video | null>(`/api/videos/${id}`),
 
   // POST the three-way filter (Required / Optional / Excluded). Empty filter
-  // returns every enabled-set video.
-  filterVideos: (filter: PlaylistFilterRequest) =>
-    request<Video[]>('/api/videos/filter', {
+  // returns every enabled-set video. Returns the visible videos plus how many
+  // matches the auto-hide (#84) suppressed (from the X-Hidden-Count header), so
+  // the browse bar can show an "N hidden" status.
+  filterVideos: async (
+    filter: PlaylistFilterRequest,
+    signal?: AbortSignal
+  ): Promise<{ videos: Video[]; hiddenCount: number }> => {
+    const url = `${BASE}/api/videos/filter`;
+    const res = await fetch(url, {
       method: 'POST',
-      body: JSON.stringify(filter)
-    }),
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(await authHeader()) },
+      body: JSON.stringify(filter),
+      signal
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError(res.status, 'POST', url, body);
+    }
+    const videos = res.status === 204 ? [] : ((await res.json()) as Video[]);
+    const hiddenCount = Number(res.headers.get('X-Hidden-Count') ?? '0') || 0;
+    return { videos, hiddenCount };
+  },
+
+  // Keyset-paginated filter (#127). Returns one page + an opaque cursor for the
+  // next (null when last). `seed` only matters for shuffle. Pass `signal` so a
+  // superseded filter change can abort the in-flight page.
+  filterVideosPage: (
+    filter: PlaylistFilterRequest,
+    opts: { sort: BrowseSort; dir?: 'asc' | 'desc'; limit?: number; cursor?: string | null; seed?: string },
+    signal?: AbortSignal
+  ): Promise<FilteredVideosPage> => {
+    const qs = new URLSearchParams({ sort: opts.sort });
+    if (opts.dir) qs.set('dir', opts.dir);
+    if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts.cursor) qs.set('cursor', opts.cursor);
+    if (opts.seed) qs.set('seed', opts.seed);
+    return request<FilteredVideosPage>(`/api/videos/filter-page?${qs.toString()}`, {
+      method: 'POST',
+      body: JSON.stringify(filter),
+      signal
+    });
+  },
 
   // Simple AND-of-tags filter. For richer filtering use filterVideos.
   listVideosByTags: (params: { tagIds?: string[] }) => {
@@ -176,11 +265,72 @@ export const api = {
       body: JSON.stringify(body)
     }),
 
+  // OCR the on-screen text at time t (seconds) of the video (issue #5).
+  ocrVideoFrame: (id: string, t: number) =>
+    request<OcrResult>(`/api/videos/${id}/ocr?t=${encodeURIComponent(String(t))}`),
+
+  // Full-video OCR text scan (issue #5, ask 2). Start/resume runs a background
+  // scan; poll progress; stop is cooperative (keeps the resume marker).
+  startOcrScan: (id: string) =>
+    request<OcrScanProgress>(`/api/videos/${id}/ocr-scan`, { method: 'POST' }),
+  getOcrScanProgress: (id: string) =>
+    request<OcrScanProgress>(`/api/videos/${id}/ocr-scan`),
+  stopOcrScan: (id: string) =>
+    request<OcrScanProgress>(`/api/videos/${id}/ocr-scan/stop`, { method: 'POST' }),
+  // A video's stored OCR hits in playhead order (optionally filtered by q).
+  getVideoOcrText: (id: string, q?: string) =>
+    request<OcrTextLine[]>(
+      `/api/videos/${id}/ocr-text${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+
+  // Tags whose name/alias appears in this video's file name or folder path,
+  // excluding ones already applied (issue #10).
+  getTagSuggestions: (id: string) =>
+    request<TagSuggestion[]>(`/api/videos/${id}/tag-suggestions`),
+
+  // Candidate *new* tag names parsed from the file name + path — the Tag
+  // panel's Ctrl+Shift+T "potential tags" (issue #10).
+  getTagCandidates: (id: string) =>
+    request<string[]>(`/api/videos/${id}/tag-candidates`),
+
   setVideoProperties: (id: string, body: SetPropertyValuesRequest) =>
     request<void>(`/api/videos/${id}/properties`, {
       method: 'PUT',
       body: JSON.stringify(body)
     }),
+
+  // Clip flag (#167) — user-settable so imported standalone clips can be marked.
+  markClip: (id: string) =>
+    request<void>(`/api/videos/${id}/mark-clip`, { method: 'POST' }),
+  unmarkClip: (id: string) =>
+    request<void>(`/api/videos/${id}/unmark-clip`, { method: 'POST' }),
+
+  // Optimize videos for streaming — faststart remux in place (#166).
+  startOptimizeStreaming: (videoIds: string[]) =>
+    request<StreamingOptimizeProgress>('/api/optimize-streaming', { method: 'POST', body: JSON.stringify({ videoIds }) }),
+  getOptimizeStreamingProgress: () => request<StreamingOptimizeProgress>('/api/optimize-streaming'),
+  stopOptimizeStreaming: () => request<StreamingOptimizeProgress>('/api/optimize-streaming/stop', { method: 'POST' }),
+
+  // Rename the video's file in place (same folder, new base name). (#172)
+  renameVideo: (id: string, newName: string) =>
+    request<Video>(`/api/videos/${id}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ newName })
+    }),
+
+  // Join (concatenate) videos in order into one new file (#163).
+  startJoin: (videoIds: string[], reencode: boolean, name?: string) =>
+    request<JoinProgress>('/api/join', {
+      method: 'POST',
+      body: JSON.stringify({ videoIds, reencode, name })
+    }),
+  getJoinProgress: () => request<JoinProgress>('/api/join'),
+  stopJoin: () => request<JoinProgress>('/api/join/stop', { method: 'POST' }),
+
+  // Encode/convert videos to the configured profile (#164).
+  startEncode: (videoIds: string[]) =>
+    request<EncodeProgress>('/api/encode', { method: 'POST', body: JSON.stringify({ videoIds }) }),
+  getEncodeProgress: () => request<EncodeProgress>('/api/encode'),
+  stopEncode: () => request<EncodeProgress>('/api/encode/stop', { method: 'POST' }),
 
   markForDeletion: (id: string) =>
     request<Video>(`/api/videos/${id}/mark-for-deletion`, { method: 'POST' }),
@@ -211,6 +361,38 @@ export const api = {
   // a video that itself is a clip (it has no children).
   listClipsOfVideo: (parentId: string) =>
     request<ClipSummary[]>(`/api/videos/${parentId}/clips`),
+
+  // --- Clip export (issue #69) -------------------------------------------
+  // Parents that still have un-exported clips, with their clips.
+  getClipExportQueue: () =>
+    request<ClipExportQueueItem[]>(`/api/clips-export/queue`),
+  // The keyframe-snapped start the stream-copy export will actually use.
+  getClipKeyframeCut: (clipId: string) =>
+    request<KeyframeCut>(`/api/videos/${clipId}/keyframe-cut`),
+  // Start / poll / stop a background export run. Each item carries an optional
+  // output name (#173); blank uses the default "<parent>_clip".
+  startClipExport: (clips: { clipId: string; name?: string }[]) =>
+    request<ClipExportProgress>(`/api/clips-export`, {
+      method: 'POST',
+      body: JSON.stringify({ clips })
+    }),
+  getClipExportProgress: () =>
+    request<ClipExportProgress>(`/api/clips-export`),
+  stopClipExport: () =>
+    request<ClipExportProgress>(`/api/clips-export/stop`, { method: 'POST' }),
+
+  // --- Remove blocked sections (issue #70) -------------------------------
+  getBlockRemovalQueue: () =>
+    request<BlockRemovalQueueItem[]>(`/api/remove-blocks/queue`),
+  startBlockRemoval: (videoIds: string[]) =>
+    request<BlockRemovalProgress>(`/api/remove-blocks`, {
+      method: 'POST',
+      body: JSON.stringify({ videoIds })
+    }),
+  getBlockRemovalProgress: () =>
+    request<BlockRemovalProgress>(`/api/remove-blocks`),
+  stopBlockRemoval: () =>
+    request<BlockRemovalProgress>(`/api/remove-blocks/stop`, { method: 'POST' }),
 
   // --- Data validation ---------------------------------------------------
   // Video rows whose FilePath no longer resolves on disk. By default
@@ -268,6 +450,9 @@ export const api = {
     request<Video>(`/api/file-moves/${moveId}/revert`, { method: 'POST' }),
 
   getMarkedForDeletion: () => request<Video[]>('/api/videos/marked-for-deletion'),
+  // Parents marked for deletion that still have embedded (un-exported) clips (#174).
+  getPurgeClipWarnings: () =>
+    request<PurgeClipWarning[]>('/api/videos/purge-clip-warnings'),
   purgeVideo: (id: string) =>
     request<void>(`/api/videos/${id}/purge`, { method: 'POST' }),
   purgeAllMarkedForDeletion: () =>
@@ -279,6 +464,12 @@ export const api = {
   // Triage list — videos the user has flagged with PlaybackIssue.
   // Powers the /playback-issues page (parallel to /purge).
   getPlaybackIssues: () => request<Video[]>('/api/videos/playback-issues'),
+
+  // Repair (re-encode to browser-friendly H.264) the given videos (#165).
+  startRepair: (videoIds: string[]) =>
+    request<RepairProgress>('/api/repair', { method: 'POST', body: JSON.stringify({ videoIds }) }),
+  getRepairProgress: () => request<RepairProgress>('/api/repair'),
+  stopRepair: () => request<RepairProgress>('/api/repair/stop', { method: 'POST' }),
   // Bulk-purge every PlaybackIssue row in one shot. Same response
   // shape as purgeAllMarkedForDeletion so the page's bulk-progress
   // modal can consume both interchangeably.
@@ -338,8 +529,21 @@ export const api = {
   getTag: (id: string) => request<Tag>(`/api/tags/${id}`),
   createTag: (req: CreateTagRequest) =>
     request<Tag>('/api/tags', { method: 'POST', body: JSON.stringify(req) }),
+  // Create many tags in one request (issue #49) — used by the Tag
+  // Management paste box instead of one POST per name.
+  bulkCreateTags: (req: BulkCreateTagsRequest) =>
+    request<BulkCreateTagsResponse>('/api/tags/bulk', {
+      method: 'POST',
+      body: JSON.stringify(req)
+    }),
   updateTag: (id: string, req: UpdateTagRequest) =>
     request<void>(`/api/tags/${id}`, { method: 'PUT', body: JSON.stringify(req) }),
+  // Toggle just the "hidden by default" flag (issue #84).
+  setTagHiddenByDefault: (id: string, hidden: boolean) =>
+    request<void>(`/api/tags/${id}/hidden-by-default`, {
+      method: 'PUT',
+      body: JSON.stringify({ hidden })
+    }),
   deleteTag: (id: string) =>
     request<void>(`/api/tags/${id}`, { method: 'DELETE' }),
   mergeTags: (req: MergeTagsRequest) =>
@@ -356,7 +560,7 @@ export const api = {
   // discriminated SearchResponse so the caller can pattern-match on
   // result.kind. Empty / whitespace queries short-circuit to an empty
   // response without a network round-trip.
-  search: async (opts: SearchRequestOpts): Promise<SearchResponse> => {
+  search: async (opts: SearchRequestOpts, signal?: AbortSignal): Promise<SearchResponse> => {
     const q = opts.q.trim();
     if (!q) {
       return { query: '', totalCount: 0, truncated: false, results: [] };
@@ -366,7 +570,7 @@ export const api = {
     if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
     if (opts.offset !== undefined) qs.set('offset', String(opts.offset));
     if (opts.kinds !== undefined) qs.set('kinds', opts.kinds);
-    return request<SearchResponse>(`/api/search?${qs.toString()}`);
+    return request<SearchResponse>(`/api/search?${qs.toString()}`, { signal });
   },
   setTagProperties: (id: string, body: SetPropertyValuesRequest) =>
     request<void>(`/api/tags/${id}/properties`, {
@@ -437,12 +641,56 @@ export const api = {
   },
   getRuntimeInfo: () => request<RuntimeInfo>('/api/runtime-info'),
 
-  browseImport: (path?: string | null) => {
-    const url = path && path.trim().length > 0
-      ? `/api/import/browse?path=${enc(path)}`
-      : '/api/import/browse';
-    return request<ImportBrowseResponse>(url);
+  // --- Backups (issue #32) -------------------------------------------------
+  createBackupSnapshot: () =>
+    request<BackupInfo>('/api/backup/snapshot', { method: 'POST' }),
+  listBackups: () => request<BackupInfo[]>('/api/backup'),
+  getBackupSettings: () => request<BackupSettings>('/api/backup/settings'),
+  setBackupDirectory: (directory: string) =>
+    request<BackupSettings>('/api/backup/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ directory })
+    }),
+  deleteBackup: (fileName: string) =>
+    request<void>(`/api/backup/${encodeURIComponent(fileName)}`, { method: 'DELETE' }),
+  // Replace the whole DB from a JSON snapshot. The server takes a pre-restore
+  // safety snapshot first and returns its name. (#32)
+  restoreBackup: (fileName: string) =>
+    request<{
+      restoredFrom: string;
+      safetySnapshot: string;
+      videos: number;
+      tags: number;
+      videoSets: number;
+    }>(`/api/backup/${encodeURIComponent(fileName)}/restore`, { method: 'POST' }),
+  backupDownloadUrl: (fileName: string) =>
+    `/api/backup/${encodeURIComponent(fileName)}/download`,
+
+  // refresh=true bypasses the server's per-folder scan cache and re-walks
+  // the filesystem — backs the Sources refresh button. (issue #4)
+  browseImport: (path?: string | null, refresh = false) => {
+    const params = new URLSearchParams();
+    if (path && path.trim().length > 0) params.set('path', path);
+    if (refresh) params.set('refresh', 'true');
+    const qs = params.toString();
+    return request<ImportBrowseResponse>(`/api/import/browse${qs ? `?${qs}` : ''}`);
   },
+  // Lazily fetch one folder's recursive video count — browse returns the tree
+  // immediately without it, the client fills badges in afterward. (issue #197)
+  getImportFolderCount: (path: string) =>
+    request<ImportFolderCount>(`/api/import/folder-count?path=${encodeURIComponent(path)}`),
+  // Flat list of folders that already hold imported videos — the move
+  // dialog's destination choices. (issue #4)
+  listImportedFolders: () =>
+    request<ImportedFolder[]>('/api/import/imported-folders'),
+
+  // Remove every imported video under a folder from the library (issue #53).
+  // Files on disk are left alone; returns how many videos were removed.
+  removeLibraryFolder: (path: string) =>
+    request<{ removed: number }>('/api/library/remove-folder', {
+      method: 'POST',
+      body: JSON.stringify({ path })
+    }),
   // Live count of video files discovered by an in-flight browse scan.
   // Polled by the Import page while a source loads. (issue #27)
   getImportScanProgress: () =>

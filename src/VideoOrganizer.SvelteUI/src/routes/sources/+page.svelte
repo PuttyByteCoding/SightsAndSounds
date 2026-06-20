@@ -1,13 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import {
-    playbackSettings,
-    savePlaybackSettings,
-    resetPlaybackSettings,
-    defaultSettings
-  } from '$lib/playbackSettings.svelte';
   import { api } from '$lib/api';
-  import type { VideoSet } from '$lib/types';
+  import type { VideoSet, ReRootPreview } from '$lib/types';
   import {
     applySortClick,
     ariaSort,
@@ -54,46 +48,6 @@
     + getSourcesWidth('status', 110)
     + getSourcesWidth('actions', 200)
   );
-
-  // --- Skip settings ---
-
-  let status = $state<string | null>(null);
-  let statusTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const rows = [
-    { key: 'key1Seconds', label: 'Key 1 (backward)' },
-    { key: 'key3Seconds', label: 'Key 3 (forward)' },
-    { key: 'key4Seconds', label: 'Key 4 (backward)' },
-    { key: 'key6Seconds', label: 'Key 6 (forward)' },
-    { key: 'key7Seconds', label: 'Key 7 (backward)' },
-    { key: 'key9Seconds', label: 'Key 9 (forward)' }
-  ] as const;
-
-  function flash(message: string) {
-    status = message;
-    if (statusTimer) clearTimeout(statusTimer);
-    statusTimer = setTimeout(() => (status = null), 2500);
-  }
-
-  function normalize() {
-    for (const { key } of rows) {
-      const v = playbackSettings[key];
-      playbackSettings[key] = Math.max(0, Number.isFinite(v) ? Math.floor(v) : 0);
-    }
-  }
-
-  function handleSubmit(event: SubmitEvent) {
-    event.preventDefault();
-    normalize();
-    savePlaybackSettings({ ...playbackSettings });
-    flash('Saved');
-  }
-
-  function handleReset() {
-    resetPlaybackSettings();
-    Object.assign(playbackSettings, defaultSettings());
-    flash('Reset to defaults');
-  }
 
   // --- Sources (stored as VideoSet records) ---
 
@@ -171,23 +125,24 @@
   let renameError = $state<string | null>(null);
   let renameInput: HTMLInputElement | null = $state(null);
 
-  // Inline path edit. Same shape as the name rename above so the
-  // template can mirror the pencil-toggles-input pattern. Path
-  // changes are higher-stakes than name changes — every Video row
-  // under the old prefix becomes an orphan — so commitPathEdit
-  // first probes the orphan count and routes through a confirm
-  // modal before actually saving.
+  // Inline path edit ("Change location"). Same shape as the name rename
+  // above so the template can mirror the pencil-toggles-input pattern.
+  // Path changes are higher-stakes than name changes: every Video.FilePath
+  // under the old prefix has to move with the source or it orphans. So a
+  // path change re-roots — it rewrites the source path AND every child
+  // video's FilePath together — and routes through a confirm modal that
+  // spot-checks a sample of files at the new location first (issue #32).
   let pathEditingId = $state<string | null>(null);
   let pathEditValue = $state('');
   let pathEditSaving = $state(false);
   let pathEditError = $state<string | null>(null);
   let pathEditInput: HTMLInputElement | null = $state(null);
-  // When set, a confirmation modal asks the user whether to
-  // proceed with a path change that would orphan N videos. Only
-  // shown when count > 0 — a no-orphan rename saves silently.
+  // When set, a confirmation modal previews the re-root: how many videos
+  // move and whether a sample of them is reachable at the new base path.
   let pathChangeConfirm = $state<
-    { set: VideoSet; oldPath: string; newPath: string; orphans: number } | null
+    { set: VideoSet; oldPath: string; newPath: string; preview: ReRootPreview } | null
   >(null);
+  let pathPreviewLoading = $state(false);
 
   function startPathEdit(s: VideoSet) {
     pathEditingId = s.id;
@@ -226,39 +181,30 @@
       cancelPathEdit();
       return;
     }
-    pathEditSaving = true;
+    pathPreviewLoading = true;
     pathEditError = null;
     try {
-      // Probe orphan count so the confirm modal can quote a
-      // number. The endpoint counts Video rows whose FilePath
-      // starts with the source's *current* (old) path.
-      const { count } = await api.getVideoSetOrphanCount(s.id);
-      if (count > 0) {
-        pathChangeConfirm = { set: s, oldPath: s.path, newPath: next, orphans: count };
-        return; // doSavePath fires from the modal's Confirm button
-      }
-      // No orphans — save silently.
-      await doSavePath(s, next);
+      // Spot-check the move before committing: how many videos would be
+      // repointed, and is a sample of them actually reachable at the new
+      // base? The confirm modal renders the result.
+      const preview = await api.reRootVideoSetPreview(s.id, next);
+      pathChangeConfirm = { set: s, oldPath: s.path, newPath: next, preview };
     } catch (e) {
       pathEditError = e instanceof Error ? e.message : String(e);
     } finally {
-      pathEditSaving = false;
+      pathPreviewLoading = false;
     }
   }
 
-  // Actual API write. Split out so the no-orphan fast path and
-  // the confirmed-orphan path can both reach it.
-  async function doSavePath(s: VideoSet, newPath: string) {
+  // Commit the re-root: rewrites the source path + every child FilePath
+  // together so the library follows the source to its new location.
+  async function confirmPathChange() {
+    const c = pathChangeConfirm;
+    if (!c) return;
     pathEditSaving = true;
     pathEditError = null;
     try {
-      await api.updateVideoSet(s.id, {
-        id: s.id,
-        name: s.name,
-        path: newPath,
-        enabled: s.enabled,
-        sortOrder: s.sortOrder
-      });
+      await api.reRootVideoSet(c.set.id, c.newPath);
       await loadSets();
       cancelPathEdit();
       pathChangeConfirm = null;
@@ -267,12 +213,6 @@
     } finally {
       pathEditSaving = false;
     }
-  }
-
-  async function confirmPathChange() {
-    const c = pathChangeConfirm;
-    if (!c) return;
-    await doSavePath(c.set, c.newPath);
   }
   function cancelPathChangeConfirm() {
     if (pathEditSaving) return;
@@ -418,6 +358,13 @@
     try {
       const existing = sets.find((s) => s.id === editing!.id);
       if (existing) {
+        // A path change on an existing source has to re-root, or every
+        // video under it orphans. Re-root first (rewrites the path + child
+        // FilePaths), then save name/enabled. updateVideoSet alone would
+        // move the source out from under its videos. (issue #32)
+        if (body.path !== existing.path) {
+          await api.reRootVideoSet(existing.id, body.path);
+        }
         await api.updateVideoSet(editing.id, body);
       } else {
         await api.createVideoSet(body);
@@ -466,12 +413,9 @@
   }
 </script>
 
-<div class="max-w-4xl space-y-10">
-  <!-- ========= Sources =========
-       Lifted to the top of the Configuration page because it's the
-       most-edited surface here — every fresh deploy needs at least
-       one source mapped before anything else on the page becomes
-       relevant. Keyboard Shortcuts and the Style Guide follow. -->
+<div class="max-w-4xl p-6 space-y-10">
+  <!-- Sources — the configured VideoSet roots the library imports from.
+       Split out of the old Configuration page into its own page (issue #67). -->
   <section>
     <div class="flex items-center justify-between mb-4">
       <h1 class="text-2xl font-semibold">Sources</h1>
@@ -621,23 +565,23 @@
                         bind:value={pathEditValue}
                         onpaste={onInlinePathPaste}
                         onkeydown={(e) => onPathEditKey(e, s)}
-                        disabled={pathEditSaving}
+                        disabled={pathEditSaving || pathPreviewLoading}
                         placeholder="C:/MyVideos or /mnt/videos"
                       />
                       <button
                         type="button"
                         class="btn btn-xs btn-soft btn-primary btn-cta shrink-0"
                         onclick={() => commitPathEdit(s)}
-                        disabled={pathEditSaving}
+                        disabled={pathEditSaving || pathPreviewLoading}
                       >
-                        {#if pathEditSaving}<span class="loading loading-spinner loading-xs"></span>{/if}
+                        {#if pathPreviewLoading}<span class="loading loading-spinner loading-xs"></span>{/if}
                         Save
                       </button>
                       <button
                         type="button"
                         class="btn btn-xs btn-cancel shrink-0"
                         onclick={cancelPathEdit}
-                        disabled={pathEditSaving}
+                        disabled={pathEditSaving || pathPreviewLoading}
                       >Cancel</button>
                     </div>
                     {#if pathEditError}<div class="text-error text-xs mt-1">{pathEditError}</div>{/if}
@@ -688,239 +632,6 @@
         </table>
       </div>
     {/if}
-  </section>
-
-  <!-- ========= Keyboard Shortcuts ========= -->
-  <section>
-    <h2 class="text-2xl font-semibold mb-4">Keyboard Shortcuts</h2>
-    <p class="text-sm text-base-content/70 mb-6">
-      All shortcuts are active on the Video Player page. They're ignored while you're
-      typing in any input, textarea, or select — so entering text into tag fields
-      never triggers a skip or a file move.
-    </p>
-
-    <!-- Configurable seek times -->
-    <h2 class="text-lg font-medium mb-3">Seek (configurable)</h2>
-    <form onsubmit={handleSubmit} class="space-y-4 max-w-xl">
-      {#each rows as row (row.key)}
-        <div class="form-control">
-          <label class="label" for={row.key}>
-            <span class="label-text">{row.label}</span>
-          </label>
-          <div class="join">
-            <input
-              id={row.key}
-              type="number"
-              min="0"
-              class="input input-bordered join-item w-32"
-              bind:value={playbackSettings[row.key]}
-            />
-            <span class="join-item px-3 flex items-center bg-base-200 text-base-content/70 text-sm rounded-r">
-              seconds
-            </span>
-          </div>
-        </div>
-      {/each}
-
-      <div class="flex items-center gap-3 pt-2">
-        <button type="submit" class="btn btn-soft btn-primary btn-cta">Save</button>
-        <button type="button" class="btn btn-cancel" onclick={handleReset}>Reset Defaults</button>
-        {#if status}<span class="text-success text-sm">{status}</span>{/if}
-      </div>
-    </form>
-
-    <!-- Fixed shortcuts -->
-    <h2 class="text-lg font-medium mt-8 mb-3">Playlist &amp; actions</h2>
-    <div class="overflow-x-auto max-w-xl">
-      <table class="table table-sm">
-        <thead>
-          <tr>
-            <th class="w-24">Key</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><kbd class="kbd kbd-sm">←</kbd></td>
-            <td>
-              Save metadata (if changed) and go back to the previous video.
-              Works even when a tag input has focus.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">→</kbd></td>
-            <td>
-              Save metadata (if changed) and advance to the next video. Works
-              even when a tag input has focus — no need to Escape out first.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">Space</kbd></td>
-            <td>Toggle <span class="font-semibold">play / pause</span>. Ignored while typing in a tag input.</td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">T</kbd> / <kbd class="kbd kbd-sm">1</kbd></td>
-            <td>Toggle the Edit Tags panel</td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">W</kbd></td>
-            <td>
-              Toggle the <span class="font-semibold">Playback Issue</span> tag and advance to the next video.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">D</kbd></td>
-            <td>
-              Mark <span class="font-semibold">to Delete</span> — moves the file to
-              <code>&lt;set&gt;/_ToDelete</code> and advances to the next video.
-              The app never actually deletes anything.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">U</kbd></td>
-            <td>
-              <span class="font-semibold">Undo</span> the mark on the current video —
-              moves the file back to its original location and clears the flag.
-              Typical review flow: press <kbd class="kbd kbd-xs">W</kbd>/<kbd class="kbd kbd-xs">D</kbd>,
-              realize the mistake, press <kbd class="kbd kbd-xs">←</kbd> to go back,
-              then <kbd class="kbd kbd-xs">U</kbd>.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">I</kbd></td>
-            <td>
-              Toggle the <span class="font-semibold">File Info</span> dialog — shows
-              dimensions, codec, bitrate, frame rate, stream counts, and other
-              technical metadata for the current video.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">R</kbd></td>
-            <td>
-              Toggle the <span class="font-semibold">Needs Review</span> flag on
-              the current video. If it was set, clears it and advances to the
-              next video (the common review-pile workflow). If it was unset,
-              re-flags the video and stays put so you can keep working with it.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">F</kbd></td>
-            <td>
-              Toggle the <span class="font-semibold">Favorite</span> flag on the
-              current video and save. Works on both the Video Player and the
-              inline player in the Video Browser.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">\</kbd></td>
-            <td>
-              Snap the video back to <span class="font-semibold">fit-to-column</span>
-              size. The percent indicator next to the filename shows current
-              size vs. native and also clicks back to fit. Capped at 2x native
-              by default so a low-res file doesn't balloon. Resets on every
-              new video.
-            </td>
-          </tr>
-          <tr>
-            <td><kbd class="kbd kbd-sm">K</kbd></td>
-            <td>
-              Drop a <span class="font-semibold">bookmark</span> at the current
-              time. Default label is the timestamp; rename it inline in the
-              Bookmarks list under the video. Bookmarks show as blue pins on
-              the scrubber and save with the video on next navigation.
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <kbd class="kbd kbd-sm">Ctrl</kbd>+<kbd class="kbd kbd-sm">⇧</kbd>+<kbd class="kbd kbd-sm">[</kbd> /
-              <kbd class="kbd kbd-sm">Ctrl</kbd>+<kbd class="kbd kbd-sm">⇧</kbd>+<kbd class="kbd kbd-sm">]</kbd>
-            </td>
-            <td>
-              Start / end a <span class="font-semibold">clip</span>.
-              <kbd class="kbd kbd-xs">Ctrl</kbd>+<kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">[</kbd>
-              captures the clip's in-point and pins the scrubber visible.
-              Auto-skip of existing Hide blocks is suspended so the in-point
-              and end-point can both be reached.
-              <kbd class="kbd kbd-xs">Ctrl</kbd>+<kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">]</kbd>
-              commits and saves a new video row with <code>IsClip = true</code>;
-              <kbd class="kbd kbd-xs">Esc</kbd> cancels. Tags are inherited
-              from the parent. Playing the clip auto-seeks to the in-point
-              and loops at the out-point. Filter your library by the Clip
-              flag to see just your clips.
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <kbd class="kbd kbd-sm">⇧</kbd>+<kbd class="kbd kbd-sm">[</kbd> /
-              <kbd class="kbd kbd-sm">⇧</kbd>+<kbd class="kbd kbd-sm">]</kbd>
-            </td>
-            <td>
-              <span class="font-semibold">Block editor.</span>
-              <kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">[</kbd>
-              captures the start of a do-not-play segment at the current
-              time and pins the scrubber visible. Auto-skip is suspended
-              while you're picking the end so the entire timeline is
-              scrubbable. <kbd class="kbd kbd-xs">⇧</kbd>+<kbd class="kbd kbd-xs">]</kbd>
-              commits the block; <kbd class="kbd kbd-xs">Esc</kbd> cancels.
-              Overlapping or directly-adjacent blocks merge into one. Blocks
-              render as red strips on the scrubber and in a timestamped
-              list below it for jump-to and delete.
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <kbd class="kbd kbd-sm">[</kbd> /
-              <kbd class="kbd kbd-sm">]</kbd> /
-              <kbd class="kbd kbd-sm">\</kbd>
-            </td>
-            <td>
-              <span class="font-semibold">Video size.</span>
-              <kbd class="kbd kbd-xs">[</kbd> shrinks,
-              <kbd class="kbd kbd-xs">]</kbd> enlarges
-              (cap 2× the native pixel width).
-              <kbd class="kbd kbd-xs">\</kbd> resets to fit-to-column.
-              The current scale shows next to the Download button and is
-              click-to-reset.
-            </td>
-          </tr>
-          <tr>
-            <td>Numpad <kbd class="kbd kbd-sm">1/3/4/6/7/9</kbd></td>
-            <td>
-              Seek, no matter where focus is. Always preventDefault'd so
-              numpad digits don't land in tag inputs.
-            </td>
-          </tr>
-          <tr>
-            <td>Numpad <kbd class="kbd kbd-sm">0</kbd></td>
-            <td>Jump to the start of the video (00:00).</td>
-          </tr>
-          <tr>
-            <td>Numpad <kbd class="kbd kbd-sm">−</kbd></td>
-            <td>Jump to 10 seconds from the end of the video.</td>
-          </tr>
-          <tr>
-            <td>
-              <kbd class="kbd kbd-sm">⇧</kbd> + <kbd class="kbd kbd-sm">1/3/4/6/7/9</kbd>
-            </td>
-            <td>
-              Seek while typing in a tag input using the top-row digit keys.
-              Shift prevents the corresponding character (<code>!#$^&amp;(</code>)
-              from landing in the field.
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="mt-8">
-    <h2 class="text-2xl font-semibold mb-2">Style Guide</h2>
-    <p class="text-sm text-base-content/70 mb-3">
-      Reference of every color and button style used in the app.
-    </p>
-    <a href="/style-guide" class="btn btn-sm btn-soft btn-accent border border-accent/50">
-      Open Style Guide →
-    </a>
   </section>
 </div>
 
@@ -1017,37 +728,76 @@
   </div>
 {/if}
 
-<!-- ========= Path-change orphan warning =========
-     Shown when an inline path edit would leave Video rows pointing
-     at a prefix that no source covers anymore. The save still
-     succeeds (the API doesn't block path changes), but the orphans
-     stop being browsable / streamable until another source covers
-     them or their FilePaths are rewritten. Surfacing the count up-
-     front lets the user back out before the change lands. -->
+<!-- ========= Re-root confirm (Change location) =========
+     A path change moves the source AND every video under it together
+     (re-root), so the library doesn't orphan. Before committing we
+     spot-check a sample of the moved files at the new base path so the
+     user can confirm the mapping is right (e.g. after migrating the
+     library to a Linux mount). (issue #32) -->
 {#if pathChangeConfirm}
   {@const c = pathChangeConfirm}
+  {@const p = c.preview}
+  {@const allFound = p.sampled > 0 && p.missing === 0}
   <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="path-change-title">
     <div class="modal-box space-y-3">
-      <h3 id="path-change-title" class="text-lg font-bold">Change source path?</h3>
+      <h3 id="path-change-title" class="text-lg font-bold">Change source location?</h3>
       <p class="text-sm text-base-content/80">
-        Update
+        Move
         <span class="font-semibold {c.set.enabled ? '' : 'line-through text-base-content/60'}"
-        >{c.set.name}</span>{#if !c.set.enabled}<span class="text-xs italic text-base-content/50 ml-1">(Disabled)</span>{/if}?
+        >{c.set.name}</span>{#if !c.set.enabled}<span class="text-xs italic text-base-content/50 ml-1">(Disabled)</span>{/if}
+        and re-point its videos.
       </p>
       <div class="text-xs space-y-1">
         <div><span class="text-base-content/60">From:</span> <code class="font-mono">{c.oldPath}</code></div>
         <div><span class="text-base-content/60">To:</span> <code class="font-mono">{c.newPath}</code></div>
       </div>
-      <div class="alert alert-warning text-sm">
-        This will orphan <span class="font-semibold">{c.orphans}</span>
-        {c.orphans === 1 ? 'video' : 'videos'} whose paths are under
-        <code>{c.oldPath}</code>. The video records remain in the
-        database but won't stream or appear in listings until another
-        source covers them.
+
+      <div class="text-sm">
+        <span class="font-semibold">{p.totalAffected}</span>
+        {p.totalAffected === 1 ? 'video' : 'videos'} will be re-pointed to the new location.
       </div>
+
+      {#if !p.newBaseExists}
+        <div class="alert alert-warning text-sm">
+          The new folder <code>{c.newPath}</code> isn't reachable from the
+          server right now. You can still proceed, but the videos won't
+          stream until the path exists.
+        </div>
+      {/if}
+
+      {#if p.sampled > 0}
+        <!-- Spot check: stat'd a sample of the moved files at the new base. -->
+        <div class="alert {allFound ? 'alert-success' : 'alert-warning'} text-sm flex-col items-start gap-1">
+          <span>
+            Spot check: <span class="font-semibold">{p.found}/{p.sampled}</span>
+            sampled files found at the new location.
+          </span>
+          {#if !allFound}
+            <span class="text-xs opacity-80">
+              Some samples weren't found — double-check the new path points at the
+              same folder the files actually live in.
+            </span>
+          {/if}
+        </div>
+        <details class="text-xs">
+          <summary class="cursor-pointer text-base-content/60">Show sampled files</summary>
+          <ul class="mt-1 space-y-0.5">
+            {#each p.examples as ex (ex.oldPath)}
+              <li class="flex items-start gap-1 font-mono break-all">
+                <span class={ex.exists ? 'text-success' : 'text-error'}>{ex.exists ? '✓' : '✕'}</span>
+                <span>{ex.newPath}</span>
+              </li>
+            {/each}
+          </ul>
+        </details>
+      {:else}
+        <div class="text-sm text-base-content/70">
+          No videos are stored under this source yet — only the source path changes.
+        </div>
+      {/if}
+
       <div class="modal-action">
-        <!-- Cancel autofocused so accidental Enter dismisses
-             instead of orphaning N videos. -->
+        <!-- Cancel autofocused so accidental Enter dismisses. -->
         <!-- svelte-ignore a11y_autofocus -->
         <button
           type="button"
@@ -1058,12 +808,12 @@
         >Cancel</button>
         <button
           type="button"
-          class="btn btn-soft btn-warning border border-warning/50"
+          class="btn {allFound || p.sampled === 0 ? 'btn-soft btn-primary btn-cta' : 'btn-soft btn-warning border border-warning/50'}"
           onclick={confirmPathChange}
           disabled={pathEditSaving}
         >
           {#if pathEditSaving}<span class="loading loading-spinner loading-xs"></span>{/if}
-          Change path
+          Move &amp; re-point
         </button>
       </div>
     </div>

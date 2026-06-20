@@ -17,7 +17,7 @@ namespace VideoOrganizer.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.7")
+                .HasAnnotation("ProductVersion", "10.0.9")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -88,6 +88,29 @@ namespace VideoOrganizer.Infrastructure.Migrations
                     b.ToTable("file_move_logs", (string)null);
                 });
 
+            modelBuilder.Entity("VideoOrganizer.Domain.Models.OcrTextLine", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Text")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<double>("TimeSeconds")
+                        .HasColumnType("double precision");
+
+                    b.Property<Guid>("VideoId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VideoId", "TimeSeconds");
+
+                    b.ToTable("ocr_text_lines", (string)null);
+                });
+
             modelBuilder.Entity("VideoOrganizer.Domain.Models.PropertyDefinition", b =>
                 {
                     b.Property<Guid>("Id")
@@ -146,6 +169,9 @@ namespace VideoOrganizer.Infrastructure.Migrations
                     b.Property<string>("Aliases")
                         .IsRequired()
                         .HasColumnType("jsonb");
+
+                    b.Property<bool>("HiddenByDefault")
+                        .HasColumnType("boolean");
 
                     b.Property<bool>("IsFavorite")
                         .ValueGeneratedOnAdd()
@@ -261,6 +287,9 @@ namespace VideoOrganizer.Infrastructure.Migrations
                     b.Property<double?>("ClipEndSeconds")
                         .HasColumnType("double precision");
 
+                    b.Property<bool>("ClipExported")
+                        .HasColumnType("boolean");
+
                     b.Property<double?>("ClipStartSeconds")
                         .HasColumnType("double precision");
 
@@ -269,6 +298,9 @@ namespace VideoOrganizer.Infrastructure.Migrations
 
                     b.Property<TimeSpan>("Duration")
                         .HasColumnType("interval");
+
+                    b.Property<Guid?>("ExportedToVideoId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("FileName")
                         .IsRequired()
@@ -296,6 +328,15 @@ namespace VideoOrganizer.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<bool>("IsClip")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsEdited")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsExportedClip")
+                        .HasColumnType("boolean");
 
                     b.Property<bool>("IsFavorite")
                         .ValueGeneratedOnAdd()
@@ -328,6 +369,9 @@ namespace VideoOrganizer.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(4096)
                         .HasColumnType("character varying(4096)");
+
+                    b.Property<double?>("OcrScannedThroughSeconds")
+                        .HasColumnType("double precision");
 
                     b.Property<Guid?>("ParentVideoId")
                         .HasColumnType("uuid");
@@ -504,6 +548,17 @@ namespace VideoOrganizer.Infrastructure.Migrations
                     b.Navigation("Video");
                 });
 
+            modelBuilder.Entity("VideoOrganizer.Domain.Models.OcrTextLine", b =>
+                {
+                    b.HasOne("VideoOrganizer.Domain.Models.Video", "Video")
+                        .WithMany("OcrTextLines")
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Video");
+                });
+
             modelBuilder.Entity("VideoOrganizer.Domain.Models.PropertyDefinition", b =>
                 {
                     b.HasOne("VideoOrganizer.Domain.Models.TagGroup", "TagGroup")
@@ -606,6 +661,8 @@ namespace VideoOrganizer.Infrastructure.Migrations
 
             modelBuilder.Entity("VideoOrganizer.Domain.Models.Video", b =>
                 {
+                    b.Navigation("OcrTextLines");
+
                     b.Navigation("PropertyValues");
 
                     b.Navigation("VideoTags");
