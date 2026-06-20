@@ -4,7 +4,10 @@ public record ImportBrowseDirectory(
     string Name,
     string FullPath,
     bool HasSubdirectories,
-    int VideoCount = 0,      // Recursive count of video files under this folder
+    // Recursive count of video files under this folder. NULL when not computed
+    // yet: /import/browse returns the tree immediately without walking the disk,
+    // and the client fills these in lazily via /import/folder-count (#197).
+    int? VideoCount = null,
     int ImportedCount = 0    // Subset of VideoCount already present in the DB
 );
 
@@ -13,6 +16,11 @@ public record ImportBrowseResponse(
     string? ParentPath,
     List<ImportBrowseDirectory> Directories
 );
+
+// Lazily-computed recursive video count for a single folder, fetched per
+// folder after the browse tree renders so the disk walk never blocks the
+// initial listing (issue #197).
+public record ImportFolderCount(string Path, int VideoCount);
 
 // A folder that already contains imported videos — the destination choices
 // for the move dialog (issue #4). Derived from the library (distinct parent

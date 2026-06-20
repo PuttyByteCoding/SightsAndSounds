@@ -4023,6 +4023,36 @@
         }
       }
     },
+    "/api/import/folder-count": {
+      "get": {
+        "tags": [
+          "Import"
+        ],
+        "operationId": "GetImportFolderCount",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportFolderCount"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/import/imported-folders": {
       "get": {
         "tags": [
@@ -5012,9 +5042,11 @@
             "type": "boolean"
           },
           "videoCount": {
-            "type": "integer",
-            "format": "int32",
-            "default": 0
+            "type": [
+              "null",
+              "integer"
+            ],
+            "format": "int32"
           },
           "importedCount": {
             "type": "integer",
@@ -5188,6 +5220,22 @@
           "skipped"
         ],
         "type": "string"
+      },
+      "ImportFolderCount": {
+        "required": [
+          "path",
+          "videoCount"
+        ],
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "videoCount": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
       },
       "ImportJobSummaryDto": {
         "required": [

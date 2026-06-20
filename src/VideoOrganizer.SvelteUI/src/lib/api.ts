@@ -9,6 +9,7 @@ import type {
   CreateTagRequest,
   DirectoryImportRequest,
   ImportBrowseResponse,
+  ImportFolderCount,
   ImportedFolder,
   ImportScanProgress,
   MoveProgress,
@@ -656,6 +657,10 @@ export const api = {
     const qs = params.toString();
     return request<ImportBrowseResponse>(`/api/import/browse${qs ? `?${qs}` : ''}`);
   },
+  // Lazily fetch one folder's recursive video count — browse returns the tree
+  // immediately without it, the client fills badges in afterward. (issue #197)
+  getImportFolderCount: (path: string) =>
+    request<ImportFolderCount>(`/api/import/folder-count?path=${encodeURIComponent(path)}`),
   // Flat list of folders that already hold imported videos — the move
   // dialog's destination choices. (issue #4)
   listImportedFolders: () =>

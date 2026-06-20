@@ -268,6 +268,24 @@ public static partial class ApiEndpoints
         }
     }
 
+    // Recursive video count for one folder, memoized in the scan cache. A hit
+    // skips the disk walk but still credits the discovered total so the live
+    // counter stays meaningful. Shared by the lazy /import/folder-count
+    // endpoint (issue #197).
+    private static int CachedVideoCount(
+        DirectoryScanCache scanCache, ImportScanProgress progress, string path)
+    {
+        var key = PathNormalizer.Normalize(path);
+        if (scanCache.TryGet(key, out var hit))
+        {
+            progress.Add(hit);
+            return hit;
+        }
+        var n = CountVideoFilesRecursive(path, progress);
+        scanCache.Set(key, n);
+        return n;
+    }
+
     // Evicts only the directories whose recursive video count changed when a
     // file moved between folders (issue #4). A directory's count changes iff
     // the file entered or left its subtree — i.e. it's an ancestor of exactly

@@ -25,11 +25,12 @@
     // — fine, since this UI is meant for organized libraries.
     hasSubdirectories: boolean;
     depth: number;
-    // Recursive counts from /api/import/browse: total .video files
-    // under this directory (videoCount) and how many are already in
-    // the DB (importedCount). 0 means "unknown / not annotated" and
-    // suppresses the count badge.
-    videoCount: number;
+    // Recursive counts from /api/import/browse. importedCount (how many are
+    // already in the DB) is returned eagerly; videoCount (total video files
+    // under this directory) is NULL because browse no longer walks the disk —
+    // each node lazy-fetches its own via /import/folder-count (issue #197).
+    // null / 0 suppresses the count badge until it loads.
+    videoCount?: number | null;
     importedCount: number;
     onPickFolder: (fullPath: string, label: string) => void;
     // When provided, a hover trash button removes this folder's imported
@@ -62,6 +63,18 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let children = $state<ImportBrowseDirectory[] | null>(null);
+
+  // Lazy recursive video count (issue #197). browse returns videoCount=null;
+  // fetch this folder's count once in the background and show it when it lands.
+  let fetchedCount = $state<number | null>(null);
+  const count = $derived(videoCount ?? fetchedCount);
+  $effect(() => {
+    if (videoCount == null && fetchedCount == null) {
+      api.getImportFolderCount(fullPath)
+        .then(r => { fetchedCount = r.videoCount; })
+        .catch(() => { /* leave unset — badge just stays hidden */ });
+    }
+  });
 
   // Hide subfolders that contain no imported videos (recursive).
   // importedCount is itself recursive on the server, so dropping a
@@ -150,17 +163,17 @@
            "X/Y" tinted text-warning so unimported folders pop out
            of an otherwise greyed-out tree.
          videoCount === 0 → no badge (nothing to count). -->
-    {#if videoCount > 0}
-      {#if importedCount >= videoCount}
+    {#if count != null && count > 0}
+      {#if importedCount >= count}
         <span
           class="shrink-0 text-xs tabular-nums opacity-50"
-          title="All {videoCount} video{videoCount === 1 ? '' : 's'} imported"
-        >{videoCount}</span>
+          title="All {count} video{count === 1 ? '' : 's'} imported"
+        >{count}</span>
       {:else}
         <span
           class="shrink-0 text-xs tabular-nums text-warning"
-          title="{importedCount} of {videoCount} videos imported"
-        >{importedCount}/{videoCount}</span>
+          title="{importedCount} of {count} videos imported"
+        >{importedCount}/{count}</span>
       {/if}
     {/if}
     {#if onRemoveFolder && importedCount > 0}

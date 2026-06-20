@@ -98,7 +98,15 @@ Two-phase:
 
 #3/#4 are optional refinements; #7 only behind a benchmark.
 
-## Next step
+## Status
 
-Pick a phase to implement. #1+#6 is a self-contained PR; #2 is a follow-up that
-can land independently. (Decision pending — same as the other research tickets.)
+**Option 1 (lazy counts) is implemented in this PR.** `/import/browse` now returns
+the folder tree immediately with `VideoCount = null`; the client fetches each
+folder's recursive count from the new `GET /import/folder-count` endpoint and
+fills the badge in afterward (both the Import tool tree and the browse-page
+Folders tree, the latter via per-node self-fetch in `FolderTreeNode`). The
+scan-progress "Discovered N…" counter (#27) is driven by the folder-count calls,
+and the per-folder scan cache (#4) / `?refresh=true` still apply.
+
+Option 2 (persisted incremental count index) remains the recommended durable
+follow-up and can land independently. #6's cheap wins are still on the table.

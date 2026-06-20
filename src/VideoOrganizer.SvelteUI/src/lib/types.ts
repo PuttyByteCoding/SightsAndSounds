@@ -182,6 +182,7 @@ export type PlaylistDto = S['PlaylistDto'];
 export type PlaylistNavigationDto = S['PlaylistNavigationDto'];
 export type DirectoryImportRequest = S['DirectoryImportRequest'];
 export type ImportBrowseDirectory = S['ImportBrowseDirectory'];
+export type ImportFolderCount = S['ImportFolderCount'];
 export type ImportBrowseResponse = S['ImportBrowseResponse'];
 export type ImportedFolder = S['ImportedFolder'];
 export type ImportScanProgress = S['ImportScanProgressDto'];

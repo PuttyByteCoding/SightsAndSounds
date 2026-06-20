@@ -474,10 +474,47 @@
     try {
       const res = await api.browseImport(null);
       treeRoots = res.directories;
+      void loadCounts(res.directories);
     } catch (e) {
       formError = toMessage('Failed to load sets', e);
     } finally {
       treeInitialLoading = false;
+    }
+  }
+
+  // Lazy video counts (issue #197): /import/browse returns folders instantly
+  // without the slow recursive count, so once a level is on screen we fetch
+  // each folder's count in the background and patch its badge in. Counts that
+  // fail are left null (the badge just stays "…"); they're non-fatal.
+  async function loadCounts(dirs: ImportBrowseDirectory[]) {
+    await Promise.all(
+      dirs
+        .filter(d => d.videoCount === null || d.videoCount === undefined)
+        .map(async d => {
+          try {
+            const res = await api.getImportFolderCount(d.fullPath);
+            patchVideoCount(d.fullPath, res.videoCount);
+          } catch {
+            /* leave the badge as "…" — counting failed, non-fatal */
+          }
+        })
+    );
+  }
+
+  // Patch a folder's videoCount into whichever tree container holds it (roots
+  // or a children list), reassigning that container so the row re-renders.
+  function patchVideoCount(path: string, count: number) {
+    if (treeRoots.some(d => d.fullPath === path)) {
+      treeRoots = treeRoots.map(d => d.fullPath === path ? { ...d, videoCount: count } : d);
+      return;
+    }
+    for (const [key, arr] of treeChildrenByPath) {
+      if (arr.some(d => d.fullPath === path)) {
+        const next = new Map(treeChildrenByPath);
+        next.set(key, arr.map(d => d.fullPath === path ? { ...d, videoCount: count } : d));
+        treeChildrenByPath = next;
+        return;
+      }
     }
   }
 
@@ -523,6 +560,7 @@
       const next = new Map(treeChildrenByPath);
       next.set(path, res.directories);
       treeChildrenByPath = next;
+      void loadCounts(res.directories);
     } catch (e) {
       formError = toMessage('Failed to browse', e);
     } finally {
@@ -865,7 +903,7 @@
       {:else}
         <ul class="space-y-0.5 text-sm">
           {#each treeRows as row (row.dir.fullPath)}
-            {@const isFullyImported = row.dir.videoCount > 0 && row.dir.importedCount >= row.dir.videoCount}
+            {@const isFullyImported = (row.dir.videoCount ?? 0) > 0 && row.dir.importedCount >= (row.dir.videoCount ?? 0)}
             {@const rowSet = row.depth === 0
               ? sets.find(s => s.path === row.dir.fullPath || s.name === row.dir.name)
               : undefined}
@@ -944,6 +982,10 @@
                     <span class="loading loading-spinner loading-xs"></span>
                     Importing
                   </span>
+                {:else if row.dir.videoCount == null}
+                  <!-- Count not loaded yet — browse returns folders instantly
+                       and the recursive count streams in afterward (#197). -->
+                  <span class="text-xs shrink-0 text-base-content/30" title="Counting videos…">…</span>
                 {:else if row.dir.videoCount > 0}
                   <!-- "5 / 10 imported" — compact slash form (eye
                        lands on the imported count first, then the
