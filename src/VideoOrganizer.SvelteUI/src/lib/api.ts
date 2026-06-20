@@ -71,11 +71,20 @@ import type {
   DuplicateStatus
 } from './types';
 
+import { errorBanner, httpErrorMessage } from './errorBanner.svelte';
+
 const BASE = '';
 
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly method: string, public readonly url: string, body?: string) {
     super(`${method} ${url} failed: ${status}${body ? ` — ${body}` : ''}`);
+    // Surface every 4xx/5xx in the global banner (issue #201), regardless of
+    // whether the caller also handles it. Browser-only so SSR data loads don't
+    // push into the server-shared store. Constructed only on !res.ok, so any
+    // ApiError is a 4xx/5xx in practice; the guard is belt-and-suspenders.
+    if (status >= 400 && typeof window !== 'undefined') {
+      errorBanner.push(httpErrorMessage(status, method, url, body));
+    }
   }
 }
 
