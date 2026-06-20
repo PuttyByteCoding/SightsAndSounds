@@ -1967,7 +1967,11 @@
     try {
       if (next) await api.markFavorite(video.id);
       else await api.unmarkFavorite(video.id);
-      if (video) video.isFavorite = next;
+      if (video) {
+        video.isFavorite = next;
+        // Flagging counts as reviewing it (#200) — matches the server.
+        if (next) video.needsReview = false;
+      }
       loadedVideoSnapshot = JSON.stringify(video);
       // Propagate the flag flip up so the host's grid + sidebar
       // counts stay in sync (e.g. the Flags-tree count badges).

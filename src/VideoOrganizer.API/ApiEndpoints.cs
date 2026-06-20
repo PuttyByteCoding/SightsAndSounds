@@ -2431,8 +2431,14 @@ public static partial class ApiEndpoints
                 .FirstOrDefaultAsync(v => v.Id == id, ct);
             if (video is null) return Results.NotFound();
 
+            // Adding a tag counts as reviewing the video (#200): if the new set
+            // introduces any tag the video didn't already have, clear NeedsReview.
+            var hadTagIds = video.VideoTags.Select(vt => vt.TagId).ToHashSet();
+            var addedTag = req.TagIds.Any(t => !hadTagIds.Contains(t));
+
             var err = await ReplaceVideoTagsAsync(db, video, req.TagIds, logger, ct);
             if (err is not null) return Results.BadRequest(new { error = err });
+            if (addedTag) video.NeedsReview = false;
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("SetVideoTags");
@@ -2568,8 +2574,9 @@ public static partial class ApiEndpoints
         api.MapPost("/videos/{id:guid}/mark-for-deletion", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
+            // Flagging counts as reviewing it (#200): clear NeedsReview too.
             return await MarkAndMoveAsync(id, "_ToDelete",
-                v => v.MarkedForDeletion = true, db, logger, ct);
+                v => { v.MarkedForDeletion = true; v.NeedsReview = false; }, db, logger, ct);
         }).Produces<VideoDto>(StatusCodes.Status200OK)
           .WithName("MarkVideoForDeletion");
 
@@ -2584,8 +2591,9 @@ public static partial class ApiEndpoints
         api.MapPost("/videos/{id:guid}/mark-playback-issue", async (
             Guid id, VideoOrganizerDbContext db, ILogger<Program> logger, CancellationToken ct) =>
         {
+            // Flagging counts as reviewing it (#200): clear NeedsReview too.
             return await MarkAndMoveAsync(id, "_PlaybackIssue",
-                v => v.PlaybackIssue = true, db, logger, ct);
+                v => { v.PlaybackIssue = true; v.NeedsReview = false; }, db, logger, ct);
         }).Produces<VideoDto>(StatusCodes.Status200OK)
           .WithName("MarkVideoPlaybackIssue");
 
@@ -2628,6 +2636,7 @@ public static partial class ApiEndpoints
             var v = await db.Videos.FindAsync(new object[] { id }, ct);
             if (v is null) return Results.NotFound();
             v.IsFavorite = true;
+            v.NeedsReview = false; // flagging counts as reviewing it (#200)
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("MarkVideoFavorite");
@@ -2650,6 +2659,7 @@ public static partial class ApiEndpoints
             var v = await db.Videos.FindAsync(new object[] { id }, ct);
             if (v is null) return Results.NotFound();
             v.IsClip = true;
+            v.NeedsReview = false; // flagging counts as reviewing it (#200)
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).WithName("MarkVideoClip");
