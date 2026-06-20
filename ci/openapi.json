@@ -2575,6 +2575,30 @@
         }
       }
     },
+    "/api/auth/session": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "SetAuthSession",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "ClearAuthSession",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/worker-pause-status": {
       "get": {
         "tags": [

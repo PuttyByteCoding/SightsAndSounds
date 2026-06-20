@@ -30,6 +30,13 @@ public static class AuthRules
     /// POST endpoints that are reads (query bodies, no persistence): the browse
     /// filter queries and the ad-hoc playlist generators (which only build an
     /// in-memory ordering). Full request paths.
+    ///
+    /// Also includes /api/auth/session — it doesn't touch library data, it only
+    /// mirrors the caller's OWN already-validated token into an HttpOnly cookie
+    /// so browser media elements (&lt;video&gt;/&lt;img&gt;, which can't send a
+    /// Bearer header) can stream. Read-only viewers need it too, so it must not
+    /// require the admin role. Listing it here exempts every verb on the path
+    /// (POST set / DELETE clear) from the write-check.
     /// </summary>
     public static readonly IReadOnlySet<string> ReadPostPaths =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -38,6 +45,7 @@ public static class AuthRules
             "/api/videos/filter-page",
             "/api/playlists/random",
             "/api/playlists/even",
+            "/api/auth/session",
         };
 
     /// <summary>

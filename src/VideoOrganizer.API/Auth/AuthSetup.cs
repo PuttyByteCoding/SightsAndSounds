@@ -20,6 +20,13 @@ namespace VideoOrganizer.API.Auth;
 /// </summary>
 public static class AuthSetup
 {
+    /// <summary>
+    /// Name of the HttpOnly cookie that carries the access token for browser
+    /// media requests (&lt;video&gt;/&lt;img&gt;/&lt;track&gt;/CSS background),
+    /// which can't set an Authorization header. Set by POST /api/auth/session.
+    /// </summary>
+    public const string MediaCookieName = "sas_media_token";
+
     public static bool IsEnabled(IConfiguration config) =>
         config.GetValue("Auth:Enabled", false);
 
@@ -45,6 +52,25 @@ public static class AuthSetup
                     ValidateLifetime = true,
                     RoleClaimType = ClaimTypes.Role,
                     NameClaimType = "preferred_username",
+                };
+                options.Events = new JwtBearerEvents
+                {
+                    // Browser media elements (<video>/<img>/<track>/CSS url())
+                    // issue plain GETs with no Authorization header. For those
+                    // SAFE GETs only, fall back to the access token in the
+                    // HttpOnly media cookie (set by POST /api/auth/session).
+                    // Writes are never read from the cookie, so they still
+                    // require the explicit Bearer header — no CSRF surface.
+                    OnMessageReceived = ctx =>
+                    {
+                        if (string.IsNullOrEmpty(ctx.Token)
+                            && HttpMethods.IsGet(ctx.Request.Method))
+                        {
+                            var cookie = ctx.Request.Cookies[MediaCookieName];
+                            if (!string.IsNullOrEmpty(cookie)) ctx.Token = cookie;
+                        }
+                        return Task.CompletedTask;
+                    }
                 };
             });
         services.AddAuthorization();
