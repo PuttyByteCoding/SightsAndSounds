@@ -17,6 +17,54 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # One-shot: ensure a dedicated `keycloak` database exists in the SAME Postgres
+  # instance Sights & Sounds uses (#124, Deployment Option 2 + "reuse the app's
+  # Postgres"). Postgres only runs /docker-entrypoint-initdb.d on a fresh volume,
+  # and the app's volume already exists — so we create the DB idempotently here.
+  # Runs to completion before Keycloak starts. Does not touch the app's data.
+  keycloak-db-init:
+    image: postgres:16
+    container_name: sights-and-sounds-keycloak-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    entrypoint:
+      - sh
+      - -c
+      - >
+        psql -h postgres -U "${POSTGRES_USER:-postgresuser}" -d postgres -tc
+        "SELECT 1 FROM pg_database WHERE datname='keycloak'" | grep -q 1 ||
+        psql -h postgres -U "${POSTGRES_USER:-postgresuser}" -d postgres -c "CREATE DATABASE keycloak"
+    restart: "no"
+
+  # Keycloak identity provider (#124). Local/LAN dev: start-dev over HTTP, realm
+  # imported from keycloak/realm-export.json, state persisted in the `keycloak`
+  # database of the shared Postgres. Admin console: http://localhost:8080
+  # (KC_ADMIN_USER / KC_ADMIN_PASSWORD). NOT wired into the app yet — this just
+  # stands the server up so the realm / users / clients exist to develop against.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.5.2
+    container_name: sights-and-sounds-keycloak
+    command: ["start-dev", "--import-realm"]
+    depends_on:
+      keycloak-db-init:
+        condition: service_completed_successfully
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER:-postgresuser}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    restart: unless-stopped
+
   # Structured log viewer for development. The API ships logs here when
   # Logging:Seq:ServerUrl is set (configured in appsettings.Development.json).
   # UI + ingestion both live on http://localhost:5341.
