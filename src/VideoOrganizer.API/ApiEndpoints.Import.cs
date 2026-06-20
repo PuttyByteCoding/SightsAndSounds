@@ -122,35 +122,18 @@ public static partial class ApiEndpoints
          .WithName("ListImportQueue");
 
         import.MapGet("/browse", async (
-            VideoOrganizerDbContext db, string? path, ImportScanProgress progress,
-            DirectoryScanCache scanCache, bool? refresh,
-            ILogger<Program> logger, CancellationToken ct) =>
+            VideoOrganizerDbContext db, string? path, DirectoryScanCache scanCache,
+            bool? refresh, ILogger<Program> logger, CancellationToken ct) =>
         {
-            // The recursive video-file count below feeds a shared progress
-            // counter so the Import page can poll GET /import/scan-progress
-            // for a live "discovered N" total while a source loads. (issue #27)
-            progress.Begin();
-            // ?refresh=true (the Sources refresh button) drops the scan cache
-            // so every folder is re-walked fresh — picks up changes made
-            // outside the app. Normal loads reuse cached counts. (issue #4)
+            // Browsing returns the folder STRUCTURE only — names, hasSubdirectories,
+            // and the cheap DB-backed importedCount. The slow recursive video count
+            // is NOT computed here; the client fetches it lazily per folder via
+            // /import/folder-count so the tree renders immediately (issue #197).
+            //
+            // ?refresh=true (the Sources refresh button) drops the scan cache so
+            // those lazy counts re-walk fresh — picks up changes made outside the
+            // app. Normal loads reuse cached counts. (issue #4)
             if (refresh == true) scanCache.Clear();
-
-            // Recursive on-disk video count, memoized per folder. The walk
-            // (CountVideoFilesRecursive) is the slow part of annotating the
-            // tree; a hit skips it but still credits the discovered total so
-            // the live count stays meaningful.
-            int CachedVideoCount(string p)
-            {
-                var key = PathNormalizer.Normalize(p);
-                if (scanCache.TryGet(key, out var hit))
-                {
-                    progress.Add(hit);
-                    return hit;
-                }
-                var n = CountVideoFilesRecursive(p, progress);
-                scanCache.Set(key, n);
-                return n;
-            }
 
             try
             {
@@ -182,7 +165,7 @@ public static partial class ApiEndpoints
                             p.StartsWith(normalizedDir, StringComparison.OrdinalIgnoreCase));
                         return new ImportBrowseDirectory(
                             Name: d.name, FullPath: d.fullPath, HasSubdirectories: d.hasSubs,
-                            VideoCount: CachedVideoCount(d.fullPath),
+                            VideoCount: null, // lazily filled via /import/folder-count (#197)
                             ImportedCount: importedCount);
                     }).ToList();
                 }
@@ -207,7 +190,7 @@ public static partial class ApiEndpoints
                                 .CountAsync(v => v.FilePath.StartsWith(normalizedSet), ct);
                             annotated.Add(new ImportBrowseDirectory(
                                 Name: s.Name, FullPath: full, HasSubdirectories: hasSubs,
-                                VideoCount: CachedVideoCount(full),
+                                VideoCount: null, // lazily filled via /import/folder-count (#197)
                                 ImportedCount: importedCount));
                         }
                         catch (Exception ex)
@@ -261,12 +244,38 @@ public static partial class ApiEndpoints
                 logger.LogError(ex, "Error browsing directory: {Path}", path);
                 return Results.Problem("Failed to browse directory");
             }
+        }).Produces<ImportBrowseResponse>(StatusCodes.Status200OK)
+          .WithName("BrowseDirectory");
+
+        // GET /api/import/folder-count?path=… — the recursive video count for a
+        // single folder, fetched lazily by the client after the browse tree
+        // renders so the disk walk never blocks the listing (issue #197). Drives
+        // the same scan-progress counter (#27) so "Discovered N…" still climbs
+        // as counts load, and shares the per-folder scan cache (#4).
+        import.MapGet("/folder-count", async (
+            VideoOrganizerDbContext db, string path, ImportScanProgress progress,
+            DirectoryScanCache scanCache, CancellationToken ct) =>
+        {
+            var fullPath = Path.GetFullPath(path);
+            var roots = await db.VideoSets.Select(s => s.Path).ToListAsync(ct);
+            if (!roots.Any(r => fullPath.StartsWith(Path.GetFullPath(r), StringComparison.Ordinal)))
+                return Results.StatusCode(403);
+
+            var issue = DescribeDirectoryIssue(fullPath);
+            if (issue is not null) return Results.NotFound(issue);
+
+            progress.Begin();
+            try
+            {
+                var count = await Task.Run(() => CachedVideoCount(scanCache, progress, fullPath), ct);
+                return Results.Ok(new ImportFolderCount(fullPath, count));
+            }
             finally
             {
                 progress.End();
             }
-        }).Produces<ImportBrowseResponse>(StatusCodes.Status200OK)
-          .WithName("BrowseDirectory");
+        }).Produces<ImportFolderCount>(StatusCodes.Status200OK)
+          .WithName("GetImportFolderCount");
 
         // GET /api/import/imported-folders — flat, filterable destination list
         // for the move dialog: every distinct folder that already holds an

@@ -2052,6 +2052,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import/folder-count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["GetImportFolderCount"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/import/imported-folders": {
         parameters: {
             query?: never;
@@ -2381,11 +2397,8 @@ export interface components {
             name: string;
             fullPath: string;
             hasSubdirectories: boolean;
-            /**
-             * Format: int32
-             * @default 0
-             */
-            videoCount: number;
+            /** Format: int32 */
+            videoCount?: null | number;
             /**
              * Format: int32
              * @default 0
@@ -2433,6 +2446,11 @@ export interface components {
         };
         /** @enum {string} */
         ImportFileStatus: "pending" | "importing" | "completed" | "failed" | "skipped";
+        ImportFolderCount: {
+            path: string;
+            /** Format: int32 */
+            videoCount: number;
+        };
         ImportJobSummaryDto: {
             /** Format: uuid */
             jobId: string;
@@ -6347,6 +6365,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ImportBrowseResponse"];
+                };
+            };
+        };
+    };
+    GetImportFolderCount: {
+        parameters: {
+            query: {
+                path: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportFolderCount"];
                 };
             };
         };
