@@ -231,6 +231,10 @@ builder.Services.AddSingleton<WorkerPauseStatus>();
 builder.Services.AddSingleton<ImportQueueService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ImportQueueService>());
 
+// Keycloak JWT auth (#124). No-op unless Auth:Enabled — keeps the app's
+// current no-auth behavior until the flag is flipped on.
+VideoOrganizer.API.Auth.AuthSetup.AddSightsAuth(builder.Services, builder.Configuration);
+
 // Add CORS policy
 builder.Services.AddCors(options =>
 {
@@ -493,6 +497,10 @@ app.UseStaticFiles();
         }
     });
 }
+
+// Keycloak auth gate (#124). No-op unless Auth:Enabled. Placed before the
+// endpoints so /api requires a valid token (and admin for writes) when on.
+VideoOrganizer.API.Auth.AuthSetup.UseSightsAuth(app);
 
 app.MapApiEndpoints();
 
