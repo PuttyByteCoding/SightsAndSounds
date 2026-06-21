@@ -71,8 +71,13 @@ if [ "${Auth__Enabled:-false}" = "true" ]; then
   wait_keycloak
 fi
 
-# 4. API only — Kestrel binds HTTPS from ASPNETCORE_URLS + the cert in .env.
-start_bg api dotnet run --project src/VideoOrganizer.API
+# 4. API only — Kestrel binds the URL from ASPNETCORE_URLS + the cert in .env.
+#    launchSettings.json's "http" profile (applicationUrl http://localhost:5098)
+#    OVERRIDES the ASPNETCORE_URLS env var under `dotnet run`, so the app would
+#    bind localhost/HTTP and be unreachable from the LAN. Pass --urls on the
+#    command line (highest config precedence) so Kestrel binds what .env asked
+#    for, e.g. https://0.0.0.0:5098.
+start_bg api dotnet run --project src/VideoOrganizer.API -- --urls "${ASPNETCORE_URLS:-https://0.0.0.0:5098}"
 
 log done "App:  ${ASPNETCORE_URLS:-https://0.0.0.0:5098}  (browse the host's LAN IP, e.g. https://192.168.4.38:5098)"
 if [ "${Auth__Enabled:-false}" = "true" ]; then
