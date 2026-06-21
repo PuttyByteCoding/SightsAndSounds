@@ -2300,6 +2300,11 @@ export interface components {
             sortOrder: number;
             /** @default  */
             notes: string;
+            /**
+             * @default noFormatting
+             * @enum {string}
+             */
+            textFormat: "noFormatting" | "titleCase" | "allLowercase" | "allUppercase";
         };
         CreateTagRequest: {
             /** Format: uuid */
@@ -2908,6 +2913,7 @@ export interface components {
             /** Format: int32 */
             sortOrder: number;
             notes: string;
+            textFormat: components["schemas"]["TextFormatOption"];
             /**
              * Format: int32
              * @default 0
@@ -2928,6 +2934,8 @@ export interface components {
             name: string;
             aliases: string[];
         };
+        /** @enum {string} */
+        TextFormatOption: "noFormatting" | "titleCase" | "allLowercase" | "allUppercase";
         UpdatePropertyDefinitionRequest: {
             name: string;
             dataType: components["schemas"]["PropertyDataTypeDto"];
@@ -2943,6 +2951,7 @@ export interface components {
             /** Format: int32 */
             sortOrder: number;
             notes: string;
+            textFormat: components["schemas"]["TextFormatOption"];
         };
         UpdateTagRequest: {
             name: string;

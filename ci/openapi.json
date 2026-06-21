@@ -4615,6 +4615,16 @@
           "notes": {
             "type": "string",
             "default": ""
+          },
+          "textFormat": {
+            "enum": [
+              "noFormatting",
+              "titleCase",
+              "allLowercase",
+              "allUppercase"
+            ],
+            "type": "string",
+            "default": "noFormatting"
           }
         }
       },
@@ -6751,7 +6761,8 @@
           "allowMultiple",
           "displayAsCheckboxes",
           "sortOrder",
-          "notes"
+          "notes",
+          "textFormat"
         ],
         "type": "object",
         "properties": {
@@ -6774,6 +6785,9 @@
           },
           "notes": {
             "type": "string"
+          },
+          "textFormat": {
+            "$ref": "#/components/schemas/TextFormatOption"
           },
           "tagCount": {
             "type": "integer",
@@ -6819,6 +6833,15 @@
           }
         }
       },
+      "TextFormatOption": {
+        "enum": [
+          "noFormatting",
+          "titleCase",
+          "allLowercase",
+          "allUppercase"
+        ],
+        "type": "string"
+      },
       "UpdatePropertyDefinitionRequest": {
         "required": [
           "name",
@@ -6853,7 +6876,8 @@
           "allowMultiple",
           "displayAsCheckboxes",
           "sortOrder",
-          "notes"
+          "notes",
+          "textFormat"
         ],
         "type": "object",
         "properties": {
@@ -6872,6 +6896,9 @@
           },
           "notes": {
             "type": "string"
+          },
+          "textFormat": {
+            "$ref": "#/components/schemas/TextFormatOption"
           }
         }
       },

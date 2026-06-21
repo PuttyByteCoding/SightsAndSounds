@@ -18,6 +18,9 @@ public sealed class TagGroupConfiguration : IEntityTypeConfiguration<TagGroup>
         builder.Property(g => g.DisplayAsCheckboxes).IsRequired().HasDefaultValue(false);
         builder.Property(g => g.SortOrder).HasDefaultValue(0);
         builder.Property(g => g.Notes).HasMaxLength(4096);
+        builder.Property(g => g.TextFormat)
+            .HasConversion<string>().HasMaxLength(32)
+            .IsRequired().HasDefaultValue(TextFormatOption.NoFormatting);
 
         builder.HasMany(g => g.Tags)
             .WithOne(t => t.TagGroup)

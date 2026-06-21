@@ -230,7 +230,8 @@
           allowMultiple: g.allowMultiple,
           displayAsCheckboxes: g.displayAsCheckboxes,
           sortOrder: (i + 1) * 10,
-          notes: g.notes
+          notes: g.notes,
+          textFormat: g.textFormat
         })
       ));
       editingPanel = false;

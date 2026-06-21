@@ -49,3 +49,13 @@ public enum VideoBlockTypes
     Hide,  // Skipped during playback; removed when "download with hides removed" is used.
     Other
 }
+
+// Per-tag-group case normalization for tag names (#207). Wire twin of
+// Domain.Models.TextFormatOption — same order so the (int) cast maps cleanly.
+public enum TextFormatOption
+{
+    NoFormatting,
+    TitleCase,
+    AllLowercase,
+    AllUppercase
+}

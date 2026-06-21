@@ -12,6 +12,7 @@ public record TagGroupDto(
     bool DisplayAsCheckboxes,
     int SortOrder,
     string Notes,
+    TextFormatOption TextFormat,
     int TagCount = 0,
     int VideosMissingCount = 0);
 
@@ -20,11 +21,13 @@ public record CreateTagGroupRequest(
     bool AllowMultiple = true,
     bool DisplayAsCheckboxes = false,
     int SortOrder = 0,
-    string Notes = "");
+    string Notes = "",
+    TextFormatOption TextFormat = TextFormatOption.NoFormatting);
 
 public record UpdateTagGroupRequest(
     string Name,
     bool AllowMultiple,
     bool DisplayAsCheckboxes,
     int SortOrder,
-    string Notes);
+    string Notes,
+    TextFormatOption TextFormat);
