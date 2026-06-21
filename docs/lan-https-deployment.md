@@ -117,6 +117,22 @@ Loopback is always allowed, so SSH to the host and browse via `http://localhost`
 (or fix `.env` and `./start.sh`) to recover. Double-check the allowlist before
 enabling it remotely.
 
+## Editing the realm later ("Invalid parameter: redirect_uri")
+
+Keycloak's `--import-realm` only imports a realm the **first** time, when it
+doesn't yet exist in the database. After that, edits to `keycloak/realm-export.json`
+(redirect URIs, web origins, clients, users, roles) are ignored — a symptom is
+Keycloak showing **"Invalid parameter: redirect_uri"** at login because the
+running realm still has the old URIs. Re-import with:
+
+```bash
+./reset-keycloak.sh
+```
+
+It drops + recreates the dedicated `keycloak` database and restarts Keycloak so
+the realm re-imports. The app's `videoorganizer` database (videos, tags) is
+untouched; the Keycloak admin password resets to your `.env` values.
+
 ## Notes / limits
 
 - The realm's `sslRequired` is `external`: HTTPS is required for external clients
