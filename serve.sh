@@ -21,6 +21,26 @@ else
   exit 1
 fi
 
+# `dotnet run --project src/VideoOrganizer.API` sets Kestrel's content root to
+# the PROJECT dir, so a relative cert path (e.g. certs/sights.pfx) would resolve
+# under src/VideoOrganizer.API/ and the API would crash with "Could not find a
+# part of the path …/src/VideoOrganizer.API/certs/sights.pfx". Rewrite any
+# relative Kestrel cert path to an absolute one anchored at the repo root, which
+# is where ./gen-cert.sh writes certs/.
+resolve_cert_path() {
+  local var="$1" val="${!1:-}"
+  [ -z "$val" ] && return 0
+  case "$val" in
+    /*) : ;;                                            # already absolute
+    *) val="$REPO_ROOT/$val"; export "$var=$val" ;;
+  esac
+  if [ ! -f "$val" ]; then
+    warn cert "$var points to a missing file: $val — generate it with ./gen-cert.sh"
+  fi
+}
+resolve_cert_path Kestrel__Certificates__Default__Path
+resolve_cert_path Kestrel__Certificates__Default__KeyPath
+
 # 1. Build the SPA and copy it into the API's wwwroot (what Kestrel serves via
 #    UseStaticFiles + MapFallbackToFile). Plain `dotnet run` does NOT do this —
 #    the copy only happens on `dotnet publish` (the BuildSvelteUI target) — so
