@@ -455,10 +455,20 @@ app.MapScalarApiReference("/swagger", options =>
     options.HideClientButton = true;
 });
 
-// Disable HTTPS redirection in Development to avoid container redirect issues
-if (!app.Environment.IsDevelopment())
+// Force HTTPS when Network:ForceHttps is on (LAN/TLS deployments — see #222).
+// Off by default so the local HTTP quickstart (http://localhost:5098) keeps
+// working without a certificate. When on, redirect HTTP->HTTPS; add HSTS only
+// outside Development (browsers ignore HSTS on localhost, and pinning HTTPS
+// during local dev is a foot-gun). Requires Kestrel to actually expose an HTTPS
+// endpoint (ASPNETCORE_URLS + a cert in .env) — otherwise the redirect has no
+// target. UseHttpsRedirection logs a warning and no-ops if no HTTPS port is bound.
+if (app.Configuration.GetValue("Network:ForceHttps", false))
 {
     app.UseHttpsRedirection();
+    if (!app.Environment.IsDevelopment())
+    {
+        app.UseHsts();
+    }
 }
 
 app.UseCors("AllowUI");
