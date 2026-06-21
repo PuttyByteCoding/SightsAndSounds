@@ -24,7 +24,8 @@
   let error = $state<string | null>(null);
 
   let editingGroup = $state<TagGroup | null>(null);
-  let groupForm = $state({ name: '', allowMultiple: true, displayAsCheckboxes: false, sortOrder: 0, notes: '' });
+  type GroupForm = { name: string; allowMultiple: boolean; displayAsCheckboxes: boolean; sortOrder: number; notes: string; textFormat: NonNullable<TagGroup['textFormat']> };
+  let groupForm = $state<GroupForm>({ name: '', allowMultiple: true, displayAsCheckboxes: false, sortOrder: 0, notes: '', textFormat: 'noFormatting' });
   let showGroupDialog = $state(false);
 
   let editingTag = $state<Tag | null>(null);
@@ -235,12 +236,12 @@
 
   function startCreateGroup() {
     editingGroup = null;
-    groupForm = { name: '', allowMultiple: true, displayAsCheckboxes: false, sortOrder: (groups.at(-1)?.sortOrder ?? 0) + 10, notes: '' };
+    groupForm = { name: '', allowMultiple: true, displayAsCheckboxes: false, sortOrder: (groups.at(-1)?.sortOrder ?? 0) + 10, notes: '', textFormat: 'noFormatting' };
     showGroupDialog = true;
   }
   function startEditGroup(g: TagGroup) {
     editingGroup = g;
-    groupForm = { name: g.name, allowMultiple: g.allowMultiple, displayAsCheckboxes: g.displayAsCheckboxes, sortOrder: g.sortOrder, notes: g.notes };
+    groupForm = { name: g.name, allowMultiple: g.allowMultiple, displayAsCheckboxes: g.displayAsCheckboxes, sortOrder: g.sortOrder, notes: g.notes, textFormat: g.textFormat ?? 'noFormatting' };
     showGroupDialog = true;
   }
   async function saveGroup() {
@@ -874,6 +875,16 @@
         <label class="form-control">
           <span class="label-text">Sort order</span>
           <input type="number" class="input input-bordered" bind:value={groupForm.sortOrder} />
+        </label>
+        <label class="form-control">
+          <span class="label-text">Text format</span>
+          <select class="select select-bordered" bind:value={groupForm.textFormat}>
+            <option value="noFormatting">No formatting (keep as typed)</option>
+            <option value="titleCase">Title Case</option>
+            <option value="allLowercase">all lowercase</option>
+            <option value="allUppercase">ALL UPPERCASE</option>
+          </select>
+          <span class="label-text-alt opacity-60">Applied to tag names as they're added or renamed in this group.</span>
         </label>
         <label class="form-control">
           <span class="label-text">Notes</span>

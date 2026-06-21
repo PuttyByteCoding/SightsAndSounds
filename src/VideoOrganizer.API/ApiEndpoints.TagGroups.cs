@@ -48,11 +48,12 @@ public static partial class ApiEndpoints
 
             var groups = await db.TagGroups.AsNoTracking()
                 .OrderBy(g => g.SortOrder).ThenBy(g => g.Name)
-                .Select(g => new { g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes })
+                .Select(g => new { g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, g.TextFormat })
                 .ToListAsync(ct);
 
             var rows = groups.Select(g => new TagGroupDto(
                 g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes,
+                (Shared.Dto.TextFormatOption)(int)g.TextFormat,
                 counts.GetValueOrDefault(g.Id, 0),
                 Math.Max(0, totalVideos - videosWithTagInGroup.GetValueOrDefault(g.Id, 0)))).ToList();
             return Results.Ok(rows);
@@ -64,7 +65,8 @@ public static partial class ApiEndpoints
             var g = await db.TagGroups.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
             if (g is null) return Results.NotFound();
             var count = await db.Tags.CountAsync(t => t.TagGroupId == id, ct);
-            return Results.Ok(new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, count));
+            return Results.Ok(new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes,
+                (Shared.Dto.TextFormatOption)(int)g.TextFormat, count));
         }).Produces<TagGroupDto>(StatusCodes.Status200OK)
           .WithName("GetTagGroup");
 
@@ -82,15 +84,17 @@ public static partial class ApiEndpoints
                 AllowMultiple = req.AllowMultiple,
                 DisplayAsCheckboxes = req.DisplayAsCheckboxes,
                 SortOrder = req.SortOrder,
-                Notes = req.Notes
+                Notes = req.Notes,
+                TextFormat = (Domain.Models.TextFormatOption)(int)req.TextFormat
             };
             db.TagGroups.Add(g);
             await db.SaveChangesAsync(ct);
             logger.LogInformation(
-                "Created TagGroup {TagGroupId} '{Name}' (allowMultiple={AllowMultiple}, checkboxes={Checkboxes})",
-                g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes);
+                "Created TagGroup {TagGroupId} '{Name}' (allowMultiple={AllowMultiple}, checkboxes={Checkboxes}, textFormat={TextFormat})",
+                g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.TextFormat);
             return Results.Created($"/api/tag-groups/{g.Id}",
-                new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes, 0));
+                new TagGroupDto(g.Id, g.Name, g.AllowMultiple, g.DisplayAsCheckboxes, g.SortOrder, g.Notes,
+                    (Shared.Dto.TextFormatOption)(int)g.TextFormat, 0));
         }).Produces<TagGroupDto>(StatusCodes.Status201Created)
           .WithName("CreateTagGroup");
 
@@ -116,6 +120,7 @@ public static partial class ApiEndpoints
             g.DisplayAsCheckboxes = req.DisplayAsCheckboxes;
             g.SortOrder = req.SortOrder;
             g.Notes = req.Notes;
+            g.TextFormat = (Domain.Models.TextFormatOption)(int)req.TextFormat;
             await db.SaveChangesAsync(ct);
 
             if (oldAllowMultiple && !req.AllowMultiple)

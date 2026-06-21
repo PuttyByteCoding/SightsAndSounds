@@ -75,16 +75,20 @@ public static partial class ApiEndpoints
             ILogger<Program> logger, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name is required." });
-            if (!await db.TagGroups.AnyAsync(g => g.Id == req.TagGroupId, ct))
+            var grp = await db.TagGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == req.TagGroupId, ct);
+            if (grp is null)
                 return Results.BadRequest(new { error = "TagGroup not found." });
-            if (await db.Tags.AnyAsync(t => t.TagGroupId == req.TagGroupId && t.Name == req.Name, ct))
+            // Normalize the name to the group's TextFormat (#207) before the
+            // uniqueness check + insert, so the stored value matches the policy.
+            var name = TagNameFormatter.Format(req.Name, (Shared.Dto.TextFormatOption)(int)grp.TextFormat);
+            if (await db.Tags.AnyAsync(t => t.TagGroupId == req.TagGroupId && t.Name == name, ct))
                 return Results.Conflict(new { error = "A tag with that name already exists in this group." });
 
             var t = new Tag
             {
                 Id = Guid.NewGuid(),
                 TagGroupId = req.TagGroupId,
-                Name = req.Name,
+                Name = name,
                 Aliases = req.Aliases?.ToList() ?? new(),
                 IsFavorite = req.IsFavorite,
                 SortOrder = req.SortOrder,
@@ -94,7 +98,6 @@ public static partial class ApiEndpoints
             db.Tags.Add(t);
             await db.SaveChangesAsync(ct);
 
-            var grp = await db.TagGroups.AsNoTracking().FirstAsync(g => g.Id == t.TagGroupId, ct);
             logger.LogInformation(
                 "Created Tag {TagId} '{Name}' in TagGroup {TagGroupId} '{GroupName}' ({AliasCount} aliases)",
                 t.Id, t.Name, t.TagGroupId, grp.Name, t.Aliases.Count);
@@ -114,8 +117,10 @@ public static partial class ApiEndpoints
             BulkCreateTagsRequest req, VideoOrganizerDbContext db,
             ILogger<Program> logger, CancellationToken ct) =>
         {
-            if (!await db.TagGroups.AnyAsync(g => g.Id == req.TagGroupId, ct))
+            var grp = await db.TagGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == req.TagGroupId, ct);
+            if (grp is null)
                 return Results.BadRequest(new { error = "TagGroup not found." });
+            var fmt = (Shared.Dto.TextFormatOption)(int)grp.TextFormat;
 
             var seen = new HashSet<string>(
                 await db.Tags.Where(t => t.TagGroupId == req.TagGroupId)
@@ -128,6 +133,8 @@ public static partial class ApiEndpoints
             {
                 var name = raw?.Trim();
                 if (string.IsNullOrEmpty(name)) continue;
+                // Apply the group's TextFormat (#207), then dedup on the result.
+                name = TagNameFormatter.Format(name, fmt);
                 if (!seen.Add(name)) { skipped++; continue; }
                 toAdd.Add(new Tag
                 {
@@ -168,12 +175,15 @@ public static partial class ApiEndpoints
             // check below runs against the TARGET group so the move can't
             // land on a name collision.
             var targetGroupId = req.TagGroupId ?? t.TagGroupId;
-            if (targetGroupId != t.TagGroupId
-                && !await db.TagGroups.AnyAsync(g => g.Id == targetGroupId, ct))
+            var targetGroup = await db.TagGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == targetGroupId, ct);
+            if (targetGroup is null)
             {
                 return Results.BadRequest(new { error = "Target TagGroup not found." });
             }
-            if (await db.Tags.AnyAsync(x => x.TagGroupId == targetGroupId && x.Name == req.Name && x.Id != id, ct))
+            // Normalize the name to the (target) group's TextFormat (#207) before
+            // the uniqueness check + save, so a rename obeys the group's policy.
+            var name = TagNameFormatter.Format(req.Name, (Shared.Dto.TextFormatOption)(int)targetGroup.TextFormat);
+            if (await db.Tags.AnyAsync(x => x.TagGroupId == targetGroupId && x.Name == name && x.Id != id, ct))
                 return Results.Conflict(new { error = "A tag with that name already exists in this group." });
 
             // Capture before-state so the log can show what actually changed —
@@ -184,7 +194,7 @@ public static partial class ApiEndpoints
             var oldAliasCount = t.Aliases.Count;
             var oldGroupId = t.TagGroupId;
 
-            t.Name = req.Name;
+            t.Name = name;
             t.Aliases = req.Aliases.ToList();
             t.IsFavorite = req.IsFavorite;
             t.SortOrder = req.SortOrder;
