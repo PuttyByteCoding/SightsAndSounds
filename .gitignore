@@ -180,5 +180,8 @@ ffprobe.exe
 # if you want one tracked.
 tags.seed.json
 
-# Other 
+# Other
 appsettings.Development.json
+
+# Local Claude Code guidance — keep personal, not tracked
+CLAUDE.md
