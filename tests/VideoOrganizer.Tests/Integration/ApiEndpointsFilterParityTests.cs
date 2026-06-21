@@ -244,14 +244,44 @@ public sealed class ApiEndpointsFilterParityTests
     public async Task Filtered_counts_scope_flag_counts_to_the_shown_set()
     {
         Skip.IfNot(_api.Available, _api.SkipReason);
-        var w = await SeedAsync();
 
-        // Favorite filter shows only VFav, which carries no tags — so the flag
-        // counts mirror that one video and the tag map is empty.
-        var counts = await CountsAsync(new { required = new[] { Status("favorite") } });
+        // A private world of three videos all carrying ONE unique tag — so a
+        // filter on that tag isolates exactly them from everything else in the
+        // shared test DB (an aggregate flag filter like "favorite" would count
+        // every favorite video other tests seeded too). One is favorite, one
+        // needs review, one plain, so the flag counts over the shown set are
+        // deterministic.
+        var token = Guid.NewGuid().ToString("N");
+        var root = $"/fc-{token}";
+        var groupId = Guid.NewGuid();
+        var tagX = Guid.NewGuid();
+        var vFav = Guid.NewGuid();
+        var vReview = Guid.NewGuid();
+        var vPlain = Guid.NewGuid();
+        await _api.WithDbAsync(async db =>
+        {
+            db.VideoSets.Add(new VideoSet { Id = Guid.NewGuid(), Name = "fc-" + token, Path = root, Enabled = true });
+            db.TagGroups.Add(new TagGroup { Id = groupId, Name = "fc-" + token });
+            db.Tags.Add(new Tag { Id = tagX, Name = "X-" + token, TagGroupId = groupId });
+            // NeedsReview defaults to true on the model — set it explicitly so
+            // the assertions are about intent, not defaults.
+            db.Videos.Add(new Video { Id = vFav, FileName = "fav.mp4", FilePath = $"{root}/fav.mp4", IsFavorite = true, NeedsReview = false });
+            db.Videos.Add(new Video { Id = vReview, FileName = "review.mp4", FilePath = $"{root}/review.mp4", NeedsReview = true });
+            db.Videos.Add(new Video { Id = vPlain, FileName = "plain.mp4", FilePath = $"{root}/plain.mp4", NeedsReview = false });
+            db.VideoTags.AddRange(
+                new VideoTag { VideoId = vFav, TagId = tagX },
+                new VideoTag { VideoId = vReview, TagId = tagX },
+                new VideoTag { VideoId = vPlain, TagId = tagX });
+            await db.SaveChangesAsync();
+        });
+
+        // Filter to the unique tag -> exactly the three videos above are shown.
+        var counts = await CountsAsync(new { required = new[] { Tag(tagX) } });
         Assert.Equal(1, counts.flags.favorite);
-        Assert.Equal(0, counts.flags.needsReview);
-        Assert.Empty(counts.tagCounts);
+        Assert.Equal(1, counts.flags.needsReview);
+        Assert.Equal(0, counts.flags.playbackIssue);
+        Assert.Equal(0, counts.flags.clip);
+        Assert.Equal(3, counts.tagCounts[tagX]);
     }
 
     [SkippableFact]
