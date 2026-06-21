@@ -104,6 +104,18 @@ public sealed class ApiEndpointsFilterParityTests
         return rows!.Select(r => r.id).ToHashSet();
     }
 
+    private sealed record FlagCountsRow(
+        int favorite, int needsReview, int playbackIssue, int markedForDeletion,
+        int clip, int embedded, int exported, int edited);
+    private sealed record FilteredCountsRow(Dictionary<Guid, int> tagCounts, FlagCountsRow flags);
+
+    private async Task<FilteredCountsRow> CountsAsync(object body)
+    {
+        var res = await _api.Client.PostAsJsonAsync("/api/videos/filtered-counts", body);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        return (await res.Content.ReadFromJsonAsync<FilteredCountsRow>())!;
+    }
+
     private static object Tag(Guid id) => new { type = "tag", value = id.ToString() };
     private static object Folder(string path) => new { type = "folder", value = path };
     private static object Missing(Guid groupId) => new { type = "missing", value = $"tagGroup:{groupId}" };
@@ -210,6 +222,66 @@ public sealed class ApiEndpointsFilterParityTests
         // Explicitly filter for the hidden tag -> it appears.
         var revealed = (await FilterAsync(new { required = new[] { Tag(w.TagHidden) } })).Intersect(w.All).ToHashSet();
         Assert.Equal(new[] { w.VHidden }.ToHashSet(), revealed);
+    }
+
+    // --- #208: filtered-counts scope to the same "shown" set as /videos/filter
+
+    [SkippableFact]
+    public async Task Filtered_counts_scope_tag_counts_to_the_shown_set()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        var w = await SeedAsync();
+
+        // Required A shows VOnlyA + VAB. Over that set, A appears on both (2)
+        // and B only on VAB (1); the hidden tag never appears.
+        var counts = await CountsAsync(new { required = new[] { Tag(w.TagA) } });
+        Assert.Equal(2, counts.tagCounts[w.TagA]);
+        Assert.Equal(1, counts.tagCounts[w.TagB]);
+        Assert.False(counts.tagCounts.ContainsKey(w.TagHidden));
+    }
+
+    [SkippableFact]
+    public async Task Filtered_counts_scope_flag_counts_to_the_shown_set()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+
+        // A private world of three videos all carrying ONE unique tag — so a
+        // filter on that tag isolates exactly them from everything else in the
+        // shared test DB (an aggregate flag filter like "favorite" would count
+        // every favorite video other tests seeded too). One is favorite, one
+        // needs review, one plain, so the flag counts over the shown set are
+        // deterministic.
+        var token = Guid.NewGuid().ToString("N");
+        var root = $"/fc-{token}";
+        var groupId = Guid.NewGuid();
+        var tagX = Guid.NewGuid();
+        var vFav = Guid.NewGuid();
+        var vReview = Guid.NewGuid();
+        var vPlain = Guid.NewGuid();
+        await _api.WithDbAsync(async db =>
+        {
+            db.VideoSets.Add(new VideoSet { Id = Guid.NewGuid(), Name = "fc-" + token, Path = root, Enabled = true });
+            db.TagGroups.Add(new TagGroup { Id = groupId, Name = "fc-" + token });
+            db.Tags.Add(new Tag { Id = tagX, Name = "X-" + token, TagGroupId = groupId });
+            // NeedsReview defaults to true on the model — set it explicitly so
+            // the assertions are about intent, not defaults.
+            db.Videos.Add(new Video { Id = vFav, FileName = "fav.mp4", FilePath = $"{root}/fav.mp4", IsFavorite = true, NeedsReview = false });
+            db.Videos.Add(new Video { Id = vReview, FileName = "review.mp4", FilePath = $"{root}/review.mp4", NeedsReview = true });
+            db.Videos.Add(new Video { Id = vPlain, FileName = "plain.mp4", FilePath = $"{root}/plain.mp4", NeedsReview = false });
+            db.VideoTags.AddRange(
+                new VideoTag { VideoId = vFav, TagId = tagX },
+                new VideoTag { VideoId = vReview, TagId = tagX },
+                new VideoTag { VideoId = vPlain, TagId = tagX });
+            await db.SaveChangesAsync();
+        });
+
+        // Filter to the unique tag -> exactly the three videos above are shown.
+        var counts = await CountsAsync(new { required = new[] { Tag(tagX) } });
+        Assert.Equal(1, counts.flags.favorite);
+        Assert.Equal(1, counts.flags.needsReview);
+        Assert.Equal(0, counts.flags.playbackIssue);
+        Assert.Equal(0, counts.flags.clip);
+        Assert.Equal(3, counts.tagCounts[tagX]);
     }
 
     [SkippableFact]

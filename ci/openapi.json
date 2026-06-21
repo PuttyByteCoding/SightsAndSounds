@@ -683,6 +683,42 @@
         }
       }
     },
+    "/api/videos/filtered-counts": {
+      "post": {
+        "tags": [
+          "VideoOrganizer.API"
+        ],
+        "operationId": "GetFilteredCounts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlaylistFilterRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilteredCountsDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/videos/filter-page": {
       "post": {
         "tags": [
@@ -5000,6 +5036,25 @@
               "null",
               "string"
             ]
+          }
+        }
+      },
+      "FilteredCountsDto": {
+        "required": [
+          "tagCounts",
+          "flags"
+        ],
+        "type": "object",
+        "properties": {
+          "tagCounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "flags": {
+            "$ref": "#/components/schemas/FlagCountsDto"
           }
         }
       },
