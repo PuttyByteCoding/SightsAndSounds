@@ -84,10 +84,16 @@ wait_postgres() {
 # realm's OIDC discovery endpoint (a 200 means the server is up AND the
 # sightsandsounds realm imported). First boot pulls the image, so allow a
 # generous window.
+#
+# Defaults to the plain-HTTP localhost listener. Override KC_DISCOVERY_URL in
+# .env when Keycloak is HTTPS-only (TLS overlay), e.g.
+#   KC_DISCOVERY_URL=https://192.168.4.38:8443/realms/sightsandsounds/.well-known/openid-configuration
+# -k tolerates the self-signed LAN cert during the readiness poll.
 wait_keycloak() {
+  local url="${KC_DISCOVERY_URL:-http://localhost:8080/realms/sightsandsounds/.well-known/openid-configuration}"
   log keycloak "waiting for realm discovery (first boot pulls the image — be patient)"
   for _ in $(seq 1 120); do
-    if curl -fsS http://localhost:8080/realms/sightsandsounds/.well-known/openid-configuration >/dev/null 2>&1; then
+    if curl -fsSk "$url" >/dev/null 2>&1; then
       log keycloak "ready"
       return 0
     fi

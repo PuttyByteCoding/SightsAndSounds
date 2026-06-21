@@ -180,5 +180,9 @@ ffprobe.exe
 # if you want one tracked.
 tags.seed.json
 
-# Other 
+# Other
 appsettings.Development.json
+
+# TLS certificates / keys for the LAN HTTPS deployment (#222). Generated locally
+# by gen-cert.sh / gen-cert.ps1 — secrets, never commit.
+certs/

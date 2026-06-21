@@ -2,7 +2,7 @@
   "realm": "sightsandsounds",
   "enabled": true,
   "displayName": "Sights and Sounds",
-  "sslRequired": "none",
+  "sslRequired": "external",
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
@@ -26,13 +26,21 @@
         "http://localhost:5173/*",
         "http://localhost:5098/*",
         "http://127.0.0.1:5173/*",
-        "http://127.0.0.1:5098/*"
+        "http://127.0.0.1:5098/*",
+        "https://192.168.4.38:5173/*",
+        "https://192.168.4.38:5098/*",
+        "http://192.168.4.38:5173/*",
+        "http://192.168.4.38:5098/*"
       ],
       "webOrigins": [
         "http://localhost:5173",
         "http://localhost:5098",
         "http://127.0.0.1:5173",
-        "http://127.0.0.1:5098"
+        "http://127.0.0.1:5098",
+        "https://192.168.4.38:5173",
+        "https://192.168.4.38:5098",
+        "http://192.168.4.38:5173",
+        "http://192.168.4.38:5098"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",

@@ -102,8 +102,22 @@ v4 requires a paid license).
 Local-first tool. Path-traversal is the main defense: file-serving endpoints
 resolve the full path and **403 unless it's under an enabled `VideoSet`**;
 OS-level endpoints (open terminal / reveal / ffprobe-diagnostics) are gated to
-**loopback requests only**. There is currently **no authentication** (see issue
-#124) — anyone who can reach the port has full access.
+**loopback requests only**.
+
+By default there is **no authentication** (#124) — anyone who can reach the port
+has full access. Three opt-in layers (all off by default, enabled per-machine via
+`.env`) harden a LAN deployment:
+
+- **Keycloak JWT auth** (`Auth:Enabled`) — `/api` requires a valid bearer token;
+  writes require the `admin` realm role, `viewer` is read-only. The token issuer
+  (`Auth:Authority`) must match what Keycloak stamps (`KC_HOSTNAME`), or only the
+  host itself can log in (#221).
+- **IP allowlist** (`Network:RestrictByIp`) — non-allowlisted client IPs get 403
+  before anything else runs; loopback is always allowed (`Access/IpAccessSetup`).
+- **Forced HTTPS** (`Network:ForceHttps`) — redirect HTTP→HTTPS + HSTS, once
+  Kestrel has a cert (#222).
+
+Full setup walkthrough: `docs/lan-https-deployment.md`.
 
 ## Testing
 
