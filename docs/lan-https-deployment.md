@@ -51,10 +51,16 @@ host's LAN URL.
 ./gen-cert.sh 192.168.4.38 <choose-a-pfx-password>
 ```
 
-Writes `certs/` (gitignored): `sights.crt.pem` + `sights.key.pem` (Keycloak) and
-`sights.pfx` (Kestrel). The cert has an **IP SAN** so browsers accept it when you
-reach the host by raw IP. It's self-signed, so **trust `certs/sights.crt.pem` once
-on every device** that will browse the app (commands printed by the script).
+Writes `certs/` (gitignored): a **Root CA** (`ca.crt.pem` / `ca.key.pem`) and a
+**server leaf** (`sights.crt.pem` / `sights.key.pem` for Keycloak, `sights.pfx`
+for Kestrel). The leaf carries an **IP SAN** plus the `serverAuth` EKU so browsers
+accept it when you reach the host by raw IP.
+
+**Trust `certs/ca.crt.pem` — the Root CA — on every device** that will browse the
+app (commands printed by the script). Do **not** trust the leaf directly: a cert
+used as the server leaf must be `CA:FALSE` with `serverAuth`, so the trust anchor
+has to be the separate CA. If you previously trusted a `sights.crt.pem`, remove it
+from the trust stores first.
 
 ### 2. Fill in `.env`
 
