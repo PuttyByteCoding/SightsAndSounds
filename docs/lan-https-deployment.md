@@ -14,6 +14,19 @@ no tracked defaults change. The worked example uses:
 
 Substitute your own IPs throughout.
 
+## Serve model: single origin on :5098 (not the dev server)
+
+In normal development (`start.sh`) the UI is served by the **Vite dev server on
+`:5173` over plain HTTP**, which proxies `/api` to the API on `:5098`. That dev
+server is **not** part of a secured deployment — it has no TLS, and browsing it
+with `https://…:5173` fails with `SSL_ERROR_RX_RECORD_TOO_LONG` (HTTPS spoken to
+an HTTP socket).
+
+For the LAN deployment, `serve.sh` builds the SPA into the API's `wwwroot` and
+runs **only the API**, so the UI and `/api` share **one HTTPS origin on `:5098`**.
+You browse **`https://192.168.4.38:5098`** — there is no `:5173`. Single-origin
+also keeps the media cookie (`Path=/api`, `SameSite=Lax`) and CORS trivial.
+
 ## Why the issuer/hostname matters (#221)
 
 Keycloak stamps an **issuer** (`iss`) into every token, derived from the URL the
@@ -66,24 +79,30 @@ Kestrel__Certificates__Default__Path=certs/sights.pfx
 Kestrel__Certificates__Default__Password=<same-pfx-password>
 ```
 
-### 3. Start Keycloak with the TLS overlay
-
-`start.sh` brings up Keycloak automatically when `Auth__Enabled=true`, but the
-base compose file serves it over plain HTTP. For HTTPS on Keycloak, start it with
-the overlay before (or instead of) letting `start.sh` do it:
+### 3. Serve over HTTPS
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d keycloak
-./start.sh
+./serve.sh
 ```
+
+`serve.sh` builds the SPA into the API's `wwwroot`, brings up Postgres, starts
+Keycloak (over TLS via `docker-compose.tls.yml` when `certs/` exists), and runs
+**only the API** on HTTPS `:5098`. It does **not** start the Vite dev server.
+
+(If you prefer to drive the pieces by hand: `npm run build` in
+`src/VideoOrganizer.SvelteUI`, copy `build/` into
+`src/VideoOrganizer.API/wwwroot/`, `docker compose -f docker-compose.yml -f
+docker-compose.tls.yml up -d keycloak`, then run the API with the `.env` above.)
 
 ### 4. Verify
 
-- From `192.168.4.120` / `192.168.4.24` / the host (`192.168.4.38`): the SPA loads
-  over HTTPS, Keycloak login completes, `viewer` can read but is 403'd on writes,
-  `owner` can write, and video/images stream.
+- From `192.168.4.120` / `192.168.4.24` / the host (`192.168.4.38`): browse
+  **`https://192.168.4.38:5098`** — the SPA loads over HTTPS, Keycloak login
+  completes, `viewer` can read but is 403'd on writes, `owner` can write, and
+  video/images stream.
 - From any other LAN IP: `403` before the SPA even loads.
 - `http://192.168.4.38:5098` redirects to HTTPS; no mixed-content errors in the console.
+- Do **not** use `:5173` — that's the HTTP-only dev server, not part of this deployment.
 
 ## Recovering from a lockout
 
@@ -101,5 +120,3 @@ enabling it remotely.
   entirely means moving Keycloak to production `start` mode, a follow-up noted in #222.
 - Behind a reverse proxy, enable `ForwardedHeaders` so the IP allowlist sees the
   real client IP rather than the proxy's.
-- The PowerShell scripts (`*.ps1`) don't yet mirror the auth/Keycloak startup
-  wiring that `start.sh` has; on Windows start Keycloak via `docker compose` manually.
