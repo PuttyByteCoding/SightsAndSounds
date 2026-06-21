@@ -468,6 +468,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/videos/filtered-counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["GetFilteredCounts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/videos/filter-page": {
         parameters: {
             query?: never;
@@ -2399,6 +2415,12 @@ export interface components {
             movedAt: string;
             revertedAt: null | string;
         };
+        FilteredCountsDto: {
+            tagCounts: {
+                [key: string]: number;
+            };
+            flags: components["schemas"]["FlagCountsDto"];
+        };
         FilteredVideosPage: {
             videos: components["schemas"]["VideoDto"][];
             nextCursor: null | string;
@@ -3780,6 +3802,30 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VideoDto"][];
+                };
+            };
+        };
+    };
+    GetFilteredCounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": null | components["schemas"]["PlaylistFilterRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilteredCountsDto"];
                 };
             };
         };

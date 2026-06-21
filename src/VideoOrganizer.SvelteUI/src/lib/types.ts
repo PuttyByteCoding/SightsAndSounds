@@ -211,6 +211,10 @@ export type RuntimeInfo = Omit<S['RuntimeInfoDto'], 'os'> & {
 export type FfprobeResult = S['FfprobeResultDto'];
 export type FlagCounts = S['FlagCountsDto'];
 
+// Per-tag (keyed by tag id) and per-flag counts over the current filter's
+// "shown" set (#208), so the browse sidebar can render "shown/total".
+export type FilteredCounts = S['FilteredCountsDto'];
+
 // --- VideoSet --------------------------------------------------------------
 
 // The server reuses the EF VideoSet entity for both request and response, so

@@ -30,6 +30,7 @@ import type {
   PlaylistDto,
   PlaylistFilterRequest,
   FilteredVideosPage,
+  FilteredCounts,
   BrowseSort,
   PlaylistNavigationDto,
   PropertyDefinition,
@@ -241,6 +242,17 @@ export const api = {
       signal
     });
   },
+
+  // Per-tag and per-flag counts over the current filter's "shown" set (#208),
+  // so the sidebar can show "shown/total" on each tag and flag while a filter
+  // is active. Same filter body as filterVideosPage; pass `signal` so a
+  // superseded filter change can abort the in-flight request.
+  filteredCounts: (filter: PlaylistFilterRequest, signal?: AbortSignal): Promise<FilteredCounts> =>
+    request<FilteredCounts>('/api/videos/filtered-counts', {
+      method: 'POST',
+      body: JSON.stringify(filter),
+      signal
+    }),
 
   // Simple AND-of-tags filter. For richer filtering use filterVideos.
   listVideosByTags: (params: { tagIds?: string[] }) => {

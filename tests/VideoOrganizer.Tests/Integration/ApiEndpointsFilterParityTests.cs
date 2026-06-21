@@ -104,6 +104,18 @@ public sealed class ApiEndpointsFilterParityTests
         return rows!.Select(r => r.id).ToHashSet();
     }
 
+    private sealed record FlagCountsRow(
+        int favorite, int needsReview, int playbackIssue, int markedForDeletion,
+        int clip, int embedded, int exported, int edited);
+    private sealed record FilteredCountsRow(Dictionary<Guid, int> tagCounts, FlagCountsRow flags);
+
+    private async Task<FilteredCountsRow> CountsAsync(object body)
+    {
+        var res = await _api.Client.PostAsJsonAsync("/api/videos/filtered-counts", body);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        return (await res.Content.ReadFromJsonAsync<FilteredCountsRow>())!;
+    }
+
     private static object Tag(Guid id) => new { type = "tag", value = id.ToString() };
     private static object Folder(string path) => new { type = "folder", value = path };
     private static object Missing(Guid groupId) => new { type = "missing", value = $"tagGroup:{groupId}" };
@@ -210,6 +222,36 @@ public sealed class ApiEndpointsFilterParityTests
         // Explicitly filter for the hidden tag -> it appears.
         var revealed = (await FilterAsync(new { required = new[] { Tag(w.TagHidden) } })).Intersect(w.All).ToHashSet();
         Assert.Equal(new[] { w.VHidden }.ToHashSet(), revealed);
+    }
+
+    // --- #208: filtered-counts scope to the same "shown" set as /videos/filter
+
+    [SkippableFact]
+    public async Task Filtered_counts_scope_tag_counts_to_the_shown_set()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        var w = await SeedAsync();
+
+        // Required A shows VOnlyA + VAB. Over that set, A appears on both (2)
+        // and B only on VAB (1); the hidden tag never appears.
+        var counts = await CountsAsync(new { required = new[] { Tag(w.TagA) } });
+        Assert.Equal(2, counts.tagCounts[w.TagA]);
+        Assert.Equal(1, counts.tagCounts[w.TagB]);
+        Assert.False(counts.tagCounts.ContainsKey(w.TagHidden));
+    }
+
+    [SkippableFact]
+    public async Task Filtered_counts_scope_flag_counts_to_the_shown_set()
+    {
+        Skip.IfNot(_api.Available, _api.SkipReason);
+        var w = await SeedAsync();
+
+        // Favorite filter shows only VFav, which carries no tags — so the flag
+        // counts mirror that one video and the tag map is empty.
+        var counts = await CountsAsync(new { required = new[] { Status("favorite") } });
+        Assert.Equal(1, counts.flags.favorite);
+        Assert.Equal(0, counts.flags.needsReview);
+        Assert.Empty(counts.tagCounts);
     }
 
     [SkippableFact]

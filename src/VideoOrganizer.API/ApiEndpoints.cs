@@ -745,6 +745,78 @@ public static partial class ApiEndpoints
     // which is how "filter for it to see it" works. Hidden means hidden across
     // every surface (browse, playlists, related, search), so each listing query
     // excludes videos carrying one of these.
+    // Resolves a filter to the exact "visible" video set the browse grid shows:
+    // enabled-root path scoping + !ClipExported, free-text SearchQuery, the
+    // three-way Required/Optional/Excluded tag filter, and hidden-by-default
+    // (#84) suppression. Returns the visible videos plus how many matches the
+    // auto-hide suppressed. Shared by POST /videos/filter and
+    // /videos/filtered-counts (#208) so the "shown" counts line up with the grid.
+    private static async Task<(List<Video> Visible, int Hidden)> ResolveVisibleVideosAsync(
+        PlaylistFilterRequest? filter, VideoOrganizerDbContext db, CancellationToken ct)
+    {
+        var enabledRoots = await db.VideoSets.Where(s => s.Enabled)
+            .Select(s => s.Path).ToListAsync(ct);
+        if (enabledRoots.Count == 0) return (new List<Video>(), 0);
+
+        // Base candidates: under an enabled root, not an already-exported clip.
+        var candidatesQuery = IncludeForVideoDto(db.Videos)
+            .AsNoTracking()
+            .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)) && !v.ClipExported);
+
+        var searchQuery = filter?.SearchQuery?.Trim();
+        if (!string.IsNullOrEmpty(searchQuery))
+        {
+            var pat = $"%{SqlHelpers.EscapeLikePattern(searchQuery)}%";
+            candidatesQuery = candidatesQuery.Where(v =>
+                EF.Functions.ILike(v.FileName, pat) ||
+                EF.Functions.ILike(v.FilePath, pat) ||
+                EF.Functions.ILike(v.Notes, pat) ||
+                (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
+                v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)) ||
+                v.OcrTextLines.Any(o => EF.Functions.ILike(o.Text, pat)));
+        }
+
+        var required = filter?.Required ?? new();
+        var optional = filter?.Optional ?? new();
+        var excluded = filter?.Excluded ?? new();
+
+        // Tags the user explicitly filtered for are exempt from auto-hide so
+        // "filter for it to see it" works (#84).
+        var referencedTagIds = required.Concat(optional)
+            .Where(f => f.Type == FilterRefType.Tag && Guid.TryParse(f.Value, out _))
+            .Select(f => Guid.Parse(f.Value))
+            .ToHashSet();
+        var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
+
+        var (narrowed, needsInMemory) =
+            VideoFilterTranslator.Apply(candidatesQuery, required, optional, excluded, Array.Empty<Guid>());
+
+        // All matches BEFORE auto-hide. The Folder term can't be expressed in
+        // SQL, so when present we refine the SQL-narrowed slice in memory.
+        List<Video> matchedAll;
+        if (!needsInMemory)
+        {
+            matchedAll = await narrowed.ToListAsync(ct);
+        }
+        else
+        {
+            var lookup = await LoadTagLookupAsync(db, ct);
+            var candidates = await narrowed.ToListAsync(ct);
+            matchedAll = candidates.Where(v =>
+            {
+                if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
+                if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
+                if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
+                return true;
+            }).ToList();
+        }
+
+        var visible = autoHideTagIds.Count == 0
+            ? matchedAll
+            : matchedAll.Where(v => !v.VideoTags.Any(vt => autoHideTagIds.Contains(vt.TagId))).ToList();
+        return (visible, matchedAll.Count - visible.Count);
+    }
+
     private static async Task<HashSet<Guid>> LoadAutoHideTagIdsAsync(
         VideoOrganizerDbContext db, IReadOnlyCollection<Guid> referencedTagIds, CancellationToken ct)
     {
@@ -1715,83 +1787,44 @@ public static partial class ApiEndpoints
                 return Results.Ok(new List<VideoDto>());
             }
 
-            // Build the SQL-side candidates query. The base filter is the
-            // enabled-VideoSet path-prefix predicate; SearchQuery (when
-            // present) pushes a free-text ILIKE down through the same
-            // query so the trigram GIN indexes do the heavy lifting
-            // instead of yanking every video into memory and filtering.
-            var candidatesQuery = IncludeForVideoDto(db.Videos)
-                .AsNoTracking()
-                // Clips already exported to their own file (#69) are hidden from
-                // the library — the standalone export stands in for them.
-                .Where(v => enabledRoots.Any(r => v.FilePath.StartsWith(r)) && !v.ClipExported);
-
-            var searchQuery = filter?.SearchQuery?.Trim();
-            if (!string.IsNullOrEmpty(searchQuery))
-            {
-                var pat = $"%{SqlHelpers.EscapeLikePattern(searchQuery)}%";
-                candidatesQuery = candidatesQuery.Where(v =>
-                    EF.Functions.ILike(v.FileName, pat) ||
-                    EF.Functions.ILike(v.FilePath, pat) ||
-                    EF.Functions.ILike(v.Notes, pat) ||
-                    (v.Md5 != null && EF.Functions.ILike(v.Md5, pat)) ||
-                    v.VideoTags.Any(vt => vt.Tag != null && EF.Functions.ILike(vt.Tag.Name, pat)) ||
-                    // On-screen text found by an OCR scan (issue #5).
-                    v.OcrTextLines.Any(o => EF.Functions.ILike(o.Text, pat)));
-            }
-
-            var required = filter?.Required ?? new();
-            var optional = filter?.Optional ?? new();
-            var excluded = filter?.Excluded ?? new();
-
-            // Hidden-by-default tags (issue #84): videos carrying one are
-            // suppressed UNLESS the user explicitly filters for that tag
-            // (Required/Optional). Tags the user opted into via the filter are
-            // removed from the auto-hide set so "filter for it to see it" works.
-            var referencedTagIds = required.Concat(optional)
-                .Where(f => f.Type == FilterRefType.Tag && Guid.TryParse(f.Value, out _))
-                .Select(f => Guid.Parse(f.Value))
-                .ToHashSet();
-            var autoHideTagIds = await LoadAutoHideTagIdsAsync(db, referencedTagIds, ct);
-
-            // Push every safely-translatable slot into SQL (#127), but NOT the
-            // auto-hide — we apply that last, in memory, so we can also count how
-            // many matches it suppressed. When a Folder filter is present the
-            // query is still narrowed by everything else; the residual in-memory
-            // pass below applies the exact MatchesFilter semantics over that
-            // (much smaller) set.
-            var (narrowed, needsInMemory) =
-                VideoFilterTranslator.Apply(candidatesQuery, required, optional, excluded, Array.Empty<Guid>());
-
-            // All videos matching the filter, BEFORE auto-hide suppression.
-            List<Video> matchedAll;
-            if (!needsInMemory)
-            {
-                matchedAll = await narrowed.ToListAsync(ct);
-            }
-            else
-            {
-                var lookup = await LoadTagLookupAsync(db, ct);
-                var candidates = await narrowed.ToListAsync(ct);
-                matchedAll = candidates.Where(v =>
-                {
-                    if (required.Count > 0 && !required.All(t => MatchesFilter(t, v, lookup))) return false;
-                    if (optional.Count > 0 && !optional.Any(t => MatchesFilter(t, v, lookup))) return false;
-                    if (excluded.Count > 0 && excluded.Any(t => MatchesFilter(t, v, lookup))) return false;
-                    return true;
-                }).ToList();
-            }
-
-            // Suppress hidden-by-default tags from the result, and report how many
-            // were suppressed so the UI can say "N hidden".
-            var visible = autoHideTagIds.Count == 0
-                ? matchedAll
-                : matchedAll.Where(v => !v.VideoTags.Any(vt => autoHideTagIds.Contains(vt.TagId))).ToList();
-            ReportHidden(matchedAll.Count - visible.Count);
-
+            var (visible, hidden) = await ResolveVisibleVideosAsync(filter, db, ct);
+            ReportHidden(hidden);
             return Results.Ok(visible.Select(ToDto).ToList());
         }).Produces<List<VideoDto>>(StatusCodes.Status200OK)
           .WithName("FilterVideos");
+
+        // Per-tag and per-flag counts over the CURRENT filter's "shown" set
+        // (#208), so the browse sidebar can render "shown/total" on each tag and
+        // flag. Uses the SAME ResolveVisibleVideosAsync pipeline as the grid, so
+        // the "shown" number always matches what the user sees.
+        api.MapPost("/videos/filtered-counts", async (
+            PlaylistFilterRequest? filter,
+            VideoOrganizerDbContext db,
+            CancellationToken ct) =>
+        {
+            var (visible, _) = await ResolveVisibleVideosAsync(filter, db, ct);
+
+            var tagCounts = new Dictionary<Guid, int>();
+            foreach (var v in visible)
+            {
+                foreach (var vt in v.VideoTags)
+                    tagCounts[vt.TagId] = tagCounts.GetValueOrDefault(vt.TagId) + 1;
+            }
+
+            // Mirror GET /videos/flag-counts, scoped to the filtered set.
+            var flags = new FlagCountsDto(
+                visible.Count(v => v.IsFavorite),
+                visible.Count(v => v.NeedsReview),
+                visible.Count(v => v.PlaybackIssue),
+                visible.Count(v => v.MarkedForDeletion),
+                visible.Count(v => v.ParentVideoId.HasValue || v.IsClip || v.IsExportedClip),
+                visible.Count(v => v.ParentVideoId.HasValue),
+                visible.Count(v => v.IsExportedClip),
+                visible.Count(v => v.IsEdited));
+
+            return Results.Ok(new FilteredCountsDto(tagCounts, flags));
+        }).Produces<FilteredCountsDto>(StatusCodes.Status200OK)
+          .WithName("GetFilteredCounts");
 
         // Keyset-paginated variant of /videos/filter (#127). Same filter body;
         // pagination via query params: sort (shuffle|fileName|fileSize|duration|

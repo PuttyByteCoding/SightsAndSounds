@@ -16,7 +16,8 @@
     PlaylistFilterRequest,
     ImportBrowseDirectory,
     VideoTagSummary,
-    FlagCounts
+    FlagCounts,
+    FilteredCounts
   } from '$lib/types';
   import VideoCard from '$lib/components/VideoCard.svelte';
   import VideoPlayer from '$lib/components/VideoPlayer.svelte';
@@ -481,6 +482,21 @@
         excluded: filterStore.excluded.map((t): FilterRef => ({ type: t.type, value: t.value })),
         searchQuery: searchQuery.length > 0 ? searchQuery : undefined
       };
+      // Per-tag/flag "shown" counts for the sidebar (#208). Fired in parallel
+      // with the page fetch and NOT awaited — counts resolve the full visible
+      // set (potentially the slowest query) and must not gate grid/playback.
+      // Superseded fetches abort via `ac.signal`. With no active filter the
+      // labels revert to plain totals, so clear immediately.
+      const filterActive =
+        filterStore.required.length > 0 || filterStore.optional.length > 0 ||
+        filterStore.excluded.length > 0 || searchQuery.length > 0;
+      if (filterActive) {
+        void api.filteredCounts(filter, ac.signal)
+          .then(c => { if (!ac.signal.aborted) filteredCounts = c; })
+          .catch(() => { /* superseded or failed — keep the last counts */ });
+      } else {
+        filteredCounts = null;
+      }
       // Fetch the FIRST page; subsequent pages come from loadMore via the cursor.
       const result = await api.filterVideosPage(
         filter,
@@ -1017,6 +1033,21 @@
     }
   }
 
+  // Per-tag (keyed by id) and per-flag counts over the CURRENTLY-FILTERED set
+  // (#208). Non-null only while a filter is active; populated by refreshVideos.
+  // When set, the sidebar shows "shown/total" (e.g. 16/142) on each tag and
+  // flag so the user can see how many of a tag's videos survive the filter.
+  let filteredCounts = $state<FilteredCounts | null>(null);
+
+  // Count badge text. While a filter is active, "shown/total"; otherwise just
+  // the total. A tag/flag absent from the filtered set counts as zero shown.
+  function tagCountLabel(tagId: string, total: number): string {
+    return filteredCounts ? `${filteredCounts.tagCounts[tagId] ?? 0}/${total}` : String(total);
+  }
+  function flagCountLabel(key: keyof FlagCounts, total: number): string {
+    return filteredCounts ? `${filteredCounts.flags[key]}/${total}` : String(total);
+  }
+
   type FlagItem =
     | { kind: 'bool'; def: FlagDef }
     | { kind: 'tag'; tag: Tag };
@@ -1524,6 +1555,9 @@
             {@const itemLabel = flagItemLabel(item)}
             {@const state = flagState(item)}
             {@const itemCount = item.kind === 'bool' ? flagCounts[item.def.value] : item.tag.videoCount}
+            {@const countLabel = item.kind === 'bool'
+              ? flagCountLabel(item.def.value, itemCount)
+              : tagCountLabel(item.tag.id, itemCount)}
             <button
               type="button"
               class="w-full flex items-center gap-1 hover:bg-base-200 rounded text-left"
@@ -1581,7 +1615,7 @@
               <span
                 class="shrink-0 text-xs tabular-nums opacity-50"
                 title="{itemCount} video{itemCount === 1 ? '' : 's'} with {itemLabel} set"
-              >{itemCount}</span>
+              >{countLabel}</span>
               <!-- Tristate indicator. Distinct shape AND color per
                    state so the user can scan the column visually. -->
               <span class="shrink-0 w-5 h-5 flex items-center justify-center" aria-hidden="true">
@@ -1682,7 +1716,7 @@
                         onclick={() => cycleTag(t.id, t.name, t.tagGroupName)}
                         title={`${t.name}${slot ? ` — ${slot}` : ''} · ${CYCLE_HINT}`}
                       >{t.name}</button>
-                      <span class="shrink-0 text-xs tabular-nums opacity-50">{t.videoCount}</span>
+                      <span class="shrink-0 text-xs tabular-nums opacity-50">{tagCountLabel(t.id, t.videoCount)}</span>
                       <button
                         type="button"
                         class="shrink-0 px-1 opacity-70 hover:opacity-100"
@@ -1954,7 +1988,7 @@
                       <!-- Hidden-by-default marker (issue #84). -->
                       <span class="shrink-0 text-[10px] italic text-base-content/40" title="Hidden by default">(default hidden)</span>
                     {/if}
-                    <span class="shrink-0 text-xs tabular-nums opacity-50">{t.videoCount}</span>
+                    <span class="shrink-0 text-xs tabular-nums opacity-50">{tagCountLabel(t.id, t.videoCount)}</span>
                     <button
                       type="button"
                       class="shrink-0 px-1 opacity-70 hover:opacity-100"
