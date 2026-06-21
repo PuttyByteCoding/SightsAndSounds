@@ -185,3 +185,7 @@ appsettings.Development.json
 
 # Local Claude Code guidance — keep personal, not tracked
 CLAUDE.md
+
+# TLS certificates / keys for the LAN HTTPS deployment (#222). Generated locally
+# by gen-cert.sh / gen-cert.ps1 — secrets, never commit.
+certs/

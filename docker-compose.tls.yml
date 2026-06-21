@@ -1,0 +1,21 @@
+# HTTPS overlay for Keycloak (#222). Layers on top of docker-compose.yml to
+# serve Keycloak over TLS on :8443 using the certificate produced by
+# ./gen-cert.sh (writes certs/sights.crt.pem + certs/sights.key.pem).
+#
+# Usage:
+#   ./gen-cert.sh 192.168.4.38                 # once, generates certs/
+#   # in .env: KC_HOSTNAME=https://192.168.4.38:8443
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d keycloak
+#
+# The base file's plain-HTTP :8080 listener stays mapped (start-dev serves both);
+# point clients and Auth__Authority at the :8443 HTTPS URL. To drop HTTP entirely,
+# move Keycloak to production `start` mode — a larger change tracked in #222.
+services:
+  keycloak:
+    environment:
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/certs/sights.crt.pem
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/certs/sights.key.pem
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./certs:/opt/keycloak/certs:ro
